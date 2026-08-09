@@ -1,0 +1,1 @@
+{"task_id":"computer-example-domain","prompt":"Use only the visible computer interface to inspect the configured page. Return its main heading exactly somewhere in your answer.","evaluator":{"type":"contains","value":"Example Domain"},"split":"computer-smoke"}

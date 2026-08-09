@@ -1,0 +1,44 @@
+{
+  "harnesses": [
+    {"name": "single"},
+    {"name": "parallel_best_of_n", "options": {"n": 3}},
+    {"name": "blocking_orchestrator", "options": {"max_workers": 3}},
+    {"name": "fixed_agent_team", "options": {"team_size": 3}},
+    {
+      "name": "async_subagents",
+      "options": {"max_concurrent_subagents": 3, "max_total_subagents": 8}
+    }
+  ],
+  "environment": {
+    "type": "swe",
+    "protocol": "auto",
+    "workspace_mode": "copy",
+    "isolation": "per_agent",
+    "allow_write": true,
+    "allow_shell": true,
+    "allow_native_shell": false,
+    "command_allowlist": ["git", "python3"],
+    "tool_timeout_seconds": 60,
+    "max_tool_output_bytes": 262144
+  },
+  "limits": {
+    "max_model_calls": 96,
+    "max_concurrency": 4,
+    "max_cost_usd": 5.0,
+    "wall_time_seconds": 900,
+    "max_depth": 2,
+    "max_tool_calls": 256,
+    "max_tool_output_bytes": 8388608,
+    "max_agent_turns": 48
+  },
+  "matrix_max_cost_usd": 25.0,
+  "capture_content": false,
+  "repeats": 1,
+  "random_seed": 20260810,
+  "metadata": {
+    "domain": "swe",
+    "fidelity": "provider-native text-editor where supported plus portable tools over distinct copies of the task-selected workspace; native shell is disabled and evaluator integration is separate",
+    "workspace_safety": "no config-level workspace is set; each task must select a frozen repository outside the output tree so manifests, evaluator answers, and prior artifacts are not copied into the agent workspace",
+    "shell_safety": "allow_native_shell is false; run_command checks executable names against the allowlist and resolves them through a fixed trusted PATH, but python3 and other interpreters remain arbitrary-code capabilities and require an outer sandbox"
+  }
+}

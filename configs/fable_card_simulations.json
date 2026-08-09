@@ -1,0 +1,32 @@
+{
+  "harnesses": [
+    {"name": "blocking_orchestrator", "options": {"max_workers": 4}},
+    {"name": "fixed_agent_team", "options": {"team_size": 3}},
+    {"name": "fixed_agent_team", "options": {"team_size": 5}},
+    {"name": "fixed_agent_team", "options": {"team_size": 10}},
+    {
+      "name": "async_subagents",
+      "options": {"max_concurrent_subagents": 4, "max_total_subagents": 20}
+    }
+  ],
+  "limits": {
+    "max_model_calls": 256,
+    "max_concurrency": 10,
+    "max_input_tokens": 2000000,
+    "max_output_tokens": 500000,
+    "max_cost_usd": 20.0,
+    "wall_time_seconds": 1800,
+    "max_depth": 2
+  },
+  "matrix_max_cost_usd": 100.0,
+  "capture_content": true,
+  "repeats": 1,
+  "random_seed": 20260809,
+  "metadata": {
+    "fidelity": "topology_simulation_only",
+    "source_profile": "Fable/Mythos ProgramBench async limits; blocking max_workers=4 is a local control choice",
+    "programbench_async_limits": "4 concurrent, 20 total",
+    "browsecomp_async_spawn_cap_disclosed": false,
+    "local_limits_note": "Shared per-trial Scaffold Lab limits do not reproduce Fable per-agent 200K context or manager compaction at 100K"
+  }
+}

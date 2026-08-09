@@ -1,0 +1,1 @@
+{"task_id":"swe-readme-inspection","prompt":"Inspect README.md with the repository tools. Return the two-word phrase that describes the experiment runtime immediately before 'experiment runtime'.","evaluator":{"type":"contains","value":"provider-neutral"},"split":"swe-smoke","metadata":{"environment":{"workspace":"fixtures/swe_smoke_repo"}}}

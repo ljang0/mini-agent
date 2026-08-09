@@ -1,0 +1,44 @@
+{
+  "harnesses": [
+    {"name": "recursive_delegation", "options": {"max_children": 3}},
+    {
+      "name": "rlm_repl",
+      "options": {
+        "max_iterations": 16,
+        "max_subcalls": 32,
+        "max_batch_size": 8,
+        "max_concurrent_subcalls": 4
+      }
+    },
+    {
+      "name": "platoon_recursive_inference",
+      "options": {
+        "max_steps_per_agent": 15,
+        "max_total_subagents": 32,
+        "max_children_per_action": 4,
+        "max_concurrent_subagents": 4
+      }
+    },
+    {"name": "external_context_json_search"}
+  ],
+  "limits": {
+    "max_model_calls": 128,
+    "max_concurrency": 4,
+    "max_input_tokens": 1000000,
+    "max_output_tokens": 250000,
+    "max_cost_usd": 10.0,
+    "wall_time_seconds": 1200,
+    "max_depth": 3,
+    "max_tool_calls": 128,
+    "max_tool_output_bytes": 8388608,
+    "max_agent_turns": 32
+  },
+  "matrix_max_cost_usd": 40.0,
+  "capture_content": false,
+  "repeats": 1,
+  "random_seed": 20260810,
+  "metadata": {
+    "fidelity": "recursive controls: clean-room restricted RLM contract, Platoon-inspired inference only, and non-RLM JSON-search ablation",
+    "security": "generated Python runs in a restricted in-process namespace; use an outer sandbox for adversarial tasks"
+  }
+}

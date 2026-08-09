@@ -1,0 +1,50 @@
+{
+  "harnesses": [
+    {"name": "single"},
+    {"name": "blocking_orchestrator", "options": {"max_workers": 3}},
+    {"name": "fixed_agent_team", "options": {"team_size": 3}},
+    {
+      "name": "async_subagents",
+      "options": {"max_concurrent_subagents": 3, "max_total_subagents": 8}
+    },
+    {"name": "macu_dynamic_dag", "options": {"max_workers": 3}}
+  ],
+  "environment": {
+    "type": "swe_computer",
+    "protocol": "auto",
+    "workspace_mode": "copy",
+    "isolation": "per_agent",
+    "allow_write": true,
+    "allow_shell": true,
+    "allow_native_shell": false,
+    "command_allowlist": ["git", "python3"],
+    "allowed_hosts": ["example.com"],
+    "start_url": "https://example.com",
+    "headless": true,
+    "viewport_width": 1440,
+    "viewport_height": 900,
+    "tool_timeout_seconds": 60,
+    "max_tool_output_bytes": 524288
+  },
+  "limits": {
+    "max_model_calls": 128,
+    "max_concurrency": 4,
+    "max_cost_usd": 8.0,
+    "wall_time_seconds": 1200,
+    "max_depth": 2,
+    "max_tool_calls": 384,
+    "max_tool_output_bytes": 16777216,
+    "max_agent_turns": 64
+  },
+  "matrix_max_cost_usd": 40.0,
+  "capture_content": false,
+  "repeats": 1,
+  "random_seed": 20260810,
+  "metadata": {
+    "domain": "swe_computer",
+    "fidelity": "composite task-selected workspace copies and provider-native computer client protocol for supported model/tool-version pairs; native shell is disabled and this is not evaluator or desktop-VM parity",
+    "workspace_safety": "no config-level workspace is set; each task must select a frozen repository outside the output tree so manifests, evaluator answers, and prior artifacts are not copied into the agent workspace",
+    "shell_safety": "allow_native_shell is false; run_command checks executable names against the allowlist and resolves them through a fixed trusted PATH, but python3 and other interpreters remain arbitrary-code capabilities and require an outer sandbox",
+    "network_safety": "allowed_hosts constrains requested top-level navigation only; redirects, subresources, and pixel-entered URLs require an outer egress boundary"
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "harnesses": [
+    {"name": "single"},
+    {"name": "parallel_best_of_n", "options": {"n": 3}},
+    {"name": "fixed_agent_team", "options": {"team_size": 3}},
+    {
+      "name": "async_subagents",
+      "options": {"max_concurrent_subagents": 3, "max_total_subagents": 8}
+    },
+    {"name": "macu_dynamic_dag", "options": {"max_workers": 3}}
+  ],
+  "environment": {
+    "type": "browser",
+    "protocol": "generic",
+    "isolation": "per_agent",
+    "allowed_hosts": ["example.com"],
+    "start_url": "https://example.com",
+    "headless": true,
+    "viewport_width": 1440,
+    "viewport_height": 900,
+    "max_tool_output_bytes": 262144
+  },
+  "limits": {
+    "max_model_calls": 96,
+    "max_concurrency": 4,
+    "max_cost_usd": 5.0,
+    "wall_time_seconds": 900,
+    "max_depth": 2,
+    "max_tool_calls": 256,
+    "max_tool_output_bytes": 8388608,
+    "max_agent_turns": 48
+  },
+  "matrix_max_cost_usd": 25.0,
+  "capture_content": false,
+  "repeats": 1,
+  "random_seed": 20260810,
+  "metadata": {
+    "domain": "browser",
+    "fidelity": "Scaffold Lab semantic browser tools on isolated Playwright contexts; not BrowserGym or Browser-Use policy parity",
+    "network_safety": "allowed_hosts constrains requested top-level navigation only; redirects and subresources require an outer egress boundary"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "harnesses": [{"name": "grok_build"}],
+  "limits": {
+    "max_model_calls": 1,
+    "max_concurrency": 1,
+    "wall_time_seconds": 1800,
+    "max_depth": 4
+  },
+  "capture_content": false,
+  "repeats": 1,
+  "random_seed": 20260809,
+  "metadata": {
+    "accounting_scope": "reported usage is a lower bound; compaction and side-model calls can be excluded",
+    "limits_scope": "max_model_calls and max_concurrency describe the one outer Scaffold Lab session; max_depth does not constrain the upstream Grok Build tree"
+  }
+}

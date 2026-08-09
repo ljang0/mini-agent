@@ -1,0 +1,14 @@
+{
+  "harnesses": [{"name": "flat_parallel", "options": {"max_agents": 8}}],
+  "limits": {
+    "max_model_calls": 8,
+    "max_concurrency": 8,
+    "max_cost_usd": 2.0,
+    "wall_time_seconds": 300,
+    "max_depth": 0
+  },
+  "matrix_max_cost_usd": 5.0,
+  "capture_content": false,
+  "repeats": 1,
+  "random_seed": 20260809
+}

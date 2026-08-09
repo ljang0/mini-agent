@@ -1,0 +1,30 @@
+{
+  "harnesses": [
+    {"name": "fixed_agent_team", "options": {"team_size": 5}},
+    {"name": "fixed_agent_team", "options": {"team_size": 10}},
+    {
+      "name": "async_subagents",
+      "options": {"max_concurrent_subagents": 10, "max_total_subagents": 100}
+    }
+  ],
+  "limits": {
+    "max_model_calls": 256,
+    "max_concurrency": 10,
+    "max_input_tokens": 2000000,
+    "max_output_tokens": 500000,
+    "max_cost_usd": 20.0,
+    "wall_time_seconds": 1800,
+    "max_depth": 2
+  },
+  "matrix_max_cost_usd": 100.0,
+  "capture_content": true,
+  "repeats": 1,
+  "random_seed": 20260809,
+  "metadata": {
+    "fidelity": "topology_simulation_only",
+    "source_profile": "Opus 5 fixed teams N=5/10; async worker caps are local safety controls",
+    "async_spawn_cap_disclosed_by_card": false,
+    "local_async_limits": "10 concurrent, 100 total",
+    "local_limits_note": "Shared per-trial Scaffold Lab limits do not reproduce the card's 1M-token per-agent allowance"
+  }
+}

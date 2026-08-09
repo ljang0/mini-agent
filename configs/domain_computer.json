@@ -1,0 +1,43 @@
+{
+  "harnesses": [
+    {"name": "single"},
+    {"name": "parallel_best_of_n", "options": {"n": 3}},
+    {"name": "fixed_agent_team", "options": {"team_size": 3}},
+    {
+      "name": "async_subagents",
+      "options": {"max_concurrent_subagents": 3, "max_total_subagents": 8}
+    },
+    {"name": "macu_dynamic_dag", "options": {"max_workers": 3}}
+  ],
+  "environment": {
+    "type": "computer",
+    "protocol": "auto",
+    "isolation": "per_agent",
+    "allowed_hosts": ["example.com"],
+    "start_url": "https://example.com",
+    "headless": true,
+    "viewport_width": 1440,
+    "viewport_height": 900,
+    "max_tool_output_bytes": 524288
+  },
+  "limits": {
+    "max_model_calls": 96,
+    "max_concurrency": 4,
+    "max_cost_usd": 5.0,
+    "wall_time_seconds": 900,
+    "max_depth": 2,
+    "max_tool_calls": 256,
+    "max_tool_output_bytes": 16777216,
+    "max_agent_turns": 48
+  },
+  "matrix_max_cost_usd": 25.0,
+  "capture_content": false,
+  "repeats": 1,
+  "random_seed": 20260810,
+  "metadata": {
+    "domain": "computer",
+    "fidelity": "provider-native OpenAI/Anthropic computer client protocol for supported model/tool-version pairs over a Playwright browser viewport; not an OSWorld desktop VM",
+    "model_compatibility": "validate the selected model against its provider tool-version documentation; Anthropic computer_20251124 includes Opus 5 but does not list Fable 5 or Mythos 5",
+    "network_safety": "allowed_hosts constrains requested top-level navigation only; redirects, subresources, and pixel-entered URLs require an outer egress boundary"
+  }
+}

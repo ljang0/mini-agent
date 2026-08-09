@@ -1,0 +1,24 @@
+{
+  "harnesses": [
+    {"name": "xai_hosted_multi_agent", "options": {"agent_count": 4}},
+    {"name": "xai_hosted_multi_agent", "options": {"agent_count": 16}}
+  ],
+  "limits": {
+    "max_model_calls": 1,
+    "max_concurrency": 1,
+    "max_input_tokens": 2000000,
+    "max_output_tokens": 500000,
+    "max_cost_usd": 20.0,
+    "wall_time_seconds": 1800,
+    "max_depth": 1
+  },
+  "matrix_max_cost_usd": 40.0,
+  "capture_content": false,
+  "repeats": 1,
+  "random_seed": 20260809,
+  "metadata": {
+    "fidelity": "exact public no-tool hosted request boundary for documented four- and sixteen-agent settings; scheduler, plaintext intermediate state, and encrypted continuation remain closed or unimplemented",
+    "limits_scope": "agent_count is provider-side; Scaffold Lab max_model_calls/max_concurrency/max_depth apply only to the observable outer request and do not constrain the hosted tree",
+    "accounting_scope": "provider usage is aggregate; cost_usd uses provider-returned cost when available or the configured local token-price estimate, not necessarily an invoice charge"
+  }
+}

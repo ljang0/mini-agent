@@ -1,0 +1,27 @@
+{
+  "harnesses": [{"name": "anthropic_managed_agents"}],
+  "limits": {
+    "max_model_calls": 1,
+    "max_concurrency": 1,
+    "max_input_tokens": 2000000,
+    "max_output_tokens": 500000,
+    "max_cost_usd": 20.0,
+    "wall_time_seconds": 1800,
+    "max_depth": 1,
+    "max_tool_calls": 1,
+    "max_tool_output_bytes": 1048576,
+    "max_agent_turns": 1
+  },
+  "matrix_max_cost_usd": 40.0,
+  "capture_content": false,
+  "repeats": 1,
+  "random_seed": 20260810,
+  "metadata": {
+    "fidelity": "exact public Managed Agents session, primary-event-list, and aggregate-usage boundary; referenced remote agent owns roster, tools, and environment",
+    "local_limits_scope": "max_model_calls and max_concurrency describe the one outer Scaffold Lab session call; max_depth, max_tool_calls, max_tool_output_bytes, and max_agent_turns do not constrain Managed server threads or tools",
+    "resource_limits_scope": "local token and cost limits are post-session accounting gates; use --managed-budget-cents for the provider-side shared list-cost cap, which is enforced between model requests and may overshoot by the crossing request",
+    "accounting_scope": "session aggregate tokens and public-list-price list_cost are authoritative; primary events are condensed and are not a complete child-thread trace or invoice record",
+    "trace_scope": "capture_content is false, so artifacts retain event counts and local lifecycle summaries rather than raw primary provider events; enable content capture only on controlled non-sensitive tasks",
+    "reproducibility": "release runs require --managed-agent-version plus a separately exported and hashed remote agent and environment definition; current artifacts do not persist that complete sanitized snapshot"
+  }
+}

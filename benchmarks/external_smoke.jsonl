@@ -1,0 +1,1 @@
+{"task_id":"external-runtime-smoke","prompt":"Read the context and return the matching project code somewhere in your answer.","context":"The project code is ORBIT.","evaluator":{"type":"contains","value":"ORBIT"},"split":"smoke"}

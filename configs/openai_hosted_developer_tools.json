@@ -1,0 +1,44 @@
+{
+  "harnesses": [
+    {
+      "name": "openai_hosted_multi_agent",
+      "options": {
+        "max_concurrent_subagents": 3
+      }
+    }
+  ],
+  "environment": {
+    "type": "browser",
+    "protocol": "generic",
+    "isolation": "per_agent",
+    "allowed_hosts": [
+      "example.com"
+    ],
+    "start_url": "https://example.com",
+    "headless": true,
+    "viewport_width": 1440,
+    "viewport_height": 900,
+    "max_tool_output_bytes": 262144
+  },
+  "limits": {
+    "max_model_calls": 12,
+    "max_concurrency": 1,
+    "max_input_tokens": 2000000,
+    "max_output_tokens": 500000,
+    "max_cost_usd": 20.0,
+    "wall_time_seconds": 1800,
+    "max_depth": 1,
+    "max_tool_calls": 64,
+    "max_tool_output_bytes": 8388608,
+    "max_agent_turns": 12
+  },
+  "matrix_max_cost_usd": 40.0,
+  "capture_content": false,
+  "repeats": 1,
+  "random_seed": 20260810,
+  "metadata": {
+    "fidelity": "exact public stateless HTTP developer-function continuation and agent attribution; hosted scheduler closed",
+    "qa_status": "offline protocol tests only; no paid live combination test has been run",
+    "server_limit_scope": "max_concurrent_subagents is hosted; Scaffold Lab max_model_calls/max_concurrency/max_depth apply only to observable outer calls"
+  }
+}

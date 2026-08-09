@@ -1,0 +1,1 @@
+{"task_id":"three-independent-requests","prompt":"Run the three independent requests; no combined answer is required.","parallel_tasks":[{"id":"alpha","prompt":"Return the word alpha."},{"id":"beta","prompt":"Return the word beta."},{"id":"gamma","prompt":"Return the word gamma."}],"split":"smoke"}

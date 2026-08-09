@@ -1,0 +1,1 @@
+{"task_id":"browser-example-domain","prompt":"Use the browser tools to inspect the configured page. Return its visible heading exactly somewhere in your answer.","evaluator":{"type":"contains","value":"Example Domain"},"split":"browser-smoke"}
