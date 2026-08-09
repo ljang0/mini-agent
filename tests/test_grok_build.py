@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Callable
 from unittest.mock import AsyncMock, patch
 
-from scaffoldlab.cli import _validate_compatibility
+from scaffoldlab.cli import _build_backend, _validate_compatibility, build_parser
 from scaffoldlab.external import (
     GrokBuildJSONBackend,
     _usage_from_grok_result,
@@ -120,6 +120,31 @@ class GrokUsageTests(unittest.TestCase):
 
 
 class GrokBackendTests(unittest.IsolatedAsyncioTestCase):
+    def test_cli_defaults_to_audited_grok_release(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            args = build_parser().parse_args(
+                [
+                    "run",
+                    "--tasks",
+                    str(root / "tasks.jsonl"),
+                    "--config",
+                    str(root / "config.json"),
+                    "--provider",
+                    "grok-build",
+                    "--model",
+                    "grok-build-pinned",
+                    "--output",
+                    str(root / "results"),
+                    "--grok-cwd",
+                    str(workspace),
+                ]
+            )
+            backend = _build_backend(args, {})
+        self.assertEqual(backend.expected_version, "1.0.0")
+
     async def test_workspace_hash_limits_and_timeout_are_enforced(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -541,7 +566,7 @@ class XAIHostedTests(unittest.IsolatedAsyncioTestCase):
         }
         post = AsyncMock(return_value=provider_result)
         backend = XAIResponsesBackend(
-            model="grok-4.20-multi-agent",
+            model="grok-4.20-multi-agent-0309",
             api_key="test-key",
             pricing=TokenPricing(1.0, 2.0),
         )
@@ -561,7 +586,7 @@ class XAIHostedTests(unittest.IsolatedAsyncioTestCase):
         call = post.await_args
         self.assertEqual(call.args[0], "https://api.x.ai/v1/responses")
         payload = call.kwargs["payload"]
-        self.assertEqual(payload["model"], "grok-4.20-multi-agent")
+        self.assertEqual(payload["model"], "grok-4.20-multi-agent-0309")
         self.assertEqual(payload["reasoning"], {"effort": "low"})
         self.assertEqual(payload["input"], [{"role": "user", "content": "question"}])
         self.assertNotIn("tools", payload)
@@ -573,6 +598,8 @@ class XAIHostedTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sixteen.reasoning_effort, "high")
         with self.assertRaises(ValueError):
             XAIHostedMultiAgentHarness(agent_count=8)
+        with self.assertRaisesRegex(ValueError, "pinned model"):
+            XAIResponsesBackend(model="grok-4.20-multi-agent", api_key="test-key")
 
         task = Task(task_id="task", prompt="question")
         with self.assertRaises(ValueError):

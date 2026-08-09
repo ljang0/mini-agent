@@ -8,8 +8,12 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .applications import (
+    ApplicationSelection,
     list_applications as catalog_applications,
+    list_gaps as catalog_gaps,
     list_implementations as catalog_implementations,
+    list_profiles as catalog_profiles,
+    list_studies as catalog_studies,
     resolve_application_config,
 )
 from .evaluation import (
@@ -77,6 +81,119 @@ HARNESS_TYPES: Mapping[str, type[Harness]] = {
     "prime_agent": PrimeAgentHarness,
     "xai_hosted_multi_agent": XAIHostedMultiAgentHarness,
 }
+
+
+# Exact application profiles make their cited source pin authoritative. These
+# bindings translate provider-specific CLI controls back to the corresponding
+# SourceArtifact field so an override cannot silently change the catalog claim.
+_EXACT_RUNTIME_PIN_BINDINGS: Mapping[str, tuple[str, str, str]] = {
+    "anthropic-managed-agents": (
+        "managed_beta_version",
+        "version",
+        "Managed Agents beta version",
+    ),
+    "prime-agent": (
+        "prime_agent_expected_version",
+        "version",
+        "Prime Agent version",
+    ),
+    "grok-build": (
+        "grok_expected_version",
+        "version",
+        "Grok Build version",
+    ),
+    "macu-upstream": (
+        "macu_expected_checkout_revision",
+        "revision",
+        "MACU checkout revision",
+    ),
+    "rlm-upstream": (
+        "rlm_expected_checkout_revision",
+        "revision",
+        "RLM checkout revision",
+    ),
+}
+
+_EXACT_MODEL_PREFIXES: Mapping[str, tuple[str, ...]] = {
+    "computer-use/openai-ga-computer-single": ("gpt-5.4", "gpt-5.6"),
+    "computer-use/anthropic-computer-20251124-single": (
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7",
+        "claude-opus-4-6",
+        "claude-sonnet-4-6",
+        "claude-opus-4-5",
+    ),
+}
+
+
+def _matches_model_prefix(model: str, prefix: str) -> bool:
+    return model == prefix or model.startswith(prefix + "-")
+
+
+def _enforce_exact_application_identity(
+    args: argparse.Namespace, application: ApplicationSelection | None
+) -> None:
+    """Fail closed when an exact selection drifts from its public identity.
+
+    Raw legacy configs deliberately have no application selection and retain their
+    existing override behavior. Studies cannot reach this path as implementations.
+    """
+
+    if application is None or application.selection_kind != "implementation":
+        return
+
+    profile = application.profile
+    allowed_model_prefixes = _EXACT_MODEL_PREFIXES.get(profile.key)
+    if allowed_model_prefixes is not None:
+        selected_model = getattr(args, "model", None)
+        if not isinstance(selected_model, str) or not any(
+            _matches_model_prefix(selected_model, prefix)
+            for prefix in allowed_model_prefixes
+        ):
+            raise ValueError(
+                f"exact implementation {profile.key!r} requires a documented "
+                f"compatible model prefix from {list(allowed_model_prefixes)!r}; "
+                f"--model={selected_model!r} is outside that boundary"
+            )
+
+    binding = _EXACT_RUNTIME_PIN_BINDINGS.get(args.provider)
+    if binding is not None:
+        argument_name, source_field, label = binding
+        if not hasattr(args, argument_name):
+            raise ValueError(
+                f"exact implementation {profile.key!r} requires runtime pin "
+                f"argument {argument_name!r}"
+            )
+        selected_pin = getattr(args, argument_name)
+        source_pins = {
+            getattr(source, source_field)
+            for source in profile.sources
+            if getattr(source, source_field)
+        }
+        if len(source_pins) != 1:
+            raise ValueError(
+                f"exact implementation {profile.key!r} must cite exactly one "
+                f"{label} pin; found {sorted(source_pins)!r}"
+            )
+        recorded_pin = next(iter(source_pins))
+        if selected_pin != recorded_pin:
+            option = "--" + argument_name.replace("_", "-")
+            raise ValueError(
+                f"exact implementation {profile.key!r} is pinned to {label} "
+                f"{recorded_pin!r}; {option}={selected_pin!r} would change the "
+                "cataloged runtime boundary"
+            )
+
+    if args.provider == "macu-upstream" and getattr(
+        args, "macu_allow_dirty_checkout", False
+    ):
+        raise ValueError(
+            f"exact implementation {profile.key!r} requires a clean MACU checkout; "
+            "--macu-allow-dirty-checkout is available only to unclassified legacy "
+            "configs"
+        )
 
 
 def _paths_overlap(left: Path, right: Path) -> bool:
@@ -276,7 +393,6 @@ def _build_backend(args: argparse.Namespace, config: Mapping[str, Any]) -> Any:
             api_key_env=args.api_key_env or "ANTHROPIC_API_KEY",
             base_url=args.base_url or "https://api.anthropic.com/v1",
             beta_version=args.managed_beta_version,
-            memory_beta_version=args.managed_memory_beta_version,
             timeout_seconds=args.managed_timeout_seconds,
             poll_interval_seconds=args.managed_poll_interval_seconds,
             budget_cents=args.managed_budget_cents,
@@ -289,6 +405,13 @@ def _build_backend(args: argparse.Namespace, config: Mapping[str, Any]) -> Any:
             raise ValueError(
                 "--prime-agent-cwd is required; use an explicit disposable worktree"
             )
+        if args.prime_agent_expected_version != "0.7.1":
+            raise ValueError("the audited Prime Agent adapter requires version 0.7.1")
+        if args.prime_agent_persist_session:
+            raise ValueError(
+                "--prime-agent-persist-session is unsupported: the exact adapter "
+                "uses a fresh HOME and XDG_CONFIG_HOME for every backend call"
+            )
         if _paths_overlap(args.prime_agent_cwd, args.output):
             raise ValueError(
                 "--output and --prime-agent-cwd must be disjoint directories"
@@ -298,7 +421,7 @@ def _build_backend(args: argparse.Namespace, config: Mapping[str, Any]) -> Any:
             executable=args.prime_agent_executable,
             provider=args.prime_agent_provider,
             model=args.model,
-            no_session=not args.prime_agent_persist_session,
+            no_session=True,
             pass_env=args.prime_agent_pass_env,
             expected_version=args.prime_agent_expected_version,
             expected_executable_sha256=args.prime_agent_executable_sha256,
@@ -567,8 +690,9 @@ def _validate_compatibility(
             )
     if provider == "rlm-upstream":
         warnings.append(
-            "RLM upstream defaults to its Docker REPL; non-Docker environments need "
-            "an independently enforced outer sandbox"
+            "Scaffold Lab defaults the RLM adapter to the upstream Docker REPL "
+            "(the library default is local); non-Docker environments need an "
+            "independently enforced outer sandbox"
         )
         warnings.append(
             "rlms v0.1.3 root UsageSummary omits recursive child handlers, so calls, "
@@ -627,6 +751,7 @@ async def _run(args: argparse.Namespace) -> int:
     config, application, application_warnings = resolve_application_config(
         _load_config(args.config), provider=args.provider
     )
+    _enforce_exact_application_identity(args, application)
     tasks = load_tasks(args.tasks)
     harnesses = _build_harnesses(config)
     limits = _build_limits(config)
@@ -778,6 +903,33 @@ def build_parser() -> argparse.ArgumentParser:
         )
     )
 
+    studies_parser = subparsers.add_parser("list-studies")
+    studies_parser.add_argument("--application", choices=catalog_applications())
+    studies_parser.add_argument("--json", action="store_true")
+    studies_parser.set_defaults(
+        handler=lambda args: _list_studies(
+            application=args.application, json_output=args.json
+        )
+    )
+
+    gaps_parser = subparsers.add_parser("list-gaps")
+    gaps_parser.add_argument("--application", choices=catalog_applications())
+    gaps_parser.add_argument("--json", action="store_true")
+    gaps_parser.set_defaults(
+        handler=lambda args: _list_gaps(
+            application=args.application, json_output=args.json
+        )
+    )
+
+    profiles_parser = subparsers.add_parser("list-profiles")
+    profiles_parser.add_argument("--application", choices=catalog_applications())
+    profiles_parser.add_argument("--json", action="store_true")
+    profiles_parser.set_defaults(
+        handler=lambda args: _list_profiles(
+            application=args.application, json_output=args.json
+        )
+    )
+
     validate_parser = subparsers.add_parser("validate")
     _add_common_arguments(validate_parser)
     validate_parser.set_defaults(handler=_validate)
@@ -800,9 +952,6 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--managed-environment-id")
     run_parser.add_argument(
         "--managed-beta-version", default="managed-agents-2026-04-01"
-    )
-    run_parser.add_argument(
-        "--managed-memory-beta-version", default="agent-memory-2026-07-22"
     )
     run_parser.add_argument("--managed-budget-cents", type=int)
     run_parser.add_argument(
@@ -831,8 +980,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         metavar="NAME",
     )
-    run_parser.add_argument("--prime-agent-persist-session", action="store_true")
-    run_parser.add_argument("--prime-agent-expected-version")
+    run_parser.add_argument(
+        "--prime-agent-persist-session",
+        action="store_true",
+        help=(
+            "unsupported compatibility flag; the adapter rejects cross-call session "
+            "persistence because each call receives fresh state"
+        ),
+    )
+    run_parser.add_argument("--prime-agent-expected-version", default="0.7.1")
     run_parser.add_argument("--prime-agent-executable-sha256")
     run_parser.add_argument(
         "--prime-agent-max-output-bytes", type=int, default=16 * 1024 * 1024
@@ -854,7 +1010,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_parser.add_argument("--grok-allow", action="append", default=[], metavar="RULE")
     run_parser.add_argument("--grok-deny", action="append", default=[], metavar="RULE")
-    run_parser.add_argument("--grok-expected-version")
+    run_parser.add_argument("--grok-expected-version", default="1.0.0")
     run_parser.add_argument("--grok-executable-sha256")
     run_parser.add_argument(
         "--grok-max-output-bytes", type=int, default=16 * 1024 * 1024
@@ -996,17 +1152,11 @@ def _list_applications(*, json_output: bool = False) -> int:
             {
                 "name": name,
                 "implementation_count": len(catalog_implementations(name)),
-                "runnable_count": sum(
-                    profile.status == "runnable"
-                    for profile in catalog_implementations(name)
-                ),
+                "study_count": len(catalog_studies(name)),
+                "gap_count": len(catalog_gaps(name)),
+                "profile_count": len(catalog_profiles(name)),
                 "simulation_count": sum(
-                    profile.status == "simulation"
-                    for profile in catalog_implementations(name)
-                ),
-                "catalog_only_count": sum(
-                    profile.status == "catalog_only"
-                    for profile in catalog_implementations(name)
+                    profile.status == "simulation" for profile in catalog_studies(name)
                 ),
             }
             for name in applications
@@ -1021,18 +1171,35 @@ def _list_applications(*, json_output: bool = False) -> int:
 def _list_implementations(
     *, application: str | None = None, json_output: bool = False
 ) -> int:
-    implementations = catalog_implementations(application)
+    return _print_profiles(
+        catalog_implementations(application), json_output=json_output
+    )
+
+
+def _list_studies(*, application: str | None = None, json_output: bool = False) -> int:
+    return _print_profiles(catalog_studies(application), json_output=json_output)
+
+
+def _list_gaps(*, application: str | None = None, json_output: bool = False) -> int:
+    return _print_profiles(catalog_gaps(application), json_output=json_output)
+
+
+def _list_profiles(*, application: str | None = None, json_output: bool = False) -> int:
+    return _print_profiles(catalog_profiles(application), json_output=json_output)
+
+
+def _print_profiles(profiles: Sequence[Any], *, json_output: bool) -> int:
     if json_output:
         print(
             json.dumps(
-                [implementation.as_dict() for implementation in implementations],
+                [profile.as_dict() for profile in profiles],
                 indent=2,
                 sort_keys=True,
             )
         )
     else:
-        for implementation in implementations:
-            print(implementation.key)
+        for profile in profiles:
+            print(profile.key)
     return 0
 
 

@@ -87,7 +87,7 @@ PROFILES: tuple[ImplementationProfile, ...] = (
         ),
         providers=("xai-responses",),
         environment_types=("none",),
-        model_families=("grok-4.20-multi-agent",),
+        model_families=("grok-4.20-multi-agent-0309",),
         exact_components=(
             "low-effort four-agent request boundary",
             "hosted web_search tool declaration and aggregate usage",
@@ -107,7 +107,7 @@ PROFILES: tuple[ImplementationProfile, ...] = (
         ),
         providers=("xai-responses",),
         environment_types=("none",),
-        model_families=("grok-4.20-multi-agent",),
+        model_families=("grok-4.20-multi-agent-0309",),
         exact_components=(
             "high-effort sixteen-agent request boundary",
             "hosted web_search tool declaration and aggregate usage",
@@ -185,6 +185,7 @@ PROFILES: tuple[ImplementationProfile, ...] = (
             "released result and cost artifact ingestion",
         ),
         unavailable_components=(
+            "benchmark parity for Online-Mind2Web, WebTailBench, Odysseys, or OSWorld; the adapter supplies a generic blank-start task",
             "bit identity unless checkout, dependencies, VM image, and model snapshots are pinned; released summary omits initial graph-generation usage",
         ),
         sources=(MACU, MACU_PAPER),
@@ -202,10 +203,11 @@ PROFILES: tuple[ImplementationProfile, ...] = (
         model_families=("model pinned on the Managed Agent version",),
         exact_components=(
             "managed session/event/aggregate-usage boundary",
-            "one delegation level and shared remote environment contract",
+            "resolved pinned coordinator snapshot, non-empty roster, and snapshot digest",
         ),
         unavailable_components=(
-            "hosted scheduler, child event streams, and remote agent definition",
+            "hosted scheduler, child event streams, and mutable remote environment definition",
+            "application-specific remote tools and permissions are caller-provisioned rather than a checked-in web-research manifest",
         ),
         sources=(ANTHROPIC_MANAGED,),
     ),
@@ -213,17 +215,17 @@ PROFILES: tuple[ImplementationProfile, ...] = (
         profile(
             application="browser",
             profile_id=f"anthropic-fable5-team-{team_size}",
-            title=f"Fable/Mythos 5 fixed {team_size}-agent team simulation",
+            title=f"Mythos 5 fixed {team_size}-agent team simulation",
             fidelity="topology_simulation",
             status="simulation",
             runtime_owner="scaffoldlab_local",
             harnesses=(_h("fixed_agent_team", team_size=team_size),),
             providers=_LOCAL_PROVIDERS,
             environment_types=("browser",),
-            model_families=("Claude Fable 5", "Claude Mythos 5"),
+            model_families=("Claude Mythos 5",),
             exact_components=("published team size, lead role, peer messaging shape",),
             unavailable_components=(
-                "exact prompts, timing, compaction, tool schemas, and checkout behavior",
+                "public 1M total-token limit per agent is not enforced; exact prompts, timing, compaction behavior, tool schemas, and checkout behavior are unavailable",
             ),
             sources=(ANTHROPIC_FABLE,),
         )
@@ -232,24 +234,24 @@ PROFILES: tuple[ImplementationProfile, ...] = (
     profile(
         application="browser",
         profile_id="anthropic-fable5-blocking",
-        title="Fable/Mythos 5 blocking orchestrator simulation",
+        title="Mythos 5 blocking orchestrator simulation",
         fidelity="topology_simulation",
         status="simulation",
         runtime_owner="scaffoldlab_local",
         harnesses=(_h("blocking_orchestrator", max_workers=4),),
         providers=_LOCAL_PROVIDERS,
         environment_types=("browser",),
-        model_families=("Claude Fable 5", "Claude Mythos 5"),
+        model_families=("Claude Mythos 5",),
         exact_components=("fresh workers and round barrier",),
         unavailable_components=(
-            "card does not prescribe four workers; exact prompts and compaction are hidden",
+            "four workers is local; public 200K worker context and 100K manager compaction are not enforced, and exact prompts are unavailable",
         ),
         sources=(ANTHROPIC_FABLE,),
     ),
     profile(
         application="browser",
         profile_id="anthropic-fable5-async-browsecomp",
-        title="Fable/Mythos 5 async BrowseComp topology simulation",
+        title="Mythos 5 async BrowseComp topology simulation",
         fidelity="topology_simulation",
         status="simulation",
         runtime_owner="scaffoldlab_local",
@@ -262,7 +264,7 @@ PROFILES: tuple[ImplementationProfile, ...] = (
         ),
         providers=_LOCAL_PROVIDERS,
         environment_types=("browser",),
-        model_families=("Claude Fable 5", "Claude Mythos 5"),
+        model_families=("Claude Mythos 5",),
         exact_components=("published asynchronous lead/worker topology",),
         unavailable_components=(
             "the card discloses no BrowseComp spawn cap; four/twenty are local controls; exact prompts, message timing, tools, and compaction are unavailable",
@@ -283,7 +285,7 @@ PROFILES: tuple[ImplementationProfile, ...] = (
             model_families=("Claude Opus 5",),
             exact_components=("published team size and peer topology",),
             unavailable_components=(
-                "unreleased effort configuration, prompts, tools, timing, and worktrees",
+                "public 1M total-token limit per agent is not enforced; unreleased effort configuration, prompts, tools, timing, and worktrees are unavailable",
             ),
             sources=(ANTHROPIC_OPUS5,),
         )
@@ -308,7 +310,7 @@ PROFILES: tuple[ImplementationProfile, ...] = (
         model_families=("Claude Opus 5",),
         exact_components=("published asynchronous lead/worker topology",),
         unavailable_components=(
-            "worker caps are local controls; exact prompts, tools, timing, and worktrees",
+            "worker caps are local despite no disclosed async cap, and the public 1M total-token limit per agent is not enforced; exact prompts, tools, timing, and worktrees are unavailable",
         ),
         sources=(ANTHROPIC_OPUS5,),
     ),

@@ -1,18 +1,18 @@
 {
   "application": {
-    "name": "browser",
-    "implementation": "macu-text-dag"
+    "name": "computer-use",
+    "study": "macu-text-dag"
   },
   "environment": {
-    "type": "browser",
-    "protocol": "generic",
+    "type": "computer",
+    "protocol": "auto",
     "isolation": "per_agent",
     "allowed_hosts": ["example.com"],
     "start_url": "https://example.com",
     "headless": true,
     "viewport_width": 1440,
     "viewport_height": 900,
-    "max_tool_output_bytes": 262144
+    "max_tool_output_bytes": 524288
   },
   "limits": {
     "max_model_calls": 128,
@@ -30,6 +30,7 @@
   "random_seed": 20260810,
   "metadata": {
     "fidelity": "source_matched_reimplementation",
-    "boundary": "Local mutable text DAG and asynchronous ready frontier only; released MACU prompts, CUA subprocesses, VM cloning, file handoffs, and evaluator are unavailable."
+    "boundary": "Local mutable DAG, ready-frontier parallelism, and continuous replanning only; released prompts, VM cloning, CUA subprocesses, file transfer, and evaluator are unavailable.",
+    "environment_surface": "Playwright browser viewport, not the upstream OSWorld VM stack."
   }
 }

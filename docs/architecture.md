@@ -2,9 +2,10 @@
 
 Scaffold Lab is application-first. The stable top-level registry contains exactly
 `browser`, `computer-use`, and `swe`. An application profile binds a cited source,
-fidelity/status label, harness signature, compatible provider, and environment type;
-the registry rejects catalog-only profiles and any provider, environment, or harness
-that does not match the selected profile.
+fidelity/status label, harness signature, compatible provider, and environment type.
+Profiles are partitioned into `implementations/`, `studies/`, and source-backed
+`gaps`. The registry rejects category drift, catalog-only execution, and any provider,
+environment, or harness that does not match the selected profile.
 
 The runtime still keeps the experimental objects separate because changing any one
 of them changes the experiment:
@@ -13,7 +14,7 @@ of them changes the experiment:
 Application (browser | computer-use | swe)
           |
           v
-Implementation profile + source/fidelity claim
+Implementation or study profile + source/fidelity claim
           |
           v
 Task + frozen evaluator
@@ -42,10 +43,16 @@ The canonical config selector is:
 }
 ```
 
+A non-exact comparison replaces `implementation` with `study`. An item is exposed as
+an implementation only when its fidelity is `exact_public_protocol` or
+`upstream_runtime_adapter`; this is enforced in the data model and CLI rather than
+left to documentation convention.
+
 When `harnesses` is omitted, the profile supplies its declared signature. An
-explicit harness list must match exactly. `list-applications` and
-`list-implementations --application <name>` expose the registry; a profile marked
-`catalog_only` documents a source or gap but cannot be run.
+explicit harness list must match exactly. `list-implementations` exposes only exact
+published boundaries and pinned upstream runtimes. `list-studies`, `list-gaps`, and
+`list-profiles` expose the remaining tiers. A profile marked `catalog_only` documents
+a source or gap but cannot be run.
 
 - A **harness** decides who works, what each agent sees, when work runs, how agents
   communicate, and who selects or synthesizes the answer.
@@ -61,13 +68,23 @@ Profiles use seven deliberately narrow fidelity labels:
 
 | Label | Meaning |
 | --- | --- |
-| `exact_public_protocol` | The documented public request/action/response boundary is implemented at the named scope; it does not expose a closed scheduler or model training. |
-| `upstream_runtime_adapter` | A clean, pinned released runtime owns its scheduler; Scaffold Lab wraps its non-interactive boundary and records only observable accounting. |
+| `exact_public_protocol` | The documented API request/action/response or released CLI stream boundary is implemented at the named scope; scheduler/runtime internals and executable identity are included only when verified. |
+| `upstream_runtime_adapter` | A clean source checkout at the cataloged revision owns its scheduler; Scaffold Lab wraps its non-interactive boundary and records only observable accounting. |
 | `source_matched_reimplementation` | Public mechanics are reimplemented, with named missing runtime details. |
 | `topology_simulation` | Only disclosed roles, limits, or communication shape are approximated. |
 | `inference_only_reimplementation` | An inference control is implemented without the named training procedure or checkpoint. |
 | `controlled_baseline` | A deliberately simple experimental control with no named-system parity claim. |
 | `documented_gap` | A source, training method, or evaluation target is cataloged but not runnable as that artifact. |
+
+The first two labels are the only implementation labels. The middle four are studies,
+even when runnable. `documented_gap` is catalog-only. Exact public protocols reproduce
+only the named public boundary; upstream adapters reproduce the released runtime only
+under the recorded source revision and caller-supplied dependency/model/environment
+pins. For an exact application selection, the applicable public identity is
+authoritative: CLI versions, source revisions, beta versions, and documented
+computer-model families must match it. Exact MACU
+profiles also require a clean checkout; its dirty-checkout escape hatch remains
+available only to legacy configs that make no catalog claim.
 
 This separation prevents a Playwright browser from being called BrowserGym, a
 SWE-bench Docker evaluator from being called an inference harness, or a provider's
@@ -154,9 +171,13 @@ A `budget_reached` stop is recorded as an incomplete/error trial; the adapter do
 raise the provider cap or resume the session automatically.
 
 xAI's hosted team, Prime Agent, and Grok Build are also outer boundaries. One
-Scaffold Lab model call can represent many internal calls. Prime/Grok usage is
-conservatively labeled incomplete where their public output does not establish full
-tree attribution. The released CLIs retain their own orchestration policy.
+Scaffold Lab model call can represent many internal calls. Prime/Grok are exact only
+at their version-checked public CLI protocols; installed executable/package and
+scheduler identity require an optional digest and remain outside the default claim.
+Their usage is conservatively incomplete where public output does not establish full
+tree attribution. Prime Agent runs JSON v3 in fresh `--no-session` state, so its
+daemon, schedule, and continual cross-invocation lifecycle is also outside the
+implemented boundary.
 
 The pinned MACU adapter verifies a clean checkout at commit
 `5b1b8f91dfc5dc66a2f06af4b443b3009a9cd105`, keeps checkout, OSWorld, and result
@@ -173,10 +194,15 @@ selects the `rlm_upstream` adapter, which verifies the official `rlms` v0.1.3 re
 commit
 `72d6940142ddfb84ee6be573dc999a37e633e671`, invokes its selected Python runtime over
 bounded JSON stdin, and defaults to the upstream Docker environment. It injects no
-Scaffold Lab domain tools and makes no SWE parity claim. In v0.1.3, recursive child
-RLMs have separate `LMHandler` summaries that are not merged into the root
+Scaffold Lab domain tools and makes no SWE parity claim. Docker plus a 1,500-second
+RLM timeout are adapter defaults; upstream library defaults are local plus no timeout.
+At `max_depth=1`, `rlm_query` falls back to a direct subcall, and recursive child RLMs
+begin only at depth two. In v0.1.3, those child RLMs have separate `LMHandler`
+summaries that are not merged into the root
 `UsageSummary`; reported calls, tokens, and optional cost are consequently lower
-bounds with incomplete/unknown accounting.
+bounds with incomplete/unknown accounting. The bridge covers string context and
+selected backend/environment/limit settings, not structured context, custom tools,
+compaction, persistence, alternate backends, or sampling/orchestrator configuration.
 
 External CLI adapters run only in a caller-provisioned single-trial workspace.
 Scaffold Lab records resolved executable identity, version, Git state, and pre/post
@@ -217,7 +243,7 @@ contain credentials, screenshots, proprietary code, or personal data.
   scheduler and prompts, but exact experiment parity still requires pinned
   dependencies, model snapshots, task assets, and OSWorld VM image; its released
   usage summary omits initial graph generation.
-- Fable/Mythos and Opus system-card variants remain topology simulations until exact
+- Mythos 5 and Opus 5 system-card variants remain topology simulations until exact
   prompts, message injection timing, context limits, compaction, and Git worktrees
   are reproduced.
 - The local Platoon-style candidate is recursive inference only. RAO's trained policy

@@ -1,7 +1,7 @@
 {
   "application": {
     "name": "browser",
-    "implementation": "anthropic-fable5-team-3"
+    "study": "macu-text-dag"
   },
   "environment": {
     "type": "browser",
@@ -16,22 +16,20 @@
   },
   "limits": {
     "max_model_calls": 128,
-    "max_concurrency": 3,
-    "max_input_tokens": 1000000,
-    "max_output_tokens": 250000,
-    "max_cost_usd": 10.0,
+    "max_concurrency": 4,
+    "max_cost_usd": 8.0,
     "wall_time_seconds": 1200,
     "max_depth": 2,
-    "max_tool_calls": 256,
-    "max_tool_output_bytes": 8388608,
-    "max_agent_turns": 48
+    "max_tool_calls": 384,
+    "max_tool_output_bytes": 16777216,
+    "max_agent_turns": 64
   },
   "matrix_max_cost_usd": 40.0,
   "capture_content": false,
   "repeats": 1,
   "random_seed": 20260810,
   "metadata": {
-    "fidelity": "topology_simulation",
-    "boundary": "Simulates only the disclosed Fable/Mythos three-agent lead-and-peer topology; exact prompts, timing, compaction, tool schemas, and checkout behavior are unavailable."
+    "fidelity": "source_matched_reimplementation",
+    "boundary": "Local mutable text DAG and asynchronous ready frontier only; released MACU prompts, CUA subprocesses, VM cloning, file handoffs, and evaluator are unavailable."
   }
 }

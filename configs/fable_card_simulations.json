@@ -24,9 +24,9 @@
   "random_seed": 20260809,
   "metadata": {
     "fidelity": "topology_simulation_only",
-    "source_profile": "Fable/Mythos ProgramBench async limits; blocking max_workers=4 is a local control choice",
+    "source_profile": "Mythos 5 ProgramBench async limits; the legacy filename is retained for compatibility and blocking max_workers=4 is a local control choice",
     "programbench_async_limits": "4 concurrent, 20 total",
     "browsecomp_async_spawn_cap_disclosed": false,
-    "local_limits_note": "Shared per-trial Scaffold Lab limits do not reproduce Fable per-agent 200K context or manager compaction at 100K"
+    "local_limits_note": "Shared per-trial Scaffold Lab limits do not reproduce Mythos blocking workers' 200K context, manager compaction at 100K, or the fixed/async per-agent 1M-token limits"
   }
 }

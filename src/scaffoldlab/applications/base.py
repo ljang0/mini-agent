@@ -6,6 +6,18 @@ from typing import Any, Mapping, Sequence
 
 APPLICATION_NAMES = ("browser", "computer-use", "swe")
 
+EXACT_IMPLEMENTATION_FIDELITIES = frozenset(
+    {"exact_public_protocol", "upstream_runtime_adapter"}
+)
+STUDY_FIDELITIES = frozenset(
+    {
+        "source_matched_reimplementation",
+        "topology_simulation",
+        "inference_only_reimplementation",
+        "controlled_baseline",
+    }
+)
+
 
 def _freeze(value: Any) -> Any:
     if isinstance(value, Mapping):
@@ -85,6 +97,7 @@ class ImplementationProfile:
         if self.artifact_kind not in {
             "inference_harness",
             "provider_protocol",
+            "runtime_protocol",
             "evaluation_environment",
             "training_method",
         }:
@@ -121,9 +134,11 @@ class ImplementationProfile:
                 "runnable and simulation profiles require providers and environments"
             )
         if self.fidelity == "upstream_runtime_adapter" and not any(
-            source.revision or source.version for source in self.sources
+            source.revision for source in self.sources
         ):
-            raise ValueError("upstream runtime adapters require a pinned version")
+            raise ValueError(
+                "upstream runtime adapters require a pinned source revision"
+            )
         if self.fidelity in {"topology_simulation", "documented_gap"} and not (
             self.unavailable_components
         ):
@@ -134,10 +149,58 @@ class ImplementationProfile:
             raise ValueError(
                 "catalog-only profiles cannot declare harnesses, providers, or environments"
             )
+        if (
+            self.fidelity in EXACT_IMPLEMENTATION_FIDELITIES
+            and self.status != "runnable"
+        ):
+            raise ValueError("exact implementations must be runnable")
+        if self.fidelity in STUDY_FIDELITIES and self.status == "catalog_only":
+            raise ValueError("studies cannot be catalog-only")
+        if self.fidelity == "documented_gap" and self.status != "catalog_only":
+            raise ValueError("documented gaps must be catalog-only")
+        if self.fidelity == "exact_public_protocol" and self.artifact_kind not in {
+            "provider_protocol",
+            "runtime_protocol",
+        }:
+            raise ValueError(
+                "exact public protocols must declare artifact_kind as "
+                "'provider_protocol' or 'runtime_protocol'"
+            )
+        if (
+            self.fidelity in EXACT_IMPLEMENTATION_FIDELITIES
+            and self.runtime_owner == "scaffoldlab_local"
+        ):
+            raise ValueError("exact implementations cannot be locally reconstructed")
 
     @property
     def key(self) -> str:
         return f"{self.application}/{self.profile_id}"
+
+    @property
+    def catalog_kind(self) -> str:
+        """Return the claim-bearing catalog tier for this profile.
+
+        ``implementation`` is deliberately narrow: it means either the exact public
+        protocol boundary or an adapter that executes a pinned upstream runtime.
+        Clean-room subsets, topology reconstructions, and baselines are studies;
+        non-runnable disclosures are gaps.
+        """
+
+        if self.fidelity in EXACT_IMPLEMENTATION_FIDELITIES:
+            return "implementation"
+        if self.fidelity in STUDY_FIDELITIES:
+            return "study"
+        return "gap"
+
+    @property
+    def exactness_scope(self) -> str | None:
+        if self.fidelity == "exact_public_protocol":
+            if self.artifact_kind == "runtime_protocol":
+                return "published_runtime_protocol_boundary"
+            return "published_protocol_boundary"
+        if self.fidelity == "upstream_runtime_adapter":
+            return "pinned_upstream_runtime"
+        return None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -146,7 +209,9 @@ class ImplementationProfile:
             "key": self.key,
             "title": self.title,
             "artifact_kind": self.artifact_kind,
+            "catalog_kind": self.catalog_kind,
             "fidelity": self.fidelity,
+            "exactness_scope": self.exactness_scope,
             "status": self.status,
             "runtime_owner": self.runtime_owner,
             "harnesses": [signature.as_dict() for signature in self.harnesses],
@@ -162,12 +227,31 @@ class ImplementationProfile:
 @dataclass(frozen=True)
 class ApplicationSelection:
     name: str
-    implementation: ImplementationProfile
+    profile: ImplementationProfile
+
+    @property
+    def selection_kind(self) -> str:
+        return self.profile.catalog_kind
+
+    @property
+    def implementation(self) -> ImplementationProfile:
+        """Return the exact implementation selected by this application config.
+
+        The compatibility name is retained for callers written before the catalog
+        split, but it must not let a study masquerade as an implementation.
+        """
+
+        if self.selection_kind != "implementation":
+            raise ValueError(
+                f"selected profile {self.profile.key!r} is a "
+                f"{self.selection_kind}, not an implementation"
+            )
+        return self.profile
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
-            "implementation": self.implementation.as_dict(),
+            self.selection_kind: self.profile.as_dict(),
         }
 
 

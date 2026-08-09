@@ -27,7 +27,7 @@ PROFILES: tuple[ImplementationProfile, ...] = (
         harnesses=(_h("single"),),
         providers=("openai-responses",),
         environment_types=("computer",),
-        model_families=("GPT-5.4 computer-use family", "compatible later models"),
+        model_families=("GPT-5.4", "GPT-5.6"),
         exact_components=(
             "ordered computer_call.actions execution",
             "one original-detail screenshot and computer_call_output continuation",
@@ -60,7 +60,7 @@ PROFILES: tuple[ImplementationProfile, ...] = (
     profile(
         application="computer-use",
         profile_id="anthropic-computer-20251124-single",
-        title="Anthropic computer_20251124 protocol, single agent",
+        title="Anthropic computer_20251124 wire schema with local browser executor",
         artifact_kind="provider_protocol",
         fidelity="exact_public_protocol",
         runtime_owner="scaffoldlab_client",
@@ -70,14 +70,16 @@ PROFILES: tuple[ImplementationProfile, ...] = (
         model_families=(
             "Claude Opus 5",
             "Claude Sonnet 5",
-            "documented Claude 4.x allowlist",
+            "Claude Opus 4.8/4.7/4.6/4.5",
+            "Claude Sonnet 4.6",
         ),
         exact_components=(
             "computer-use-2025-11-24 beta header and tool schema",
-            "assistant tool_use followed by user tool_result with screenshot",
-            "documented 20251124 action vocabulary with zoom disabled",
+            "assistant tool_use followed by user tool_result request ordering",
+            "published 20251124 action vocabulary with zoom disabled",
         ),
         unavailable_components=(
+            "Anthropic reference Linux X11/VNC executor, action timing, and screenshot implementation; actions run in a local Playwright browser viewport",
             "injected computer prompt, classifier, model training, and product runtime",
         ),
         sources=(ANTHROPIC_COMPUTER,),
@@ -122,8 +124,8 @@ PROFILES: tuple[ImplementationProfile, ...] = (
     ),
     profile(
         application="computer-use",
-        profile_id="macu-upstream-osworld1",
-        title="Pinned released MACU runtime on its OSWorld 1.x stack",
+        profile_id="macu-upstream-generic-vm",
+        title="Pinned released MACU generic-task VM runtime",
         fidelity="upstream_runtime_adapter",
         runtime_owner="macu_upstream",
         harnesses=(_h("macu_upstream"),),
@@ -133,9 +135,31 @@ PROFILES: tuple[ImplementationProfile, ...] = (
         exact_components=(
             "released prompts, graph validation retries, async scheduler and replanning",
             "VM variants/init_from, CUA subprocesses, final selection and result ingestion",
+            "released generic no-initial-setup task-file path",
         ),
         unavailable_components=(
-            "bit identity unless dependencies, VM image, tasks, and model snapshots are pinned; released summary omits initial graph-generation usage",
+            "OSWorld benchmark domain/UUID loading, canonical task setup, and evaluator are not entered by this adapter",
+            "bit identity unless dependencies, VM image, and model snapshots are pinned; released summary omits initial graph-generation usage",
+        ),
+        sources=(MACU, MACU_PAPER),
+    ),
+    profile(
+        application="computer-use",
+        profile_id="macu-osworld1-benchmark-parity",
+        title="MACU OSWorld 1.x benchmark parity",
+        artifact_kind="evaluation_environment",
+        fidelity="documented_gap",
+        status="catalog_only",
+        runtime_owner="macu_osworld_upstream",
+        providers=(),
+        environment_types=(),
+        model_families=("MACU-supported manager and CUA models",),
+        exact_components=(
+            "released domain/UUID task map, canonical OSWorld loader/setup, and evaluator integration",
+        ),
+        unavailable_components=(
+            "the current adapter materializes a generic no-initial-setup list task rather than a domain/UUID task map",
+            "OSWorld data-directory, task/evaluator assets, and VM image identity require explicit pins",
         ),
         sources=(MACU, MACU_PAPER),
     ),

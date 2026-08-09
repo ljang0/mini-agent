@@ -1,0 +1,22 @@
+{
+  "application": {
+    "name": "swe",
+    "implementation": "rlm-0.1.3-upstream"
+  },
+  "limits": {
+    "max_model_calls": 1,
+    "max_concurrency": 1,
+    "wall_time_seconds": 1800,
+    "max_depth": 1
+  },
+  "capture_content": false,
+  "repeats": 1,
+  "random_seed": 20260810,
+  "metadata": {
+    "fidelity": "upstream_runtime_adapter",
+    "version": "0.1.3",
+    "revision": "72d6940142ddfb84ee6be573dc999a37e633e671",
+    "boundary": "Runs a selected configuration of the clean pinned official RLM runtime with its prompts and REPL through bounded JSON stdin. Scaffold Lab defaults to Docker plus a 1,500-second RLM timeout, unlike the library defaults of local plus no timeout. Default max_depth=1 provides direct/batched subcalls but no recursive child RLM; configure depth 2 or greater for recursion. The adapter accepts string context and does not expose structured context, custom tools, compaction, persistence, alternate backends, or sampling/orchestrator options. It injects no Scaffold Lab domain tools and makes no SWE patch-parity claim.",
+    "accounting": "The v0.1.3 root UsageSummary does not merge recursive child handlers, so calls, tokens, and optional cost are retained only as lower bounds."
+  }
+}

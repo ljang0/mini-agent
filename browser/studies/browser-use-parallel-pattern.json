@@ -1,7 +1,7 @@
 {
   "application": {
     "name": "browser",
-    "implementation": "browser-use-parallel-pattern"
+    "study": "browser-use-parallel-pattern"
   },
   "environment": {
     "type": "browser",

@@ -1217,6 +1217,11 @@ class PrimeAgentJSONBackend:
                 raise ValueError(f"{name} must be a non-empty string or null")
         if not isinstance(no_session, bool):
             raise ValueError("no_session must be a boolean")
+        if not no_session:
+            raise ValueError(
+                "persistent Prime Agent sessions are unsupported: Scaffold Lab "
+                "creates a fresh HOME and XDG_CONFIG_HOME for every backend call"
+            )
         if (
             not isinstance(timeout_seconds, (int, float))
             or isinstance(timeout_seconds, bool)
@@ -1292,6 +1297,9 @@ class PrimeAgentJSONBackend:
             "prime_provider": self.provider,
             "model": self.model,
             "no_session": self.no_session,
+            "json_stream_schema_version": 3,
+            "json_stream_requires_terminal_agent_end": True,
+            "session_scope": "single-backend-call",
             "timeout_seconds": self.timeout_seconds,
             "passed_environment_names": sorted(self.pass_env),
             "sensitive_environment_acknowledged": self.allow_sensitive_environment,
@@ -1314,6 +1322,10 @@ class PrimeAgentJSONBackend:
             "audited_release": {
                 "version": "0.7.1",
                 "repository_commit": ("95afd319a78ae017a41241d50b013d656a0685ce"),
+                "release_asset": "prime-agent-0.7.1.tgz",
+                "release_asset_sha256": (
+                    "d68612c83239caafab72cc76c55ac572bfd07a059ea8fbd2a3ddbe1f2b55dcdb"
+                ),
             },
         }
 
@@ -1403,6 +1415,12 @@ class PrimeAgentJSONBackend:
         return combined
 
     async def complete(self, request: ModelRequest) -> ModelResponse:
+        if request.system:
+            raise ProviderError(
+                "Prime Agent JSON mode has no request-level system-message field; "
+                "configure the pinned runtime through its documented project system "
+                "prompt files instead"
+            )
         if self.expected_version is not None and self._observed_version_output is None:
             await self.verify_version()
         try:
@@ -1444,8 +1462,6 @@ class PrimeAgentJSONBackend:
         if self.no_session:
             command.append("--no-session")
         prompt = request.prompt
-        if request.system:
-            prompt = f"{request.system}\n\n{prompt}"
         try:
             process = await asyncio.create_subprocess_exec(
                 *command,
@@ -1543,8 +1559,41 @@ class PrimeAgentJSONBackend:
                         "stderr": stderr.decode("utf-8", errors="replace"),
                     },
                 ) from exc
-            if isinstance(event, dict):
-                events.append(event)
+            if not isinstance(event, dict):
+                raise ProviderError(
+                    "Prime Agent emitted a non-object JSON event",
+                    usage=usage_lower_bound,
+                    raw={
+                        "stdout": stdout.decode("utf-8", errors="replace"),
+                        "stderr": stderr.decode("utf-8", errors="replace"),
+                    },
+                )
+            events.append(event)
+        if not events:
+            raise ProviderError(
+                "Prime Agent JSON stream was empty",
+                usage=usage_lower_bound,
+                raw={"stderr": stderr.decode("utf-8", errors="replace")},
+            )
+        first_event = events[0]
+        schema_version = first_event.get("version")
+        if (
+            first_event.get("type") != "session"
+            or not isinstance(schema_version, int)
+            or isinstance(schema_version, bool)
+            or schema_version != 3
+        ):
+            raise ProviderError(
+                "Prime Agent JSON stream must start with a version 3 session event",
+                usage=usage_lower_bound,
+                raw=events,
+            )
+        if events[-1].get("type") != "agent_end":
+            raise ProviderError(
+                "Prime Agent JSON stream must terminate with an agent_end event",
+                usage=usage_lower_bound,
+                raw=events,
+            )
         events.append(
             {
                 "type": "scaffoldlab_workspace",
@@ -2231,9 +2280,10 @@ def _rlm_marker_result(data: bytes) -> Mapping[str, Any]:
 class RLMUpstreamBackend:
     """Run the exact pinned ``rlms`` library in a bounded external process.
 
-    The checkout must be a clean Git tree at the requested revision. The default
-    upstream REPL is Docker; selecting a non-isolated upstream environment does not
-    turn the process boundary into a security sandbox or add SWE tool parity.
+    The checkout must be a clean Git tree at the requested revision. Scaffold Lab
+    defaults this adapter to the upstream Docker REPL even though the library itself
+    defaults to local execution. Selecting a non-isolated upstream environment does
+    not turn the process boundary into a security sandbox or add SWE tool parity.
     """
 
     def __init__(
@@ -2410,7 +2460,12 @@ class RLMUpstreamBackend:
             "rlm_provider": self.provider,
             "model": self.model,
             "environment": self.environment,
-            "default_environment_is_docker": self.environment == "docker",
+            "adapter_default_environment": "docker",
+            "upstream_library_default_environment": "local",
+            "environment_matches_adapter_default": self.environment == "docker",
+            "adapter_default_max_timeout_seconds": 1500.0,
+            "upstream_library_default_max_timeout_seconds": None,
+            "recursive_child_rlm_enabled": self.max_depth >= 2,
             "backend_kwargs_keys": sorted(self.backend_kwargs),
             "backend_kwargs_sha256": hashlib.sha256(backend_json).hexdigest(),
             "environment_kwargs_keys": sorted(self.environment_kwargs),
@@ -2610,6 +2665,8 @@ class RLMUpstreamBackend:
             "stdout": stdout.decode("utf-8", errors="replace"),
             "stderr": stderr.decode("utf-8", errors="replace"),
             "environment": self.environment,
+            "max_depth": self.max_depth,
+            "max_timeout_seconds": self.max_timeout_seconds,
         }
         try:
             result = _rlm_marker_result(stdout)

@@ -30,7 +30,7 @@
   "random_seed": 20260810,
   "metadata": {
     "fidelity": "exact_public_protocol",
-    "boundary": "Exact at the published computer-use-2025-11-24 client protocol and action vocabulary; injected computer prompt, classifier, model training, and product runtime are unavailable.",
+    "boundary": "Exact only at the published computer-use-2025-11-24 request/tool-result schema and action vocabulary. Actions execute in Scaffold Lab's local Playwright browser viewport, not Anthropic's reference Linux X11/VNC implementation; its timing, screenshot behavior, injected prompt, classifier, model training, and product runtime are unavailable.",
     "zoom": "Disabled because enable_zoom is omitted; zoom requires a separately implemented crop-and-coordinate path.",
     "environment_surface": "Playwright browser viewport, not Anthropic's reference Linux desktop or a full VM."
   }

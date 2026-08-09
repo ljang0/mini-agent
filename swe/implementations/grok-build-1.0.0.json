@@ -13,10 +13,9 @@
   "repeats": 1,
   "random_seed": 20260810,
   "metadata": {
-    "fidelity": "upstream_runtime_adapter",
+    "fidelity": "exact_public_protocol",
     "version": "1.0.0",
-    "revision": "8a14c91d88875a831a38b3a066b1683116bcb31c",
-    "boundary": "Invokes the pinned released Grok Build headless JSON runtime with native subagents and worktree semantics; some compaction, side-model, unfinished-child usage, and npm/source bit identity remain incomplete.",
+    "boundary": "Exact at Grok Build 1.0.0's documented headless JSON CLI boundary. Installed npm/executable identity is proven only when its optional SHA pin is supplied; npm/source revisions disagree, scheduler internals are outside the boundary, and some compaction, side-model, or unfinished-child usage remains incomplete.",
     "workspace_owner": "Grok Build owns a caller-supplied disposable single-trial worktree; do not add a local environment block."
   }
 }

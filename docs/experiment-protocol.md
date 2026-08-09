@@ -3,10 +3,12 @@
 Status: draft. No release candidate has been selected.
 
 Every matrix must select one of the three top-level applications—`browser`,
-`computer-use`, or `swe`—and a registered implementation profile. The profile's
-source, fidelity/status, harness signature, provider, and environment constraints are
-part of the experimental condition. Catalog-only training methods and evaluation
-environments inform the protocol but are not runnable inference candidates.
+`computer-use`, or `swe`—and either a registered implementation or study. Only exact
+published API/CLI protocol boundaries and clean revision-pinned upstream runtimes are implementations;
+clean-room variants, simulations, and baselines are studies. The profile's source,
+fidelity/status, harness signature, provider, and environment constraints are part of
+the experimental condition. Catalog-only training methods and evaluation environments
+inform the protocol but are not runnable inference candidates.
 
 ## Questions
 
@@ -113,7 +115,7 @@ This measures whether orchestration spends a fixed budget better.
 - Report total cost and tokens without normalization.
 
 This measures the latency-quality frontier from scale-out, matching the spirit of the
-Fable system-card comparison.
+Mythos 5 multi-agent comparison in the joint Fable/Mythos system card.
 
 ## Experimental controls
 

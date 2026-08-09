@@ -9,7 +9,7 @@ from .base import Harness, require_int_at_least
 
 
 class BlockingOrchestratorHarness(Harness):
-    """One-round Fable-inspired control simulation without executable task tools."""
+    """One-round Mythos-5-card-inspired simulation with a tool-less manager."""
 
     name = "blocking_orchestrator"
 

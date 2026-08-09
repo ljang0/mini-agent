@@ -1,7 +1,7 @@
 {
   "application": {
     "name": "swe",
-    "implementation": "anthropic-fable5-team-3"
+    "study": "anthropic-opus5-team-5"
   },
   "environment": {
     "type": "swe",
@@ -18,23 +18,23 @@
     "max_patch_bytes": 1048576
   },
   "limits": {
-    "max_model_calls": 128,
-    "max_concurrency": 3,
-    "max_input_tokens": 1000000,
-    "max_output_tokens": 250000,
-    "max_cost_usd": 10.0,
-    "wall_time_seconds": 1200,
+    "max_model_calls": 192,
+    "max_concurrency": 5,
+    "max_input_tokens": 1500000,
+    "max_output_tokens": 375000,
+    "max_cost_usd": 15.0,
+    "wall_time_seconds": 1500,
     "max_depth": 2,
-    "max_tool_calls": 256,
-    "max_tool_output_bytes": 8388608,
-    "max_agent_turns": 48
+    "max_tool_calls": 320,
+    "max_tool_output_bytes": 12582912,
+    "max_agent_turns": 56
   },
-  "matrix_max_cost_usd": 40.0,
+  "matrix_max_cost_usd": 60.0,
   "capture_content": false,
   "repeats": 1,
   "random_seed": 20260810,
   "metadata": {
     "fidelity": "topology_simulation",
-    "boundary": "Simulates only the disclosed Fable/Mythos three-agent coding topology; exact prompts, next-message timing, 1M-context enforcement, compaction, and Git worktrees are unavailable."
+    "boundary": "Simulates only the disclosed Opus 5 five-agent coding topology. The public 1M total-token limit per agent is not enforced; unreleased effort, exact prompts, timing, and Git worktrees are unavailable."
   }
 }

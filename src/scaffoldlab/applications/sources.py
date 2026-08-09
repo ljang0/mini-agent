@@ -34,11 +34,14 @@ ANTHROPIC_FABLE = SourceArtifact(
         "Claude%20Fable%205%20%26%20Claude%20Mythos%205%20System%20Card.pdf"
     ),
     published="2026",
-    version="section 8.15.3",
+    version="section 8.15.3 (multi-agent evaluation uses Claude Mythos 5)",
 )
 ANTHROPIC_OPUS5 = SourceArtifact(
     title="Claude Opus 5 system card",
-    url="https://www.anthropic.com/claude-opus-5-system-card",
+    url=(
+        "https://www-cdn.anthropic.com/b514064af1408018e64b1ad24e7d5e75850b4ffd/"
+        "Claude%20Opus%205%20System%20Card.pdf"
+    ),
     published="2026",
     version="section 8.11.3",
 )
@@ -89,17 +92,27 @@ RLM = SourceArtifact(
     version="0.1.3",
     revision="72d6940142ddfb84ee6be573dc999a37e633e671",
 )
-RAO = SourceArtifact(
-    title="Recursive Agent Optimization paper and Platoon runtime",
+RAO_PAPER = SourceArtifact(
+    title="Recursive Agent Optimization paper",
+    url="https://arxiv.org/abs/2605.06639",
+    published="2026-05-07",
+    version="arXiv:2605.06639v1",
+)
+PLATOON_RAO_SNAPSHOT = SourceArtifact(
+    title="Platoon RAO paper snapshot",
     url=(
         "https://github.com/ApGa/platoon/tree/d9c5857d3a0a056ebc9b047241a2a0c9515aafbe"
     ),
-    published="2026-05",
+    published="2026-07-27",
+    version="0.1.0",
     revision="d9c5857d3a0a056ebc9b047241a2a0c9515aafbe",
 )
 PRIME_AGENT = SourceArtifact(
     title="Prime Agent released runtime",
-    url="https://github.com/PrimeIntellect-ai/prime-agent/tree/v0.7.1",
+    url=(
+        "https://github.com/PrimeIntellect-ai/prime-agent/tree/"
+        "95afd319a78ae017a41241d50b013d656a0685ce"
+    ),
     published="2026-08-07",
     version="0.7.1",
     revision="95afd319a78ae017a41241d50b013d656a0685ce",
@@ -117,8 +130,8 @@ GROK_BUILD = SourceArtifact(
 XAI_MULTI_AGENT = SourceArtifact(
     title="xAI hosted multi-agent API",
     url="https://docs.x.ai/developers/model-capabilities/text/multi-agent",
-    published="2026",
-    version="grok-4.20-multi-agent",
+    published="2026-07-02",
+    version="grok-4.20-multi-agent-0309",
 )
 META_MUSE = SourceArtifact(
     title="Meta Muse Spark 1.1 release and Model API preview",

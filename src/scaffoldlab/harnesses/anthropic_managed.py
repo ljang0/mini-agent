@@ -70,6 +70,8 @@ class AnthropicManagedAgentsHarness(Harness):
                 "thread_count_observed": len(thread_ids),
                 "underlying_model_calls_observed": underlying_model_calls,
                 "cleanup": raw.get("cleanup"),
+                "resolved_agent_sha256": raw.get("resolved_agent_sha256"),
+                "coordinator_roster_size": raw.get("coordinator_roster_size"),
             },
         )
 
@@ -91,6 +93,8 @@ class AnthropicManagedAgentsHarness(Harness):
             "environment_id": session.get("environment_id"),
             "resolved_agent_id": resolved_agent.get("id"),
             "resolved_agent_version": resolved_agent.get("version"),
+            "resolved_agent_sha256": raw.get("resolved_agent_sha256"),
+            "coordinator_roster_size": raw.get("coordinator_roster_size"),
             "event_count": len(events),
             "event_type_counts": dict(sorted(event_counts.items())),
             "thread_count_observed": len(thread_ids),

@@ -62,7 +62,11 @@ class PrimeAgentHarness(Harness):
             "underlying_model_calls_observed": False,
             "full_tree_usage_verified": False,
             "prime_json_stream_version": session.get("version"),
+            "prime_json_contract_validated": True,
+            "session_scope": "single-backend-call",
+            "cross_call_session_state_preserved": False,
             "usage_message_roles": usage_message_roles,
             "workspace": dict(workspace),
-            "fidelity": "upstream_runtime_adapter",
+            "fidelity": "exact_public_protocol",
+            "exactness_scope": "published_runtime_protocol_boundary",
         }

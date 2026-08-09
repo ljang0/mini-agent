@@ -128,7 +128,9 @@ class HostedBackendToolPayloadTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_xai_sends_documented_server_search_tools(self) -> None:
         post = AsyncMock(return_value=XAI_RESULT)
-        backend = XAIResponsesBackend(model="grok-4.20-multi-agent", api_key="test")
+        backend = XAIResponsesBackend(
+            model="grok-4.20-multi-agent-0309", api_key="test"
+        )
         request = ModelRequest(
             agent_id="/xai-hosted/leader",
             role="xai_hosted_multi_agent",
@@ -150,7 +152,9 @@ class HostedBackendToolPayloadTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_xai_still_rejects_developer_tools_before_http(self) -> None:
         post = AsyncMock(return_value=XAI_RESULT)
-        backend = XAIResponsesBackend(model="grok-4.20-multi-agent", api_key="test")
+        backend = XAIResponsesBackend(
+            model="grok-4.20-multi-agent-0309", api_key="test"
+        )
         request = ModelRequest(
             agent_id="/xai-hosted/leader",
             role="xai_hosted_multi_agent",
@@ -170,7 +174,9 @@ class HostedBackendToolPayloadTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_xai_rejects_unallowlisted_hosted_tool_before_http(self) -> None:
         post = AsyncMock(return_value=XAI_RESULT)
-        backend = XAIResponsesBackend(model="grok-4.20-multi-agent", api_key="test")
+        backend = XAIResponsesBackend(
+            model="grok-4.20-multi-agent-0309", api_key="test"
+        )
         request = ModelRequest(
             agent_id="/xai-hosted/leader",
             role="xai_hosted_multi_agent",

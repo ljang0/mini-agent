@@ -188,6 +188,11 @@ class RLMUpstreamTests(unittest.IsolatedAsyncioTestCase):
 
             provenance = backend.provenance()
             self.assertEqual(provenance["environment"], "docker")
+            self.assertEqual(provenance["adapter_default_environment"], "docker")
+            self.assertEqual(
+                provenance["upstream_library_default_environment"], "local"
+            )
+            self.assertTrue(provenance["recursive_child_rlm_enabled"])
             self.assertEqual(provenance["expected_checkout_revision"], revision)
             self.assertIn("lower bound", provenance["usage_scope"])
             self.assertNotIn("scoped-secret", json.dumps(provenance))
@@ -212,6 +217,7 @@ class RLMUpstreamTests(unittest.IsolatedAsyncioTestCase):
                         raw={
                             "underlying_model_calls": 4,
                             "environment": "docker",
+                            "max_depth": 1,
                         },
                     )
                 ]
@@ -228,6 +234,11 @@ class RLMUpstreamTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.metadata["underlying_model_calls"], 4)
         self.assertTrue(result.metadata["underlying_model_calls_are_lower_bound"])
         self.assertFalse(result.metadata["whole_tree_usage_reported_by_upstream"])
+        self.assertEqual(result.metadata["adapter_default_environment"], "docker")
+        self.assertEqual(
+            result.metadata["upstream_library_default_environment"], "local"
+        )
+        self.assertFalse(result.metadata["recursive_child_rlm_enabled"])
         self.assertFalse(result.metadata["swe_tool_parity_claimed"])
         request = backend.requests[0]
         self.assertEqual(request.prompt, "external context")

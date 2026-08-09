@@ -21,7 +21,7 @@
   "random_seed": 20260810,
   "metadata": {
     "fidelity": "exact_public_protocol",
-    "boundary": "Published Managed Agents session, primary-event-list, cleanup, and aggregate-usage boundary; hosted scheduling, child event streams, and the remote agent definition remain unavailable.",
+    "boundary": "Published Managed Agents session, primary-event-list, cleanup, and aggregate-usage boundary. The returned pinned coordinator identity, version, coordinator type, non-empty roster, and full agent-snapshot digest are validated; hosted scheduling, child streams, application-specific tool policy, and the mutable environment definition remain outside this adapter.",
     "environment_owner": "Anthropic Managed Agents owns the remote environment; do not add a local environment block."
   }
 }

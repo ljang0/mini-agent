@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+from scaffoldlab.cli import _build_backend, build_parser
 from scaffoldlab.evaluation import MatrixRunner, TrialRecord, summarize
 from scaffoldlab.external import PrimeAgentJSONBackend, _usage_from_message
 from scaffoldlab.harnesses import (
@@ -769,7 +770,7 @@ class ProviderRegressionTests(unittest.IsolatedAsyncioTestCase):
             )
         with self.assertRaises(ValueError):
             XAIResponsesBackend(
-                model="grok-4.20-multi-agent",
+                model="grok-4.20-multi-agent-0309",
                 api_key="key",
                 extra_body={"tools": []},
             )
@@ -819,6 +820,127 @@ class ProviderRegressionTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(ProviderError) as caught:
                     await backend.verify_version()
         self.assertIn("version mismatch", str(caught.exception))
+
+    def test_prime_rejects_cross_call_session_persistence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(ValueError, "persistent Prime Agent sessions"):
+                PrimeAgentJSONBackend(cwd=Path(directory), no_session=False)
+
+    def test_prime_cli_defaults_to_the_audited_release_and_rejects_persistence(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            parser = build_parser()
+            base_arguments = [
+                "run",
+                "--tasks",
+                str(root / "tasks.jsonl"),
+                "--config",
+                str(root / "config.json"),
+                "--provider",
+                "prime-agent",
+                "--output",
+                str(root / "results"),
+                "--prime-agent-cwd",
+                str(root / "workspace"),
+            ]
+            (root / "workspace").mkdir()
+            backend = _build_backend(parser.parse_args(base_arguments), {})
+            self.assertEqual(backend.expected_version, "0.7.1")
+            with self.assertRaisesRegex(ValueError, "requires version 0.7.1"):
+                _build_backend(
+                    parser.parse_args(
+                        [
+                            *base_arguments,
+                            "--prime-agent-expected-version",
+                            "0.8.0",
+                        ]
+                    ),
+                    {},
+                )
+            with self.assertRaisesRegex(
+                ValueError, "--prime-agent-persist-session is unsupported"
+            ):
+                _build_backend(
+                    parser.parse_args(
+                        [*base_arguments, "--prime-agent-persist-session"]
+                    ),
+                    {},
+                )
+
+    async def test_prime_rejects_request_system_message(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            backend = PrimeAgentJSONBackend(
+                cwd=Path(directory), executable="prime-agent-test"
+            )
+            create_process = AsyncMock()
+            with patch(
+                "scaffoldlab.external.asyncio.create_subprocess_exec",
+                new=create_process,
+            ):
+                with self.assertRaisesRegex(
+                    ProviderError, "no request-level system-message field"
+                ):
+                    await backend.complete(
+                        ModelRequest(
+                            agent_id="/prime",
+                            role="prime_agent",
+                            system="system",
+                            prompt="prompt",
+                        )
+                    )
+            create_process.assert_not_awaited()
+
+    async def test_prime_enforces_documented_json_v3_stream_contract(self) -> None:
+        message = {
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "final answer"}],
+                "stopReason": "stop",
+                "usage": {"input": 1, "output": 1},
+            },
+        }
+        session = {"type": "session", "version": 3, "id": "test-session"}
+        agent_end = {"type": "agent_end", "messages": [message["message"]]}
+        invalid_streams = (
+            ("start with a version 3 session event", (message, agent_end)),
+            (
+                "start with a version 3 session event",
+                ({**session, "version": 2}, message, agent_end),
+            ),
+            ("terminate with an agent_end event", (session, message)),
+            ("non-object JSON event", (session, [], agent_end)),
+        )
+        for expected_error, events in invalid_streams:
+            with self.subTest(expected_error=expected_error, events=events):
+                stdout = (
+                    "\n".join(json.dumps(event) for event in events) + "\n"
+                ).encode()
+                process = _FakeProcess(stdout)
+                with tempfile.TemporaryDirectory() as directory:
+                    backend = PrimeAgentJSONBackend(
+                        cwd=Path(directory), executable="prime-agent-test"
+                    )
+                    with (
+                        patch(
+                            "scaffoldlab.external.asyncio.create_subprocess_exec",
+                            new=AsyncMock(return_value=process),
+                        ),
+                        patch(
+                            "scaffoldlab.external._terminate_process_tree",
+                            new=AsyncMock(),
+                        ),
+                    ):
+                        with self.assertRaisesRegex(ProviderError, expected_error):
+                            await backend.complete(
+                                ModelRequest(
+                                    agent_id="/prime",
+                                    role="prime_agent",
+                                    prompt="prompt",
+                                )
+                            )
 
     async def test_malformed_hosted_output_preserves_billed_usage(self) -> None:
         backend = OpenAIResponsesBackend(model="test", api_key="key")
@@ -883,6 +1005,7 @@ class ProviderRegressionTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_post_workspace_hash_failure_preserves_prime_usage(self) -> None:
+        session_event = {"type": "session", "version": 3, "id": "test-session"}
         successful_event = {
             "type": "message_end",
             "message": {
@@ -898,6 +1021,7 @@ class ProviderRegressionTests(unittest.IsolatedAsyncioTestCase):
                 },
             },
         }
+        agent_end = {"type": "agent_end", "messages": [successful_event["message"]]}
         reported: list[Usage] = []
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -909,7 +1033,15 @@ class ProviderRegressionTests(unittest.IsolatedAsyncioTestCase):
                     (root / "oversized.bin").write_bytes(b"xx")
                     return await super().communicate(value)
 
-            process = MutatingProcess((json.dumps(successful_event) + "\n").encode())
+            process = MutatingProcess(
+                (
+                    "\n".join(
+                        json.dumps(event)
+                        for event in (session_event, successful_event, agent_end)
+                    )
+                    + "\n"
+                ).encode()
+            )
             backend = PrimeAgentJSONBackend(
                 cwd=root,
                 executable="prime-agent-test",
@@ -959,6 +1091,7 @@ class ProviderRegressionTests(unittest.IsolatedAsyncioTestCase):
     async def test_prime_reads_prompt_from_stdin_and_requires_stop_reason_stop(
         self,
     ) -> None:
+        session_event = {"type": "session", "version": 3, "id": "test-session"}
         successful_event = {
             "type": "message_end",
             "message": {
@@ -974,7 +1107,16 @@ class ProviderRegressionTests(unittest.IsolatedAsyncioTestCase):
                 },
             },
         }
-        process = _FakeProcess((json.dumps(successful_event) + "\n").encode())
+        agent_end = {"type": "agent_end", "messages": [successful_event["message"]]}
+        process = _FakeProcess(
+            (
+                "\n".join(
+                    json.dumps(event)
+                    for event in (session_event, successful_event, agent_end)
+                )
+                + "\n"
+            ).encode()
+        )
         captured: dict[str, object] = {}
 
         async def create_process(*args: str, **kwargs: object) -> _FakeProcess:
@@ -1000,7 +1142,6 @@ class ProviderRegressionTests(unittest.IsolatedAsyncioTestCase):
                     ModelRequest(
                         agent_id="/prime",
                         role="prime_agent",
-                        system="system",
                         prompt="secret prompt",
                     )
                 )
@@ -1014,7 +1155,11 @@ class ProviderRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(response.usage.cost_known)
         self.assertFalse(response.usage.complete)
         self.assertNotIn("secret prompt", captured["args"])
-        self.assertEqual(process.communicated, b"system\n\nsecret prompt")
+        self.assertEqual(
+            captured["args"],
+            ("prime-agent-test", "--mode", "json", "--no-session"),
+        )
+        self.assertEqual(process.communicated, b"secret prompt")
         self.assertIn("env", captured["kwargs"])
 
         failed_event = {
@@ -1026,7 +1171,19 @@ class ProviderRegressionTests(unittest.IsolatedAsyncioTestCase):
                 "usage": {"input": 1, "output": 3, "cost": {"total": 0.2}},
             },
         }
-        failed_process = _FakeProcess((json.dumps(failed_event) + "\n").encode())
+        failed_agent_end = {
+            "type": "agent_end",
+            "messages": [failed_event["message"]],
+        }
+        failed_process = _FakeProcess(
+            (
+                "\n".join(
+                    json.dumps(event)
+                    for event in (session_event, failed_event, failed_agent_end)
+                )
+                + "\n"
+            ).encode()
+        )
 
         async def create_failed_process(*args: str, **kwargs: object) -> _FakeProcess:
             return failed_process

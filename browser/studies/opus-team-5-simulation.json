@@ -1,7 +1,7 @@
 {
   "application": {
     "name": "browser",
-    "implementation": "anthropic-opus5-team-5"
+    "study": "anthropic-opus5-team-5"
   },
   "environment": {
     "type": "browser",
@@ -32,6 +32,6 @@
   "random_seed": 20260810,
   "metadata": {
     "fidelity": "topology_simulation",
-    "boundary": "Simulates only the disclosed Opus 5 five-agent topology; unreleased effort, exact prompts, tools, timing, context enforcement, and worktrees are unavailable."
+    "boundary": "Simulates only the disclosed Opus 5 five-agent topology. The public 1M total-token limit per agent is not enforced; unreleased effort, exact prompts, tools, timing, and worktrees are unavailable."
   }
 }

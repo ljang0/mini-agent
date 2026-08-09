@@ -56,7 +56,15 @@ class RLMUpstreamHarness(Harness):
             "whole_tree_usage_independently_verified": False,
             "cost_known": False,
             "upstream_environment": raw.get("environment"),
-            "default_environment_is_docker": raw.get("environment") == "docker",
+            "adapter_default_environment": "docker",
+            "upstream_library_default_environment": "local",
+            "environment_matches_adapter_default": (raw.get("environment") == "docker"),
+            "configured_max_depth": raw.get("max_depth"),
+            "recursive_child_rlm_enabled": (
+                isinstance(raw.get("max_depth"), int)
+                and not isinstance(raw.get("max_depth"), bool)
+                and raw["max_depth"] >= 2
+            ),
             "domain_tools_injected": False,
             "swe_tool_parity_claimed": False,
             "fidelity": "upstream_runtime_adapter",

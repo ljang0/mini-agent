@@ -57,5 +57,6 @@ class GrokBuildHarness(Harness):
             "num_main_agent_turns": result.get("num_turns"),
             "session_id_present": isinstance(result.get("sessionId"), str),
             "workspace": workspace if isinstance(workspace, dict) else None,
-            "fidelity": "upstream_runtime_adapter",
+            "fidelity": "exact_public_protocol",
+            "exactness_scope": "published_runtime_protocol_boundary",
         }

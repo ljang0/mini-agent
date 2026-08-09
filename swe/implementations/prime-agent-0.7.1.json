@@ -13,10 +13,9 @@
   "repeats": 1,
   "random_seed": 20260810,
   "metadata": {
-    "fidelity": "upstream_runtime_adapter",
+    "fidelity": "exact_public_protocol",
     "version": "0.7.1",
-    "revision": "95afd319a78ae017a41241d50b013d656a0685ce",
-    "boundary": "Invokes the pinned released Prime Agent JSON-mode runtime with persistent Python control and subagents; complete child-tree usage and security sandboxing remain unavailable.",
+    "boundary": "Exact at Prime Agent 0.7.1's documented JSON v3 session/event/agent_end CLI boundary. Every call uses fresh --no-session state; executable/package identity is proven only when its optional SHA pin is supplied, and runtime internals, daemon/schedule/continual state, complete child-tree usage, and security sandboxing remain unavailable.",
     "workspace_owner": "Prime Agent owns a caller-supplied disposable single-trial worktree; do not add a local environment block."
   }
 }

@@ -1028,9 +1028,10 @@ class XAIResponsesBackend:
                 "provider_extra_body cannot override xAI hosted multi-agent fields: "
                 f"{sorted(reserved)}"
             )
-        if self.model != "grok-4.20-multi-agent":
+        if self.model != "grok-4.20-multi-agent-0309":
             raise ValueError(
-                "xAI hosted multi-agent adapter requires model 'grok-4.20-multi-agent'"
+                "xAI hosted multi-agent adapter requires the pinned model "
+                "'grok-4.20-multi-agent-0309'"
             )
 
     def provenance(self) -> Mapping[str, Any]:
@@ -1521,7 +1522,6 @@ class AnthropicManagedAgentsBackend:
         base_url: str = "https://api.anthropic.com/v1",
         anthropic_version: str = "2023-06-01",
         beta_version: str = "managed-agents-2026-04-01",
-        memory_beta_version: str = "agent-memory-2026-07-22",
         timeout_seconds: float = 1800.0,
         poll_interval_seconds: float = 1.0,
         budget_cents: Optional[int] = None,
@@ -1565,8 +1565,6 @@ class AnthropicManagedAgentsBackend:
             raise ValueError("managed anthropic_version must be a non-empty string")
         if not isinstance(beta_version, str) or not beta_version:
             raise ValueError("managed beta_version must be a non-empty string")
-        if not isinstance(memory_beta_version, str) or not memory_beta_version:
-            raise ValueError("managed memory_beta_version must be a non-empty string")
         if not all(isinstance(item, Mapping) for item in resources):
             raise ValueError("managed resources must contain objects")
         if not all(isinstance(item, str) and item for item in vault_ids):
@@ -1580,7 +1578,6 @@ class AnthropicManagedAgentsBackend:
         self.base_url = base_url.rstrip("/")
         self.anthropic_version = anthropic_version
         self.beta_version = beta_version
-        self.memory_beta_version = memory_beta_version
         self.timeout_seconds = timeout_seconds
         self.poll_interval_seconds = poll_interval_seconds
         self.budget_cents = budget_cents
@@ -1590,13 +1587,14 @@ class AnthropicManagedAgentsBackend:
 
     @property
     def _headers(self) -> Mapping[str, str]:
-        beta_features = [self.beta_version]
-        if any(resource.get("type") == "memory_store" for resource in self.resources):
-            beta_features.append(self.memory_beta_version)
         return {
             "x-api-key": self.api_key,
             "anthropic-version": self.anthropic_version,
-            "anthropic-beta": ",".join(beta_features),
+            # Memory stores can be mounted as session resources, but session
+            # endpoints still use only the Managed Agents beta.  The distinct
+            # agent-memory beta replaces this header on /memory_stores endpoints;
+            # this backend never calls those endpoints.
+            "anthropic-beta": self.beta_version,
         }
 
     def provenance(self) -> Mapping[str, Any]:
@@ -1608,7 +1606,6 @@ class AnthropicManagedAgentsBackend:
             "base_url": self.base_url,
             "anthropic_version": self.anthropic_version,
             "beta_version": self.beta_version,
-            "memory_beta_version": self.memory_beta_version,
             "agent_id": self.agent_id,
             "agent_version": self.agent_version,
             "environment_id": self.environment_id,
@@ -1625,7 +1622,76 @@ class AnthropicManagedAgentsBackend:
             "cleanup": self.cleanup,
             "server_scheduler_open": False,
             "session_usage_scope": "authoritative_full_tree",
+            "resolved_coordinator_snapshot_required": True,
         }
+
+    def _validated_session_snapshot(
+        self, session: Mapping[str, Any]
+    ) -> tuple[Mapping[str, Any], str, int]:
+        environment_id = session.get("environment_id")
+        if environment_id != self.environment_id:
+            raise ProviderError(
+                "Managed Agents session returned an unexpected environment_id: "
+                f"expected {self.environment_id!r}, got {environment_id!r}",
+                raw=session,
+            )
+        raw_agent = session.get("agent")
+        if not isinstance(raw_agent, Mapping):
+            raise ProviderError(
+                "Managed Agents session omitted its resolved agent snapshot",
+                raw=session,
+            )
+        agent = dict(raw_agent)
+        if agent.get("id") != self.agent_id:
+            raise ProviderError(
+                "Managed Agents resolved an unexpected agent id: "
+                f"expected {self.agent_id!r}, got {agent.get('id')!r}",
+                raw=session,
+            )
+        version = agent.get("version")
+        if (
+            not isinstance(version, int)
+            or isinstance(version, bool)
+            or version < 1
+            or (self.agent_version is not None and version != self.agent_version)
+        ):
+            raise ProviderError(
+                "Managed Agents resolved an unexpected agent version: "
+                f"expected {self.agent_version!r}, got {version!r}",
+                raw=session,
+            )
+        multiagent = agent.get("multiagent")
+        if (
+            not isinstance(multiagent, Mapping)
+            or multiagent.get("type") != "coordinator"
+        ):
+            raise ProviderError(
+                "Managed Agents profile requires a resolved multiagent coordinator",
+                raw=session,
+            )
+        roster = multiagent.get("agents")
+        if (
+            not isinstance(roster, list)
+            or not roster
+            or not all(isinstance(item, Mapping) for item in roster)
+        ):
+            raise ProviderError(
+                "Managed Agents coordinator snapshot requires a non-empty agent roster",
+                raw=session,
+            )
+        try:
+            encoded = json.dumps(
+                agent,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        except (TypeError, ValueError) as exc:
+            raise ProviderError(
+                "Managed Agents resolved agent snapshot is not valid JSON",
+                raw=session,
+            ) from exc
+        return agent, hashlib.sha256(encoded).hexdigest(), len(roster)
 
     @classmethod
     def _redacted_resource(cls, value: Any) -> Any:
@@ -1865,6 +1931,9 @@ class AnthropicManagedAgentsBackend:
             )
         cleanup_error: Optional[Exception] = None
         try:
+            _, resolved_agent_sha256, coordinator_roster_size = (
+                self._validated_session_snapshot(session)
+            )
             deadline = _monotonic() + self.timeout_seconds
             while session.get("status") in {"running", "rescheduling"}:
                 raw_usage = session.get("usage")
@@ -1884,6 +1953,19 @@ class AnthropicManagedAgentsBackend:
                     headers=self._headers,
                     timeout_seconds=min(self.timeout_seconds, remaining),
                 )
+                _, current_snapshot_sha256, current_roster_size = (
+                    self._validated_session_snapshot(session)
+                )
+                if current_snapshot_sha256 != resolved_agent_sha256:
+                    raise ProviderError(
+                        "Managed Agents resolved agent snapshot changed during session",
+                        raw=session,
+                    )
+                if current_roster_size != coordinator_roster_size:
+                    raise ProviderError(
+                        "Managed Agents coordinator roster changed during session",
+                        raw=session,
+                    )
             usage = self._usage(session.get("usage"))
             if request.usage_reporter is not None:
                 request.usage_reporter(usage)
@@ -1907,6 +1989,8 @@ class AnthropicManagedAgentsBackend:
                     "events": events_raw,
                     "session_id": session_id,
                     "cleanup": self.cleanup,
+                    "resolved_agent_sha256": resolved_agent_sha256,
+                    "coordinator_roster_size": coordinator_roster_size,
                 },
             )
         except (asyncio.CancelledError, Exception):

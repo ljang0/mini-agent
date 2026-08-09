@@ -1,7 +1,7 @@
 {
   "application": {
     "name": "computer-use",
-    "implementation": "openai-hosted-multi-agent-computer"
+    "study": "openai-hosted-multi-agent-computer"
   },
   "environment": {
     "type": "computer",

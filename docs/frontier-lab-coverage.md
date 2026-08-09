@@ -7,8 +7,8 @@ The executable/catalog surface is application-first:
 
 | Application | What belongs underneath it | Important non-equivalence |
 | --- | --- | --- |
-| `browser` | Hosted OpenAI multi-agent functions or `web_search`; hosted xAI 4/16-agent web research; Anthropic Managed web research; Browser-Use flat fan-out; MACU local/upstream; Fable/Opus simulations | Playwright tools are not BrowserGym, Browser-Use agent-policy parity, or a hosted search implementation |
-| `computer-use` | Exact public OpenAI GA and Anthropic `computer_20251124` client protocols; source-matched hosted combinations; MACU local/upstream | The built-in driver is a browser viewport, not an OSWorld desktop VM |
+| `browser` | Hosted OpenAI multi-agent functions or `web_search`; hosted xAI 4/16-agent web research; Anthropic Managed web research; Browser-Use flat fan-out; MACU local/upstream; Mythos/Opus simulations | Playwright tools are not BrowserGym, Browser-Use agent-policy parity, or a hosted search implementation |
+| `computer-use` | Exact public OpenAI GA and Anthropic `computer_20251124` request/result schemas; source-matched hosted combinations; MACU local study and pinned generic upstream VM runtime | The built-in driver is a local browser viewport, not Anthropic's reference Linux executor or an OSWorld VM; the MACU adapter does not enter the OSWorld domain/UUID task and evaluator path |
 | `swe` | Local controls and system-card simulations; hosted OpenAI/Anthropic boundaries; Prime Agent, Grok Build, and RLM upstream adapters; restricted local RLM; Platoon inference; SWE with computer tools | Patch generation is not SWE-bench evaluation; Platoon inference is not RAO training |
 
 The xAI hosted adapter allowlists both `web_search` and `x_search`; the registered
@@ -21,10 +21,10 @@ Only runnable/simulation entries bind a harness, provider, and environment;
 
 | Lab | Strongest public artifact in the survey | Scaffold Lab path | Fidelity/status |
 | --- | --- | --- | --- |
-| Anthropic | [Fable/Mythos](https://www-cdn.anthropic.com/2f9323abbcc4abe219577539efe19a623c9ca2bd/Claude%20Fable%205%20%26%20Claude%20Mythos%205%20System%20Card.pdf) and [Opus 5](https://anthropic.com/claude-opus-5-system-card) system cards; [Messages computer tools](https://platform.claude.com/docs/en/agents-and-tools/tool-use/computer-use-tool); [Managed Agents](https://platform.claude.com/docs/en/managed-agents/multiagent-orchestration) | Browser/SWE card simulations; exact public `anthropic-messages` computer boundary; hosted `anthropic-managed-agents` browser/SWE profiles | Card variants are topology simulations. Messages implements singular `key`, triple click, mouse down/up, modifier-aware actions, bounded hold, and assistant-then-user tool-result ordering. Managed primary events omit complete child streams; its scheduler remains hosted. |
+| Anthropic | [Fable/Mythos](https://www-cdn.anthropic.com/2f9323abbcc4abe219577539efe19a623c9ca2bd/Claude%20Fable%205%20%26%20Claude%20Mythos%205%20System%20Card.pdf) and [Opus 5](https://www-cdn.anthropic.com/b514064af1408018e64b1ad24e7d5e75850b4ffd/Claude%20Opus%205%20System%20Card.pdf) system cards; [Messages computer tools](https://platform.claude.com/docs/en/agents-and-tools/tool-use/computer-use-tool); [Managed Agents](https://platform.claude.com/docs/en/managed-agents/multiagent-orchestration) | Mythos-only Browser/SWE card simulations; exact public `anthropic-messages` request/result schema over a local Playwright executor; hosted `anthropic-managed-agents` browser/SWE profiles | Card variants are topology simulations. The joint card's multi-agent evaluation uses Mythos 5, not Fable 5. Public per-agent limits are documented but not locally enforced. Managed validates and hashes the resolved pinned coordinator snapshot; child streams, scheduling, and the mutable environment remain hosted. |
 | OpenAI | [Responses multi-agent beta](https://developers.openai.com/api/docs/guides/responses-multi-agent); [GA computer](https://developers.openai.com/api/docs/guides/tools-computer-use); [shell](https://developers.openai.com/api/docs/guides/tools-shell); Codex source | Browser hosted functions/`web_search`; exact single-agent computer protocol; source-matched hosted computer/SWE combinations; local harnesses via `openai-responses` | Stateless HTTP and agent-attributed developer continuation are implemented. Computer executes ordered `actions[]` (`keypress.keys[]`, modifier `keys[]`) then returns one original-detail screenshot. WebSocket and the server scheduler are not reproduced; hosted computer/shell combinations need live validation. |
 | Google DeepMind | ADK and A2A | Any local harness through a compatible model endpoint; upstream ADK/A2A remains an external comparator | No claim that local topologies reproduce Gemini Deep Research/Deep Think. No dedicated ADK bridge yet. |
-| xAI | [Grok Build source](https://github.com/xai-org/grok-build/tree/8a14c91d88875a831a38b3a066b1683116bcb31c) and [hosted multi-agent API](https://docs.x.ai/developers/model-capabilities/text/multi-agent) | `grok_build`; 4/16-agent `xai_hosted_multi_agent` browser profiles with server `web_search`; adapter also allowlists `x_search` | Upstream CLI adapter plus exact public hosted request/tool-declaration boundary. Developer functions, child plaintext, and hosted scheduler remain unavailable. |
+| xAI | [Grok Build source](https://github.com/xai-org/grok-build/tree/8a14c91d88875a831a38b3a066b1683116bcb31c) and [hosted multi-agent API](https://docs.x.ai/developers/model-capabilities/text/multi-agent) | `grok_build`; 4/16-agent `xai_hosted_multi_agent` browser profiles with server `web_search`; adapter also allowlists `x_search` | Exact headless-CLI and hosted request/tool-declaration boundaries. Installed npm/source identity, developer functions, child plaintext, and hosted schedulers remain outside those scopes. |
 | Microsoft | AutoGen and Microsoft Agent Framework | Local fixed/async teams as controlled baselines; upstream framework is an external comparator | No AutoGen/MAF parity claim. A source-pinned upstream adapter is preferable to reimplementing their full runtimes. |
 | Alibaba/Qwen | Qwen-Agent GroupChat and Qwen Code | Compatible model endpoint plus local topologies | Model portability only. The moderated GroupChat runtime is not yet wrapped. |
 | Moonshot/Kimi | [Kimi Code](https://github.com/MoonshotAI/kimi-code) and AgentSwarm disclosures | Compatible model endpoint; upstream CLI is an external-adapter target | No hosted AgentSwarm parity claim. |
@@ -66,20 +66,40 @@ clean-room class.
 - [MACU](https://github.com/kohjingyu/multi-agent-computer-use/tree/5b1b8f91dfc5dc66a2f06af4b443b3009a9cd105)
   has two intentionally distinct treatments. `macu_dynamic_dag` is a local
   source-matched text-DAG subset; `macu_upstream` runs the pinned released scheduler,
-  prompts, CUA subprocesses, and result protocol. Exact benchmark parity still needs
-  pinned dependencies/models/tasks/OSWorld VM. The release omits initial graph-
-  generation usage from `manager_usages`, so accounting remains a lower bound.
+  prompts, CUA subprocesses, and result protocol on a generic blank-start task.
+  It does not supply the domain/UUID input, canonical loader/setup, or evaluator
+  needed for an OSWorld score; that boundary is a separate catalog gap. Exact
+  experiment identity still needs pinned dependencies/models/VM assets. The release
+  omits initial graph-generation usage from `manager_usages`, so accounting remains
+  a lower bound.
 - [RLM v0.1.3](https://github.com/alexzhang13/rlm/releases/tag/v0.1.3) likewise has
   two treatments. `swe/rlm-0.1.3-contract` selects the restricted local `rlm_repl`
   with shared ledger/trace; `swe/rlm-0.1.3-upstream` selects `rlm_upstream` and runs
   official commit
   `72d6940142ddfb84ee6be573dc999a37e633e671` over bounded JSON stdin, using the
-  upstream Docker environment by default. It injects no Scaffold Lab domain tools.
-  Recursive child RLMs have independent handlers in v0.1.3, so the root
-  `UsageSummary` is incomplete and cost-unknown for release comparisons.
+  upstream Docker REPL and a 1,500-second RLM timeout by adapter default. The library
+  itself defaults to local execution and no timeout. At default `max_depth=1`,
+  `rlm_query` falls back to `llm_query`; child RLMs require `max_depth >= 2`. The
+  adapter injects no Scaffold Lab domain tools. Recursive child RLMs have independent
+  handlers in v0.1.3, so the root
+  `UsageSummary` is incomplete and cost-unknown for release comparisons. The bridge
+  exposes string context and selected backend/environment/limit settings, not every
+  public option such as structured context, custom tools, compaction, persistence,
+  alternate backends, or sampling/orchestrator configuration.
+- [Platoon 0.1.0's RAO paper snapshot](https://github.com/ApGa/platoon/tree/d9c5857d3a0a056ebc9b047241a2a0c9515aafbe)
+  publishes the domain-specific inference runtime and Tinker/AReaL training
+  pipelines, reward code, prompts, configs, and task assets. Scaffold Lab has no
+  pinned external adapter for that runtime: `platoon_recursive_inference` is only
+  a restricted inference-shape study. A paper-equivalent RAO result also needs a
+  paper-trained checkpoint and exact backend, model, dataset, judge, tool, and
+  compute snapshots; the paper and snapshot do not identify such a checkpoint.
 - [Prime Agent 0.7.1](https://github.com/PrimeIntellect-ai/prime-agent/releases/tag/v0.7.1)
-  and pinned Grok Build are upstream runtime adapters, not local topology copies.
-  Their public output does not establish complete child-tree accounting.
+  and Grok Build 1.0.0 are exact only at their published CLI protocol boundaries,
+  not installed executable/package or scheduler identity unless a digest is supplied.
+  Prime checks 0.7.1 by default and enforces its JSON v3 header/terminal event. Its
+  fresh `--no-session` lifecycle preserves within-call Python/subagent state but not
+  daemon, schedule, or cross-invocation continual state. Public output does not
+  establish complete child-tree accounting.
 
 SWE copy-mode runs create a fresh Git baseline independent of the parent repository.
 When `export_patch` is enabled, modified/new/deleted/binary changes are captured in a

@@ -20,7 +20,7 @@ class ProvenanceTests(unittest.TestCase):
             timeout_seconds=123.0,
         )
         xai = XAIResponsesBackend(
-            model="grok-4.20-multi-agent",
+            model="grok-4.20-multi-agent-0309",
             api_key="test",
             timeout_seconds=456.0,
         )

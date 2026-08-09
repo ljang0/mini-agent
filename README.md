@@ -4,15 +4,17 @@ Scaffold Lab is an application-first, provider-neutral experiment runtime for
 comparing multi-agent systems under shared model/tool budgets, evaluators, traces,
 and fidelity labels. The only top-level applications are:
 
-| Application | Entry point | Included implementation families |
+| Application | Entry point | Exact implementations, studies, and gaps |
 | --- | --- | --- |
-| Browser | [`browser/`](browser/) | OpenAI and xAI hosted research, Anthropic Managed Agents and card simulations, Browser-Use parallel scheduling, MACU local and upstream |
-| Computer use | [`computer-use/`](computer-use/) | OpenAI GA computer, Anthropic `computer_20251124`, hosted composition experiments, MACU local and upstream, OSWorld catalog boundary |
-| SWE | [`swe/`](swe/) | Best-of-N, OpenAI/Anthropic hosted paths, Prime Agent, Grok Build, RLM, Platoon/RAO distinction, MACU with SWE+computer, Fable/Opus simulations, SWE-bench catalog boundary |
+| Browser | [`browser/`](browser/) | Exact OpenAI/xAI/Anthropic hosted boundaries and pinned MACU live in `implementations/`; Browser-Use/MACU clean-room variants and card topologies live in `studies/`. |
+| Computer use | [`computer-use/`](computer-use/) | Exact OpenAI and Anthropic client protocols plus pinned generic MACU VM runtime; unverified compositions are studies and OSWorld parity is a gap. |
+| SWE | [`swe/`](swe/) | Exact hosted/CLI boundaries and clean pinned upstream runtimes are implementations; best-of-N, local RLM/Platoon/MACU, and system-card topologies are studies; training/evaluators remain gaps. |
 
-Each application config names one registered implementation. The registry then
-injects the source-matched harness signature and rejects provider, environment, or
-harness drift:
+The word `implementation` is reserved. It means either an exact published API/tool or
+CLI protocol boundary, or execution of a clean revision-pinned upstream runtime. Local
+reconstructions, baselines, and topology simulations must use `study` instead. The
+registry injects the registered harness signature and rejects category, provider,
+environment, or harness drift:
 
 ```json
 {
@@ -23,18 +25,34 @@ harness drift:
 }
 ```
 
+```json
+{
+  "application": {
+    "name": "swe",
+    "study": "parallel-best-of-3"
+  }
+}
+```
+
 ```bash
 PYTHONPATH=src python3 -m scaffoldlab.cli list-applications
 PYTHONPATH=src python3 -m scaffoldlab.cli list-implementations \
   --application browser --json
+PYTHONPATH=src python3 -m scaffoldlab.cli list-studies --application browser
+PYTHONPATH=src python3 -m scaffoldlab.cli list-gaps --application browser
 ```
 
-“1:1” is scoped explicitly. A profile is either an exact published protocol
-boundary, a pinned upstream-runtime adapter, a source-matched local
-reimplementation, a topology simulation, a controlled baseline, or a documented
-gap. Closed schedulers, withheld prompts, unreleased training, missing evaluator
-images, and incomplete accounting remain visible rather than being filled in by
-guesswork.
+“1:1” is always scoped. `exact_public_protocol` means the observable published API
+wire/client loop or released CLI stream contract, not the scheduler behind it.
+`upstream_runtime_adapter` means a clean source checkout is actually executed at its
+recorded revision. Closed schedulers, withheld prompts, unverified executable/package
+identity, missing evaluator images, and incomplete accounting remain visible rather
+than being guessed.
+
+The root `configs/` directory remains for backward-compatible controls and smoke
+tests. Those unselected runs are intentionally **uncataloged**: they do not receive
+an implementation identity or a 1:1 claim. Release-facing runs should select a
+profile from an application's `implementations/` or `studies/` directory.
 
 ## Shared harness primitives
 
@@ -45,9 +63,9 @@ The application profiles resolve to these reusable mechanisms:
 | `single` | One solver | Baseline |
 | `flat_parallel` | Distinct independent tasks through flat fan-out | Browser-Use scheduling pattern with optional isolated browser profiles; no selector |
 | `parallel_best_of_n` | Same task N times, followed by an explicit judge | Scaffold Lab baseline |
-| `blocking_orchestrator` | Tool-less manager, fresh tool-capable workers, one whole-round barrier | Fable-inspired control simulation; no card-exact compaction or prompts |
-| `fixed_agent_team` | Long-lived logical peers, full task visibility, JSON messaging, lead submission | Fable/Opus-card topology simulation |
-| `async_subagents` | Dynamic logical workers with wait/wake/delete/status | Fable/Opus-card topology simulation |
+| `blocking_orchestrator` | Tool-less manager, fresh tool-capable workers, one whole-round barrier | Mythos-5-card-inspired control simulation; no card-exact compaction or prompts |
+| `fixed_agent_team` | Long-lived logical peers, full task visibility, JSON messaging, lead submission | Mythos/Opus-card topology simulation |
+| `async_subagents` | Dynamic logical workers with wait/wake/delete/status | Mythos/Opus-card topology simulation |
 | `macu_dynamic_dag` | Mutable text DAG, ready-frontier scheduling, replan after observations | Source-matched MACU subset with domain tools |
 | `macu_upstream` | Released MACU manager, graph, CUA, VM, replanning, and artifact runtime | Pinned upstream adapter; released accounting omits initial graph-generation usage |
 | `recursive_delegation` | One policy recursively delegates through JSON actions | Generic recursion control; neither RAO inference/training nor code-first RAH |
@@ -57,8 +75,8 @@ The application profiles resolve to these reusable mechanisms:
 | `external_context_json_search` | Context stays external; controller inspects, searches, and makes bounded subcalls | RLM-motivated ablation; explicitly not an RLM or REPL |
 | `openai_hosted_multi_agent` | Responses hosted multi-agent beta with optional developer tools | Exact public stateless HTTP request/continuation boundary; server scheduler closed |
 | `anthropic_managed_agents` | Managed Agents coordinator session | Exact public session, primary-event-list, and aggregate-usage boundary; server scheduler and sandbox hosted |
-| `prime_agent` | Released Prime Agent JSON runtime | Upstream CLI wrapper; observed root-stream usage is a lower bound, full-tree accounting unverified |
-| `grok_build` | Released xAI Grok Build runtime with native subagents | Upstream headless-JSON CLI wrapper; reported usage is a lower bound, upstream scheduler retained |
+| `prime_agent` | Released Prime Agent JSON runtime | Exact JSON v3 CLI boundary at version 0.7.1; executable identity is optional and runtime internals remain outside the claim |
+| `grok_build` | Released xAI Grok Build runtime with native subagents | Exact headless-JSON CLI boundary at version 1.0.0; npm/source identity and scheduler internals remain outside the claim |
 | `xai_hosted_multi_agent` | xAI hosted 4- or 16-agent team with optional hosted web/X search | Exact public request boundary; plaintext state hidden, encrypted continuation unimplemented |
 
 No paid live-model comparison has been run in this repository yet. The included
@@ -68,10 +86,12 @@ identify a release winner.
 
 `configs/fable_card_simulations.json` and
 `configs/opus5_card_simulations.json` preserve the source-specific topology sets.
+The former keeps its legacy filename for compatibility, but §8.15's multi-agent
+evaluation uses Claude Mythos 5; it is not a Fable 5 result.
 They remain simulations: public Messages tool schemas are available, but the local
 runtime does not reproduce the cards' exact tool configuration, source-specific
 per-agent token/context limits, compaction, message-injection timing, or Git
-worktrees. In the Fable profile, `blocking_orchestrator.max_workers=4` is a
+worktrees. In the Mythos profile, `blocking_orchestrator.max_workers=4` is a
 local control choice; the card's four-concurrent/twenty-total async limit is specific
 to ProgramBench, while its BrowseComp async configuration discloses no spawn cap.
 The Opus async simulation likewise uses a local safety cap although the card states
@@ -88,10 +108,11 @@ through its HTTP continuation loop.
 
 | Application surface | Representative config | State boundary |
 | --- | --- | --- |
-| Browser | `browser/configs/openai-hosted-browser-functions.json` | Semantic tools on an isolated Playwright context per agent |
-| Computer use | `computer-use/configs/openai-ga-single.json` | Provider-native client protocol over a Playwright browser viewport |
-| SWE | `swe/configs/parallel-best-of-3.json` | Independent workspace copy per agent, fresh Git baseline, portable file tools, and bounded patch export |
-| SWE with computer tools | `swe/configs/openai-hosted-swe-computer.json` | Composite repository and pixel environment per logical agent |
+| Browser | `browser/implementations/openai-hosted-browser-functions.json` | Semantic tools on an isolated Playwright context per agent |
+| Computer use | `computer-use/implementations/openai-ga-single.json` | Provider-native client protocol over a Playwright browser viewport |
+| SWE implementation | `swe/implementations/prime-agent-0.7.1.json` | Published JSON v3 runtime protocol over a caller-isolated workspace |
+| SWE study | `swe/studies/parallel-best-of-3.json` | Independent workspace copy per agent, fresh Git baseline, portable file tools, and bounded patch export |
+| SWE with computer tools study | `swe/studies/openai-hosted-swe-computer.json` | Composite repository and pixel environment per logical agent |
 
 Provider adapters cover OpenAI Responses, Anthropic Messages, generic
 OpenAI-compatible Responses and Chat Completions, xAI's hosted multi-agent API,
@@ -106,7 +127,8 @@ BrowserGym or SWE-bench task reset and evaluator, not merely these tool surfaces
 
 Native tool support is model-specific. In particular, Anthropic's documented
 `computer_20251124` compatibility list includes Opus 5 but not Fable 5 or Mythos 5.
-The Fable/Mythos topology configs therefore do not imply native-computer compatibility.
+Exact computer runs enforce the documented model-family prefixes. The Fable/Mythos
+topology configs therefore do not imply native-computer compatibility.
 The OpenAI hosted adapter's developer-function path is documented; native computer or
 shell combined with hosted multi-agent remains a separate compatibility surface to
 validate live before making an exact combined-protocol claim.
@@ -150,7 +172,7 @@ Validate an application profile without manually specifying its harness:
 ```bash
 PYTHONPATH=src python3 -m scaffoldlab.cli validate \
   --tasks benchmarks/browser_smoke.jsonl \
-  --config browser/configs/openai-hosted-browser-functions.json \
+  --config browser/implementations/openai-hosted-browser-functions.json \
   --provider openai-responses
 ```
 
@@ -241,7 +263,7 @@ thread concurrency:
 export ANTHROPIC_API_KEY=...
 PYTHONPATH=src python3 -m scaffoldlab.cli run \
   --tasks benchmarks/smoke.jsonl \
-  --config configs/anthropic_managed_agents.json \
+  --config swe/implementations/anthropic-managed-agents.json \
   --provider anthropic-managed-agents \
   --managed-agent-id agent_... \
   --managed-agent-version 1 \
@@ -281,8 +303,8 @@ internal coordination loop:
 ```bash
 export OPENAI_API_KEY=...
 PYTHONPATH=src python3 -m scaffoldlab.cli run \
-  --tasks benchmarks/smoke.jsonl \
-  --config configs/openai_hosted_multi_agent.json \
+  --tasks benchmarks/browser_smoke.jsonl \
+  --config browser/implementations/openai-hosted-web-search.json \
   --provider openai-responses \
   --model YOUR_PINNED_GPT_5_6_MODEL_ID \
   --input-price INPUT_USD_PER_MILLION \
@@ -290,11 +312,11 @@ PYTHONPATH=src python3 -m scaffoldlab.cli run \
   --output runs/openai-hosted
 ```
 
-This command uses `configs/openai_hosted_multi_agent.json`, a tool-less one-call
-request-boundary smoke profile. `configs/openai_hosted_developer_tools.json` pairs the
-same harness with semantic browser developer functions and allows the additional outer
-calls required for continuation. Both profiles have deterministic offline protocol
-coverage; neither is evidence from a paid live-model comparison, and the developer-tool
+This command selects the hosted `web_search` request boundary. The separate
+`browser/implementations/openai-hosted-browser-functions.json` profile pairs the same
+harness with semantic browser developer functions and allows the additional outer calls
+required for continuation. Both profiles have deterministic offline protocol coverage;
+neither is evidence from a paid live-model comparison, and the developer-function
 profile does not claim a combined native computer/shell surface.
 
 The adapter currently uses non-streaming stateless HTTP. OpenAI recommends WebSocket
@@ -306,15 +328,15 @@ sequentially. Treat HTTP latency as a separate transport condition. Local
 `max_concurrent_subagents` field caps active descendants, while the public beta documents
 no fixed tree-depth or total-subagent limit.
 
-To test the released Prime Agent runtime, install a pinned executable and pass
-short-lived provider credentials explicitly; cached login state is not inherited.
-Use exactly one task in a caller-provisioned disposable worktree. The worktree and
-output directory must be disjoint:
+To test the released Prime Agent runtime, install the audited 0.7.1 executable and
+pass short-lived provider credentials explicitly; cached login state is not inherited.
+The CLI checks 0.7.1 by default. Use exactly one task in a caller-provisioned
+disposable worktree. The worktree and output directory must be disjoint:
 
 ```bash
 PYTHONPATH=src python3 -m scaffoldlab.cli run \
   --tasks benchmarks/external_smoke.jsonl \
-  --config configs/prime_agent.json \
+  --config swe/implementations/prime-agent-0.7.1.json \
   --provider prime-agent \
   --prime-agent-provider openai \
   --model YOUR_PINNED_MODEL_ID \
@@ -329,6 +351,12 @@ Prime Agent executes model-generated Python and shell commands with the current
 user's permissions. Its worker lifecycle is not a security sandbox. Use scoped
 credentials and an outer network/process sandbox. For stronger executable identity,
 also pass `--prime-agent-executable-sha256` with the SHA-256 of the resolved binary.
+The adapter requires the documented JSON v3 session header and terminal `agent_end`
+event. Every call uses upstream `--no-session` with fresh home/config directories;
+Python and child-agent state persists within that call, but daemon, schedule, and
+cross-invocation continual state are not reproduced. The legacy
+`--prime-agent-persist-session` flag is rejected instead of claiming persistence that
+the isolated lifecycle cannot provide.
 The adapter preserves observed root-message tokens/cost as lower bounds but marks
 whole-tree usage incomplete and cost unknown; therefore a successful exploratory
 answer still exits nonzero at Scaffold Lab's clean-release accounting gate.
@@ -342,7 +370,7 @@ and defaults to xAI's `strict` sandbox plus `dontAsk` permission mode:
 export XAI_API_KEY=...
 PYTHONPATH=src python3 -m scaffoldlab.cli run \
   --tasks benchmarks/external_smoke.jsonl \
-  --config configs/grok_build.json \
+  --config swe/implementations/grok-build-1.0.0.json \
   --provider grok-build \
   --model grok-build \
   --grok-cwd /path/to/disposable-worktree \
@@ -370,14 +398,14 @@ that conservative accounting makes exploratory runs fail the clean-release gate 
 when the upstream runtime returns a usable answer.
 
 The pinned MACU adapter runs the released manager, graph scheduler, CUA workers,
-VM variants, replanning loop, and result ingestion. Supply a one-task OSWorld 1.x
-JSONL file, an immutable checkout at the recorded revision, a matching OSWorld
-checkout/VM stack, and a separate result directory:
+VM variants, replanning loop, and result ingestion for one generic blank-start
+task. Supply an immutable checkout at the recorded revision, a compatible
+OSWorld-derived VM/CUA stack, and a separate result directory:
 
 ```bash
 PYTHONPATH=src python3 -m scaffoldlab.cli run \
-  --tasks /path/to/one-macu-osworld-task.jsonl \
-  --config computer-use/configs/macu-upstream-osworld1.json \
+  --tasks benchmarks/external_smoke.jsonl \
+  --config computer-use/implementations/macu-upstream-generic-vm.json \
   --provider macu-upstream \
   --macu-checkout /path/to/pinned-macu \
   --macu-osworld-root /path/to/pinned-osworld \
@@ -394,16 +422,22 @@ PYTHONPATH=src python3 -m scaffoldlab.cli run \
 The default revision pin is `5b1b8f91dfc5dc66a2f06af4b443b3009a9cd105`.
 Pass any model-specific released CUA flags as repeated `--macu-cua-arg` values.
 MACU's published summary omits initial graph-generation usage, so the adapter keeps
-whole-tree accounting incomplete.
+whole-tree accounting incomplete. This generic path does not supply an OSWorld
+domain/UUID task map, enter the benchmark's canonical task setup, or invoke its
+evaluator. That missing boundary is recorded separately as
+`computer-use/macu-osworld1-benchmark-parity` rather than treating a VM dependency
+as an evaluation result.
 
-The separate upstream RLM profile executes the official 0.1.3 prompts and REPL from
-a clean checkout. Its default `docker` environment is the upstream sandbox boundary;
-pin the Python executable/container/dependencies as part of any reproducible run:
+The separate upstream RLM profile executes the official 0.1.3 prompts and selected
+REPL from a clean checkout. Scaffold Lab deliberately defaults this adapter to the
+upstream Docker REPL with a 1,500-second RLM timeout; the library itself defaults to
+the local REPL with no timeout. Pin the Python executable, container, and dependencies
+as part of any reproducible run:
 
 ```bash
 PYTHONPATH=src python3 -m scaffoldlab.cli run \
   --tasks benchmarks/external_smoke.jsonl \
-  --config swe/configs/rlm-0.1.3-upstream.json \
+  --config swe/implementations/rlm-0.1.3-upstream.json \
   --provider rlm-upstream \
   --rlm-checkout /path/to/pinned-rlm \
   --rlm-provider openai \
@@ -414,27 +448,30 @@ PYTHONPATH=src python3 -m scaffoldlab.cli run \
 ```
 
 The default revision pin is `72d6940142ddfb84ee6be573dc999a37e633e671`.
+At the adapter default `max_depth=1`, `rlm_query` falls back to `llm_query`; configure
+`--rlm-max-depth 2` or greater to create recursive child RLMs.
 The v0.1.3 root usage summary does not merge recursively created child handlers, so
 reported calls, tokens, and cost remain lower bounds. This adapter deliberately
 injects no Scaffold Lab SWE/browser/computer tools and therefore makes no SWE patch
-parity claim.
+parity claim. It covers the official runtime's string-context path and selected
+backend/environment/limit settings; structured context, custom tools, compaction,
+persistence, alternate backends, and sampling/orchestrator options are not exposed.
 
 xAI's separate hosted research team is also represented at its exact public API
-boundary. The legacy matrix below runs the documented four-agent (`low`) and
-sixteen-agent (`high`) settings without built-in tools. Application profile
-`browser/xai-hosted-web-research-4` additionally declares the documented hosted
-`web_search` tool; the harness also supports `x_search`. The API returns the leader
-result and aggregate usage, while plaintext intermediate state is hidden. xAI
-documents encrypted continuation state, but continuation is not implemented in this
-adapter:
+boundary. The config below runs the documented four-agent (`low`) setting with hosted
+`web_search`; `browser/implementations/xai-hosted-web-research-16.json` provides the
+sixteen-agent (`high`) counterpart, and the harness also supports `x_search`. The API
+returns the leader result and aggregate usage, while plaintext intermediate state is
+hidden. xAI documents encrypted continuation state, but continuation is not
+implemented in this adapter:
 
 ```bash
 export XAI_API_KEY=...
 PYTHONPATH=src python3 -m scaffoldlab.cli run \
-  --tasks benchmarks/smoke.jsonl \
-  --config configs/xai_hosted_multi_agent.json \
+  --tasks benchmarks/browser_smoke.jsonl \
+  --config browser/implementations/xai-hosted-web-research-4.json \
   --provider xai-responses \
-  --model grok-4.20-multi-agent \
+  --model grok-4.20-multi-agent-0309 \
   --input-price INPUT_USD_PER_MILLION \
   --output-price OUTPUT_USD_PER_MILLION \
   --output runs/xai-hosted
@@ -500,6 +537,7 @@ not release approval.
 The audit incorporates the user-supplied August 2026 frontier-harness brief, then
 checks material claims against first-party papers, repositories, documentation,
 and system cards. One correction to our initial read is important: the brief was
-right about Claude Opus 5. Anthropic's official system-card index includes the July
-2026 Opus 5 card; it is audited separately from Fable/Mythos because their harness
-suites differ.
+right about Claude Opus 5. Anthropic publishes a direct official
+[Opus 5 system-card PDF](https://www-cdn.anthropic.com/b514064af1408018e64b1ad24e7d5e75850b4ffd/Claude%20Opus%205%20System%20Card.pdf);
+it is audited separately because its disclosed harness suite differs from the
+Mythos 5 evaluation in the joint Fable/Mythos card.

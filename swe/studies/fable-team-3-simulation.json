@@ -1,7 +1,7 @@
 {
   "application": {
     "name": "swe",
-    "implementation": "parallel-best-of-3"
+    "study": "anthropic-fable5-team-3"
   },
   "environment": {
     "type": "swe",
@@ -18,11 +18,13 @@
     "max_patch_bytes": 1048576
   },
   "limits": {
-    "max_model_calls": 96,
+    "max_model_calls": 128,
     "max_concurrency": 3,
-    "max_cost_usd": 8.0,
+    "max_input_tokens": 1000000,
+    "max_output_tokens": 250000,
+    "max_cost_usd": 10.0,
     "wall_time_seconds": 1200,
-    "max_depth": 1,
+    "max_depth": 2,
     "max_tool_calls": 256,
     "max_tool_output_bytes": 8388608,
     "max_agent_turns": 48
@@ -32,8 +34,7 @@
   "repeats": 1,
   "random_seed": 20260810,
   "metadata": {
-    "fidelity": "controlled_baseline",
-    "boundary": "Three independent candidate workspaces followed by an explicit judge selection.",
-    "classification": "This is best-of-N. The separate flat_parallel harness has no selector and is not best-of-N."
+    "fidelity": "topology_simulation",
+    "boundary": "Simulates only the disclosed Mythos 5 three-agent coding topology. The stable study ID predates this correction; the card's multi-agent evaluation is Mythos-only. Exact prompts, next-message timing, per-agent 1M-token enforcement, compaction, and Git worktrees are unavailable."
   }
 }

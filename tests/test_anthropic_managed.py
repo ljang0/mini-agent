@@ -78,6 +78,27 @@ def _events(*, answer: str = "final answer") -> list[dict[str, Any]]:
     ]
 
 
+def _agent_snapshot(*, version: int = 1, coordinator: bool = True) -> dict[str, Any]:
+    return {
+        "id": "agent-1",
+        "version": version,
+        "model": {
+            "id": "claude-opus-5",
+            "effort": {"type": "high"},
+            "speed": "standard",
+        },
+        "system": "Coordinate the work.",
+        "tools": [{"type": "agent_toolset_20260401"}],
+        "skills": [],
+        "mcp_servers": [],
+        "multiagent": (
+            {"type": "coordinator", "agents": [{"type": "self"}]}
+            if coordinator
+            else None
+        ),
+    }
+
+
 class ManagedAgentsBackendTests(unittest.IsolatedAsyncioTestCase):
     async def test_exact_create_poll_paginate_delete_and_usage_contract(self) -> None:
         calls: list[dict[str, Any]] = []
@@ -104,6 +125,8 @@ class ManagedAgentsBackendTests(unittest.IsolatedAsyncioTestCase):
                 return {
                     "id": "session-1",
                     "status": "running",
+                    "environment_id": "environment-1",
+                    "agent": _agent_snapshot(version=7),
                     "usage": _usage(input_tokens=2, output_tokens=1, cents="20"),
                 }
             if method == "GET" and url.endswith("/sessions/session-1"):
@@ -111,7 +134,7 @@ class ManagedAgentsBackendTests(unittest.IsolatedAsyncioTestCase):
                     "id": "session-1",
                     "status": "idle",
                     "environment_id": "environment-1",
-                    "agent": {"id": "agent-1", "version": 7},
+                    "agent": _agent_snapshot(version=7),
                     "usage": _usage(),
                 }
             if method == "GET" and url.endswith("/events"):
@@ -164,6 +187,8 @@ class ManagedAgentsBackendTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.usage.cost_usd, 1.87)
         self.assertTrue(response.usage.complete)
         self.assertEqual(response.raw["events"]["pages"], 2)
+        self.assertEqual(response.raw["coordinator_roster_size"], 1)
+        self.assertRegex(response.raw["resolved_agent_sha256"], r"^[0-9a-f]{64}$")
         self.assertEqual(len(reported), 2)
         self.assertFalse(reported[0].complete)
         self.assertTrue(reported[1].complete)
@@ -215,8 +240,9 @@ class ManagedAgentsBackendTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             memory_backend._headers["anthropic-beta"],
-            "managed-agents-2026-04-01,agent-memory-2026-07-22",
+            "managed-agents-2026-04-01",
         )
+        self.assertNotIn("memory_beta_version", memory_backend.provenance())
 
     async def test_requires_action_fails_closed_and_archives_idle_session(self) -> None:
         calls: list[tuple[str, str]] = []
@@ -232,7 +258,13 @@ class ManagedAgentsBackendTests(unittest.IsolatedAsyncioTestCase):
             del headers, timeout_seconds, payload
             calls.append((method, url))
             if method == "POST" and url.endswith("/sessions"):
-                return {"id": "session-2", "status": "idle", "usage": _usage()}
+                return {
+                    "id": "session-2",
+                    "status": "idle",
+                    "environment_id": "environment-1",
+                    "agent": _agent_snapshot(),
+                    "usage": _usage(),
+                }
             if method == "GET" and url.endswith("/events"):
                 return {
                     "data": [
@@ -297,7 +329,7 @@ class ManagedAgentsBackendTests(unittest.IsolatedAsyncioTestCase):
                     "id": "session-3",
                     "status": "idle",
                     "environment_id": "environment-1",
-                    "agent": {"id": "agent-1", "version": 9},
+                    "agent": _agent_snapshot(version=9),
                     "usage": _usage(cents="125"),
                 }
             if method == "GET" and url.endswith("/events"):
@@ -327,6 +359,8 @@ class ManagedAgentsBackendTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.metadata["underlying_model_calls"], 2)
         self.assertEqual(result.metadata["thread_count_observed"], 1)
         self.assertEqual(result.metadata["resolved_agent_version"], 9)
+        self.assertEqual(result.metadata["coordinator_roster_size"], 1)
+        self.assertRegex(result.metadata["resolved_agent_sha256"], r"^[0-9a-f]{64}$")
         self.assertEqual(result.metadata["session_stop_reason"], "end_turn")
         self.assertEqual(
             [event.event for event in result.trace].count("managed_session_observed"),
@@ -357,6 +391,43 @@ class ManagedAgentsBackendTests(unittest.IsolatedAsyncioTestCase):
                 )
             )
 
+    async def test_session_requires_resolved_coordinator_snapshot(self) -> None:
+        async def request_json(
+            method: str,
+            url: str,
+            *,
+            headers: Any,
+            timeout_seconds: float,
+            payload: Any = None,
+        ) -> dict[str, Any]:
+            del headers, timeout_seconds, payload
+            if method == "POST" and url.endswith("/sessions"):
+                return {
+                    "id": "session-single",
+                    "status": "idle",
+                    "environment_id": "environment-1",
+                    "agent": _agent_snapshot(version=4, coordinator=False),
+                    "usage": _usage(),
+                }
+            raise AssertionError(f"unexpected request: {method} {url}")
+
+        backend = AnthropicManagedAgentsBackend(
+            agent_id="agent-1",
+            agent_version=4,
+            environment_id="environment-1",
+            api_key="key",
+        )
+        with patch("scaffoldlab.providers._request_json", new=request_json):
+            with self.assertRaisesRegex(ProviderError, "multiagent coordinator"):
+                await backend.complete(
+                    ModelRequest(
+                        agent_id="/managed",
+                        role="session",
+                        prompt="question",
+                        metadata={"anthropic_managed_agents": True},
+                    )
+                )
+
     async def test_cancellation_interrupts_running_remote_session(self) -> None:
         sleep_started = asyncio.Event()
         interrupt_calls: list[dict[str, Any]] = []
@@ -374,6 +445,8 @@ class ManagedAgentsBackendTests(unittest.IsolatedAsyncioTestCase):
                 return {
                     "id": "session-running",
                     "status": "running",
+                    "environment_id": "environment-1",
+                    "agent": _agent_snapshot(),
                     "usage": _usage(input_tokens=1, output_tokens=0, cents="1"),
                 }
             if method == "POST" and url.endswith("/sessions/session-running/events"):
@@ -435,6 +508,8 @@ class ManagedAgentsBackendTests(unittest.IsolatedAsyncioTestCase):
                 return {
                     "id": "session-timeout",
                     "status": "running",
+                    "environment_id": "environment-1",
+                    "agent": _agent_snapshot(),
                     "usage": _usage(input_tokens=2, output_tokens=1, cents="25"),
                 }
             if method == "POST" and url.endswith("/session-timeout/events"):
@@ -484,6 +559,8 @@ class ManagedAgentsBackendTests(unittest.IsolatedAsyncioTestCase):
                 return {
                     "id": "session-terminated",
                     "status": "terminated",
+                    "environment_id": "environment-1",
+                    "agent": _agent_snapshot(),
                     "usage": _usage(cents="75"),
                 }
             if method == "GET" and url.endswith("/events"):

@@ -1,25 +1,38 @@
 # Computer-use application
 
-This directory is the application-first entry point for pixel-action computer
-experiments. Every config uses the canonical nested application selection and
-omits `harnesses`, allowing the registry to inject and validate the exact profile
-signature.
+This is the application-first entry point for pixel-action computer runs.
+`implementations/` contains exact published client protocols or pinned upstream
+runtimes. `studies/` contains composed or clean-room experiments that have an
+unverified boundary and therefore cannot be called 1:1.
 
-## Runnable representatives
+## Reproducible implementations
 
 | Config | Provider | Fidelity | Boundary |
 | --- | --- | --- | --- |
-| [`openai-ga-single.json`](configs/openai-ga-single.json) | `openai-responses` | exact public protocol | Ordered GA `computer_call.actions`, one updated original-detail screenshot, and `computer_call_output` continuation. Model training, full confirmation prompt, classifiers, and product runtime are not public. |
-| [`openai-hosted-multi-agent.json`](configs/openai-hosted-multi-agent.json) | `openai-responses` | source-matched reimplementation | Composes two published client protocols, hosted multi-agent and GA computer use. A combined compatibility contract has not been published or live-verified, so this is not labeled exact. |
-| [`anthropic-20251124-single.json`](configs/anthropic-20251124-single.json) | `anthropic-messages` | exact public protocol | `computer-use-2025-11-24`, `computer_20251124`, assistant `tool_use`, user `tool_result`, and the documented action vocabulary. Zoom stays disabled. |
-| [`macu-text-dag.json`](configs/macu-text-dag.json) | `openai-responses` or `anthropic-messages` | source-matched reimplementation | Local text-DAG scheduling over computer tools; released MACU prompts, CUA subprocesses, VM cloning, files, and evaluator are absent. |
-| [`macu-upstream-osworld1.json`](configs/macu-upstream-osworld1.json) | `macu-upstream` | pinned upstream runtime adapter | Executes the released MACU runtime on its OSWorld 1.x stack. Full identity still requires pinned dependencies, VM image, task assets, and model snapshots. |
+| [`openai-ga-single.json`](implementations/openai-ga-single.json) | `openai-responses` | published protocol boundary | Ordered GA `computer_call.actions`, one updated original-detail screenshot, and `computer_call_output` continuation. |
+| [`anthropic-20251124-single.json`](implementations/anthropic-20251124-single.json) | `anthropic-messages` | published protocol boundary | Exact `computer-use-2025-11-24` wire schema, request/tool-result ordering, and `computer_20251124` action vocabulary. Actions execute in Scaffold Lab's Playwright viewport, not Anthropic's reference Linux X11/VNC environment. |
+| [`macu-upstream-generic-vm.json`](implementations/macu-upstream-generic-vm.json) | `macu-upstream` | pinned upstream runtime | Executes the released MACU manager/CUA/VM runtime for a generic blank-start task. It does not load an OSWorld domain/UUID task or invoke the benchmark evaluator. |
+
+Exact client-protocol runs fail before network access when `--model` is outside the
+currently documented families: GPT-5.4/GPT-5.6 for OpenAI GA computer, and Opus 5,
+Sonnet 5, Opus 4.8/4.7/4.6/4.5, or Sonnet 4.6 for Anthropic
+`computer_20251124`.
+
+## Studies, not implementations
+
+- [`openai-hosted-multi-agent.json`](studies/openai-hosted-multi-agent.json)
+  composes two documented protocols, but the combined hosted-multi-agent/computer
+  compatibility boundary is not published or live-verified.
+- [`macu-text-dag.json`](studies/macu-text-dag.json) preserves local DAG scheduling
+  while omitting MACU's released prompts, CUA subprocesses, VMs, files, and evaluator.
 
 The local `computer` environment is a Playwright browser viewport, not a full
-desktop VM and not OSWorld. OSWorld 2.0 is separately cataloged as the
-non-runnable evaluation-environment profile
-`computer-use/osworld2-2026-06-24`; its gated evaluator assets and pinned VM image
-are not bundled. Do not mix OSWorld 2.0 scores with MACU's OSWorld 1.x stack.
+desktop VM and not OSWorld. The upstream MACU implementation uses its released
+OSWorld-derived VM/CUA substrate, but its Scaffold Lab task boundary is generic.
+`computer-use/macu-osworld1-benchmark-parity` records the missing domain/UUID task
+map, canonical loader/setup, evaluator, data-directory pin, and VM/task assets.
+OSWorld 2.0 is separately cataloged as `computer-use/osworld2-2026-06-24`; its
+gated evaluator assets and pinned VM image are not bundled.
 
 Anthropic Managed Agents is not listed here because its built-in managed toolset
 does not publish native `computer_20251124` as a server-owned tool. A client-defined
@@ -30,7 +43,7 @@ GUI tool would be a different boundary.
 ```bash
 PYTHONPATH=src python3 -m scaffoldlab.cli validate \
   --tasks benchmarks/computer_smoke.jsonl \
-  --config computer-use/configs/openai-ga-single.json \
+  --config computer-use/implementations/openai-ga-single.json \
   --provider openai-responses
 ```
 
