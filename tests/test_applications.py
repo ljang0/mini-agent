@@ -40,6 +40,12 @@ class ApplicationRegistryTests(unittest.TestCase):
             all(profile.catalog_kind == "implementation" for profile in IMPLEMENTATIONS)
         )
         self.assertTrue(all(profile.exactness_scope for profile in IMPLEMENTATIONS))
+        for implementation in IMPLEMENTATIONS:
+            metadata = implementation.as_dict()
+            self.assertTrue(metadata["source_or_protocol_pin_verified"])
+            self.assertFalse(metadata["bit_reproducible_runtime_verified"])
+            self.assertFalse(metadata["flagship_system_card_parity_claimed"])
+            self.assertNotEqual(metadata["exactness_scope"], "pinned_upstream_runtime")
         self.assertTrue(all(profile.catalog_kind == "study" for profile in STUDIES))
         self.assertTrue(all(profile.catalog_kind == "gap" for profile in GAPS))
         for application, profiles in APPLICATIONS.items():
@@ -49,8 +55,8 @@ class ApplicationRegistryTests(unittest.TestCase):
             )
             self.assertTrue(all(profile.sources for profile in profiles))
 
-    def test_upstream_implementations_require_a_source_revision(self) -> None:
-        with self.assertRaisesRegex(ValueError, "pinned source revision"):
+    def test_upstream_implementations_require_an_artifact_pin(self) -> None:
+        with self.assertRaisesRegex(ValueError, "artifact version or source revision"):
             profile(
                 application="swe",
                 profile_id="version-only-runtime",
@@ -65,10 +71,31 @@ class ApplicationRegistryTests(unittest.TestCase):
                         title="Release page",
                         url="https://example.com/release",
                         published="2026-08-10",
-                        version="1.0.0",
                     ),
                 ),
             )
+
+        version_only = profile(
+            application="swe",
+            profile_id="version-only-distribution",
+            title="Version-only distribution",
+            fidelity="upstream_runtime_adapter",
+            runtime_owner="upstream_distribution",
+            harnesses=(HarnessSignature.create("single"),),
+            providers=("openai-responses",),
+            environment_types=("none",),
+            sources=(
+                SourceArtifact(
+                    title="Release page",
+                    url="https://example.com/release",
+                    published="2026-08-10",
+                    version="1.0.0",
+                ),
+            ),
+        )
+        self.assertEqual(
+            version_only.exactness_scope, "pinned_upstream_artifact_adapter"
+        )
 
     def test_lookup_accepts_local_or_fully_qualified_id(self) -> None:
         local = get_implementation("swe", "rlm-0.1.3-upstream")
@@ -282,6 +309,17 @@ class ApplicationRegistryTests(unittest.TestCase):
                 any("identity" in item for item in candidate.unavailable_components)
             )
 
+        prime_source = get_study("swe", "prime-agent-source-0.7.1")
+        self.assertEqual(prime_source.fidelity, "caller_built_runtime_study")
+        self.assertTrue(
+            any(
+                "no authoritative released bundle digest" in item
+                for item in prime_source.unavailable_components
+            )
+        )
+        with self.assertRaisesRegex(ValueError, "is a study, not an implementation"):
+            get_implementation("swe", "prime-agent-source-0.7.1")
+
     def test_rlm_local_and_upstream_are_distinct_profiles(self) -> None:
         local = get_study("swe", "rlm-0.1.3-contract")
         upstream = get_implementation("swe", "rlm-0.1.3-upstream")
@@ -379,7 +417,7 @@ class ApplicationRegistryTests(unittest.TestCase):
                         profile.harnesses,
                         config_path,
                     )
-        self.assertEqual(config_count, 27)
+        self.assertEqual(config_count, 33)
         self.assertEqual(
             canonical_implementation_keys,
             {profile.key for profile in IMPLEMENTATIONS},
@@ -410,6 +448,14 @@ class ApplicationRegistryTests(unittest.TestCase):
 
 
 class ApplicationCLITests(unittest.TestCase):
+    def test_source_and_distribution_harnesses_are_registered(self) -> None:
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(main(["list-harnesses"]), 0)
+        names = set(output.getvalue().splitlines())
+        self.assertIn("codex_source", names)
+        self.assertIn("claude_code_agent_teams_distribution", names)
+
     def test_list_commands_support_human_and_json_output(self) -> None:
         output = io.StringIO()
         with redirect_stdout(output):

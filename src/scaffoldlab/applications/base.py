@@ -11,6 +11,7 @@ EXACT_IMPLEMENTATION_FIDELITIES = frozenset(
 )
 STUDY_FIDELITIES = frozenset(
     {
+        "caller_built_runtime_study",
         "source_matched_reimplementation",
         "topology_simulation",
         "inference_only_reimplementation",
@@ -105,6 +106,7 @@ class ImplementationProfile:
         if self.fidelity not in {
             "exact_public_protocol",
             "upstream_runtime_adapter",
+            "caller_built_runtime_study",
             "source_matched_reimplementation",
             "topology_simulation",
             "inference_only_reimplementation",
@@ -134,10 +136,11 @@ class ImplementationProfile:
                 "runnable and simulation profiles require providers and environments"
             )
         if self.fidelity == "upstream_runtime_adapter" and not any(
-            source.revision for source in self.sources
+            source.revision or source.version for source in self.sources
         ):
             raise ValueError(
-                "upstream runtime adapters require a pinned source revision"
+                "upstream runtime adapters require a pinned artifact version or "
+                "source revision"
             )
         if self.fidelity in {"topology_simulation", "documented_gap"} and not (
             self.unavailable_components
@@ -199,7 +202,7 @@ class ImplementationProfile:
                 return "published_runtime_protocol_boundary"
             return "published_protocol_boundary"
         if self.fidelity == "upstream_runtime_adapter":
-            return "pinned_upstream_runtime"
+            return "pinned_upstream_artifact_adapter"
         return None
 
     def as_dict(self) -> dict[str, Any]:
@@ -212,6 +215,13 @@ class ImplementationProfile:
             "catalog_kind": self.catalog_kind,
             "fidelity": self.fidelity,
             "exactness_scope": self.exactness_scope,
+            "source_or_protocol_pin_verified": (
+                self.fidelity in EXACT_IMPLEMENTATION_FIDELITIES
+            ),
+            # Catalog entries cannot attest the caller's interpreter, dependency
+            # tree, compiler, executable, model snapshot, or managed service state.
+            "bit_reproducible_runtime_verified": False,
+            "flagship_system_card_parity_claimed": False,
             "status": self.status,
             "runtime_owner": self.runtime_owner,
             "harnesses": [signature.as_dict() for signature in self.harnesses],

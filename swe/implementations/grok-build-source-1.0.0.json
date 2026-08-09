@@ -1,0 +1,25 @@
+{
+  "application": {
+    "name": "swe",
+    "implementation": "grok-build-source-1.0.0"
+  },
+  "limits": {
+    "max_model_calls": 1,
+    "max_concurrency": 1,
+    "wall_time_seconds": 1800,
+    "max_depth": 1
+  },
+  "capture_content": false,
+  "repeats": 1,
+  "random_seed": 20260810,
+  "metadata": {
+    "fidelity": "upstream_runtime_adapter",
+    "version": "1.0.0",
+    "revision": "8a14c91d88875a831a38b3a066b1683116bcb31c",
+    "boundary": "Builds a private git-archive export of the pinned Grok Build source with cargo --locked, then executes its official prompts, native subagents, tools, permissions, compaction, worktree behavior, and headless JSON protocol.",
+    "accounting": "Terminal JSON totals remain lower bounds for compaction, side-model, unfinished-child, and some nested calls.",
+    "build_identity": "Manifest preflight records the source export, Git, Cargo, rustc, and executable identities. Bit reproducibility additionally requires every optional SHA-256 pin and still does not pin the hosted model or service policy.",
+    "workspace_owner": "The adapter copies a caller-supplied seed, strips inherited Git administration, creates a fresh standalone baseline, and exports a bounded binary patch before deleting the trial; do not add a local environment block.",
+    "flagship_system_card_parity_claimed": false
+  }
+}

@@ -6,12 +6,13 @@ and fidelity labels. The only top-level applications are:
 
 | Application | Entry point | Exact implementations, studies, and gaps |
 | --- | --- | --- |
-| Browser | [`browser/`](browser/) | Exact OpenAI/xAI/Anthropic hosted boundaries and pinned MACU live in `implementations/`; Browser-Use/MACU clean-room variants and card topologies live in `studies/`. |
+| Browser | [`browser/`](browser/) | Exact OpenAI/xAI/Anthropic hosted boundaries plus pinned Browser-Use and MACU runtimes live in `implementations/`; the Browser-Use flat-fan-out pattern, local MACU subset, and card topologies remain `studies/`. |
 | Computer use | [`computer-use/`](computer-use/) | Exact OpenAI and Anthropic client protocols plus pinned generic MACU VM runtime; unverified compositions are studies and OSWorld parity is a gap. |
-| SWE | [`swe/`](swe/) | Exact hosted/CLI boundaries and clean pinned upstream runtimes are implementations; best-of-N, local RLM/Platoon/MACU, and system-card topologies are studies; training/evaluators remain gaps. |
+| SWE | [`swe/`](swe/) | Published hosted/CLI boundaries, pinned public source runtimes (including Codex), and the audited Claude Code distribution are implementations; best-of-N, local RLM/Platoon/MACU, and system-card topologies are studies; training/evaluators remain gaps. |
 
 The word `implementation` is reserved. It means either an exact published API/tool or
-CLI protocol boundary, or execution of a clean revision-pinned upstream runtime. Local
+CLI protocol boundary, execution of a clean revision-pinned public source runtime, or
+an audited official distribution when matching source is unavailable. Local
 reconstructions, baselines, and topology simulations must use `study` instead. The
 registry injects the registered harness signature and rejects category, provider,
 environment, or harness drift:
@@ -40,13 +41,17 @@ PYTHONPATH=src python3 -m scaffoldlab.cli list-implementations \
   --application browser --json
 PYTHONPATH=src python3 -m scaffoldlab.cli list-studies --application browser
 PYTHONPATH=src python3 -m scaffoldlab.cli list-gaps --application browser
+PYTHONPATH=src python3 -m scaffoldlab.cli list-frontier-sources --json
 ```
 
 “1:1” is always scoped. `exact_public_protocol` means the observable published API
 wire/client loop or released CLI stream contract, not the scheduler behind it.
-`upstream_runtime_adapter` means a clean source checkout is actually executed at its
-recorded revision. Closed schedulers, withheld prompts, unverified executable/package
-identity, missing evaluator images, and incomplete accounting remain visible rather
+`upstream_runtime_adapter` means a pinned upstream artifact is actually executed: a
+clean source revision where source exists, or a digest-checked official distribution
+where it does not. It does **not** mean bit-reproducible execution. The catalog and run
+artifacts separately report the public source/protocol pin and whether the interpreter,
+dependency tree, compiler, executable, model snapshot, managed policy, and accounting
+are verified. Closed schedulers and withheld system-card details remain visible rather
 than being guessed.
 
 The root `configs/` directory remains for backward-compatible controls and smoke
@@ -75,8 +80,14 @@ The application profiles resolve to these reusable mechanisms:
 | `external_context_json_search` | Context stays external; controller inspects, searches, and makes bounded subcalls | RLM-motivated ablation; explicitly not an RLM or REPL |
 | `openai_hosted_multi_agent` | Responses hosted multi-agent beta with optional developer tools | Exact public stateless HTTP request/continuation boundary; server scheduler closed |
 | `anthropic_managed_agents` | Managed Agents coordinator session | Exact public session, primary-event-list, and aggregate-usage boundary; server scheduler and sandbox hosted |
+| `browser_use_upstream` | Browser-Use `Agent` and `Browser` from a private archive of the pinned 0.13.7 commit | Pinned upstream tracked source; browser/model/dependency identity and complete accounting remain caller-controlled |
 | `prime_agent` | Released Prime Agent JSON runtime | Exact JSON v3 CLI boundary at version 0.7.1; executable identity is optional and runtime internals remain outside the claim |
+| `prime_agent_source` | Caller-built Prime Agent bundle beside pinned 0.7.1 source/lock evidence | Study only: the bundle is privately copied and hashed, but no adapter-owned build or released digest proves its source relationship |
 | `grok_build` | Released xAI Grok Build runtime with native subagents | Exact headless-JSON CLI boundary at version 1.0.0; npm/source identity and scheduler internals remain outside the claim |
+| `grok_build_source` | Cargo-locked Grok Build compiled from the audited public source | Official source, prompts, native subagents, and protocol run; compiler/binary pins and complete accounting remain explicit gaps |
+| `kimi_code_upstream` | Kimi Code 0.34.0 `Agent`/`AgentSwarm` source runtime | Every tracked blob/mode is matched to the pinned commit; caller-installed pnpm dependencies, hosted services, and whole-tree usage remain unavailable |
+| `codex_source` | OpenAI Codex 0.147.0 compiled from a private archive of the pinned public commit | Native `codex exec` prompts/tools/collaboration runtime with bounded SWE patch export; remote model/service policy and whole-tree accounting remain unpinned |
+| `claude_code_agent_teams_distribution` | Official Claude Code 2.1.226 Agent Teams distribution | Audited Darwin arm64 executable and native team/config evidence; matching source and server-managed policy are unavailable |
 | `xai_hosted_multi_agent` | xAI hosted 4- or 16-agent team with optional hosted web/X search | Exact public request boundary; plaintext state hidden, encrypted continuation unimplemented |
 
 No paid live-model comparison has been run in this repository yet. The included
@@ -101,8 +112,8 @@ audit; change that before using sensitive tasks.
 ## Application, environment, and provider coverage
 
 Eligible in-process profiles can be paired with one of four local environment
-types. Anthropic Managed Agents, xAI hosted multi-agent, Prime Agent, Grok Build,
-MACU upstream, and RLM upstream own their execution environment and reject a local
+types. Anthropic Managed Agents, Claude Code Agent Teams, Codex source, xAI hosted
+multi-agent, Browser-Use, Prime Agent, Grok Build, Kimi Code, MACU upstream, and RLM upstream own their execution environment and reject a local
 `config.environment`; OpenAI hosted multi-agent may use local developer tools
 through its HTTP continuation loop.
 
@@ -116,7 +127,11 @@ through its HTTP continuation loop.
 
 Provider adapters cover OpenAI Responses, Anthropic Messages, generic
 OpenAI-compatible Responses and Chat Completions, xAI's hosted multi-agent API,
-Anthropic Managed Agents, Prime Agent, Grok Build, pinned MACU, and pinned RLM.
+Anthropic Managed Agents, the official Claude Code distribution, pinned Codex source,
+Browser-Use, Prime Agent, Grok Build, Kimi Code, pinned MACU, and pinned RLM. Prime
+exposes an exact installed-CLI protocol plus a separate caller-built study; Grok
+exposes separate installed-protocol and source-built implementations so those
+evidence boundaries cannot be conflated.
 “OpenAI-compatible” means portable JSON function calling; it does not imply
 OpenAI-native computer/shell tools or the model vendor's hosted scheduler.
 
@@ -286,10 +301,11 @@ Managed session budgets are shared across all session threads and use public-lis
 `list_cost`. Enforcement occurs between model requests, so the request that crosses the
 cap finishes and can leave the final total slightly above it. Release runs must pass
 `--managed-agent-version`, and Scaffold Lab rejects an unversioned Managed invocation.
-The current manifest records the agent/environment identifiers and resolved agent
-version, but not a sanitized hash of the complete remote model, prompts, tools, roster,
-or environment definition. Export and hash those definitions separately until artifact
-capture gains that snapshot. `retain` preserves a resumable session for audit.
+The current manifest records the agent/environment identifiers and a canonical SHA-256
+of the complete resolved agent JSON returned by the session API, and it rejects that
+snapshot changing while the session runs. It does not persist the snapshot contents or
+prove the contents of referenced mutable environments, resources, or vaults. Export
+and hash those definitions separately. `retain` preserves a resumable session for audit.
 `archive` prevents new events while retaining history, and `delete` permanently removes
 the session record, events, and sandbox. A session that stops at `budget_reached` is
 recorded as an incomplete/error trial; the adapter does not automatically raise the cap
@@ -361,6 +377,32 @@ The adapter preserves observed root-message tokens/cost as lower bounds but mark
 whole-tree usage incomplete and cost unknown; therefore a successful exploratory
 answer still exits nonzero at Scaffold Lab's clean-release accounting gate.
 
+The caller-built Prime source study is separate. Check out revision
+`95afd319a78ae017a41241d50b013d656a0685ce`, run the repository's frozen
+`npm ci` and `npm run build` setup, and then point Scaffold Lab at that clean tree.
+The adapter executes `packages/coding-agent/dist/bundle/cli.js` through the selected
+Node binary and rechecks the source, lockfile, bundle, Node, npm, and workspace across
+the trial:
+
+```bash
+PYTHONPATH=src python3 -m scaffoldlab.cli run \
+  --tasks benchmarks/external_smoke.jsonl \
+  --config swe/studies/prime-agent-source-0.7.1.json \
+  --provider prime-agent-source \
+  --prime-source-checkout /path/to/pinned-prime-agent \
+  --prime-source-cwd /path/to/disposable-worktree \
+  --prime-source-provider openai \
+  --model YOUR_PINNED_MODEL_ID \
+  --prime-source-pass-env OPENAI_API_KEY \
+  --prime-source-allow-sensitive-environment \
+  --output runs/prime-agent-source
+```
+
+The adapter does not perform that install/build and no authoritative released bundle
+digest exists. The exact lockfile therefore does not prove the generated
+`node_modules` or bundle bytes. The three `--prime-source-*-sha256` pins make caller
+bytes stable for a run, but do not upgrade this study to source-runtime parity.
+
 To run the released Grok Build harness, install a pinned CLI (the audit target is
 `@xai-official/grok@1.0.0`) and pass authentication explicitly. Scaffold Lab uses a
 private prompt file, a fresh ephemeral `GROK_HOME`, disables memory/update checks,
@@ -396,6 +438,103 @@ whole-tree accounting. The adapter is faithful to the documented public CLI
 surface, not a reimplementation of the upstream orchestration policy. As with Prime,
 that conservative accounting makes exploratory runs fail the clean-release gate even
 when the upstream runtime returns a usable answer.
+
+The source-native Grok profile exports the audited commit with `git archive` into a
+private build root, rejects external Cargo configuration, builds it with a concrete
+Cargo/rustc toolchain and isolated homes/target directory, then invokes the resulting
+official binary without disabling native subagents:
+
+```bash
+PYTHONPATH=src python3 -m scaffoldlab.cli run \
+  --tasks benchmarks/external_smoke.jsonl \
+  --config swe/implementations/grok-build-source-1.0.0.json \
+  --provider grok-build-source \
+  --model grok-build \
+  --grok-source-checkout /path/to/pinned-grok-build \
+  --grok-source-workspace /path/to/clean-seed-workspace \
+  --grok-source-pass-env XAI_API_KEY \
+  --grok-source-allow-sensitive-environment \
+  --output runs/grok-build-source
+```
+
+It enforces the public Git revision, repository `SOURCE_REV`, `Cargo.lock` digest,
+private source-export hash, and pre/post build immutability. Pass concrete binaries
+from the pinned toolchain (not rustup proxies) and pin
+`--grok-source-git-sha256`, `--grok-source-cargo-sha256`,
+`--grok-source-rustc-sha256`, and `--grok-source-executable-sha256` when local build
+identity must be release-comparable. Successful runs export a bounded binary patch,
+including untracked files, before the disposable workspace is removed.
+
+Browser-Use and Kimi Code follow the same source-first rule. The browser profile runs
+the official 0.13.7 `Agent`, `Browser`, provider wrapper, prompts, history, and action
+loop from a bounded private archive; it is deliberately separate from the local
+flat-parallel scheduling study. The Kimi profile runs 0.34.0's official TypeScript
+entrypoint, v2 `Agent`/`AgentSwarm`, tools, permissions, and compaction after matching
+every tracked blob, symlink, and executable mode to the pinned commit. Its
+ignored/generated pnpm dependency tree is still caller-controlled. Their configs are
+`browser/implementations/browser-use-0.13.7-upstream.json` and
+`swe/implementations/kimi-code-0.34.0-upstream.json`. Both require one trial, clean
+disjoint checkout/workspace paths, scoped credentials, and caller-pinned dependency,
+runtime, browser/model identities. Neither public output proves whole-tree cost.
+Kimi's official print interface also carries the task in its `--prompt` process
+argument, so do not use it for secrets on a host where other users can inspect process
+arguments; use a dedicated VM/container until an equivalent stdin transport exists.
+
+The Codex source profile builds only a `git archive` of commit
+`be6e8eac029b183056b7e4402879f15d2c85f61b`, verifies the 0.147.0 manifests,
+Cargo.lock, Rust 1.95.0 Cargo/rustc versions, and records every local tool/binary
+digest during manifest preflight. Use concrete toolchain binaries, a scoped source
+credential that the adapter maps to Codex's required `CODEX_API_KEY`, and one clean
+seed workspace:
+
+```bash
+PYTHONPATH=src python3 -m scaffoldlab.cli run \
+  --tasks benchmarks/external_smoke.jsonl \
+  --config swe/implementations/openai-codex-source-0.147.0.json \
+  --provider codex-source \
+  --model YOUR_PINNED_CODEX_MODEL_ID \
+  --api-key-env OPENAI_API_KEY \
+  --codex-source-checkout /path/to/pinned-openai-codex \
+  --codex-source-workspace /path/to/clean-seed-workspace \
+  --codex-source-cargo-executable /path/to/toolchain/bin/cargo \
+  --codex-source-rustc-executable /path/to/toolchain/bin/rustc \
+  --codex-source-allow-sensitive-environment \
+  --output runs/codex-source
+```
+
+The requested v1/v2 topology and observed delegation are separate fields. V1 can be
+overridden by unpinned remote model metadata, so it is recorded as requested with the
+effective version unverified; a session is multi-agent only after completed
+`spawn_agent` events are observed. The adapter exports a bounded binary SWE patch
+before cleanup. It does not reproduce private ChatGPT routing, pin the remote model or
+cloud policy, or prove complete child-tree usage.
+
+Claude Code Agent Teams is an official **distribution** adapter, not a source adapter.
+Version 2.1.226 is accepted only on a platform with a bundled audited official digest
+(currently Darwin arm64). It keeps the default Claude Code system behavior and enables
+Agent Teams. Since v2.1.178 the team is implicit and session-derived: the adapter
+requires distinct named `Agent` calls, snapshots the matching live generated roster
+before Claude Code removes it automatically, and corroborates the persistent session
+task directory before accepting a run:
+
+```bash
+PYTHONPATH=src python3 -m scaffoldlab.cli run \
+  --tasks benchmarks/external_smoke.jsonl \
+  --config swe/implementations/claude-code-agent-teams-2.1.226.json \
+  --provider claude-code-agent-teams \
+  --model YOUR_PINNED_CLAUDE_MODEL_ID \
+  --api-key-env ANTHROPIC_API_KEY \
+  --claude-code-distribution-root /path/to/claude-code-package \
+  --claude-code-workspace /path/to/clean-seed-workspace \
+  --claude-code-max-budget-usd 10 \
+  --claude-code-allow-sensitive-environment \
+  --output runs/claude-code-agent-teams
+```
+
+Documented endpoint-managed settings fail closed, but remote server-managed policy
+cannot be independently observed. Matching executable source, system-card experiment
+prompts/timing/evaluator state, model snapshot, and authoritative whole-team accounting
+remain unavailable. Its disposable workspace also exports a bounded SWE patch.
 
 The pinned MACU adapter runs the released manager, graph scheduler, CUA workers,
 VM variants, replanning loop, and result ingestion for one generic blank-start
@@ -514,7 +653,7 @@ source.
 
 For in-process harnesses, `max_model_calls` counts every root and child backend
 invocation. For OpenAI hosted multi-agent, Anthropic Managed Agents, xAI hosted
-multi-agent, Prime Agent, Grok Build, MACU upstream, and RLM upstream, one Scaffold
+multi-agent, Browser-Use, Prime Agent, Grok Build, Kimi Code, MACU upstream, and RLM upstream, one Scaffold
 Lab call is one outer request/session that may contain many closed or
 upstream-managed calls. Anthropic
 reports authoritative aggregate session token usage and public-list-price cost, but the
@@ -531,6 +670,7 @@ not release approval.
 
 - [Source and fidelity audit](docs/source-audit.md)
 - [18-lab implementation coverage](docs/frontier-lab-coverage.md)
+- [Machine-readable 18-lab source/card manifest](src/scaffoldlab/applications/frontier_manifest.py)
 - [Controlled experiment protocol](docs/experiment-protocol.md)
 - [Architecture and extension points](docs/architecture.md)
 

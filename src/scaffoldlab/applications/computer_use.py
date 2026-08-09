@@ -6,7 +6,9 @@ from .sources import (
     MACU,
     MACU_PAPER,
     META_MUSE,
+    META_MUSE_EVAL,
     OPENAI_COMPUTER,
+    OPENAI_GPT56_CARD,
     OPENAI_MULTI_AGENT,
     OSWORLD2,
 )
@@ -35,7 +37,7 @@ PROFILES: tuple[ImplementationProfile, ...] = (
         unavailable_components=(
             "model training, full confirmation prompt, classifiers, and product runtime",
         ),
-        sources=(OPENAI_COMPUTER,),
+        sources=(OPENAI_COMPUTER, OPENAI_GPT56_CARD),
     ),
     profile(
         application="computer-use",
@@ -51,11 +53,12 @@ PROFILES: tuple[ImplementationProfile, ...] = (
         exact_components=(
             "documented multi-agent request plus GA computer client loop",
             "agent-attributed calls routed to isolated logical environments",
+            "published root and subagent injected coordination instructions",
         ),
         unavailable_components=(
-            "hosted scheduler source, injected prompts, and a published or live-verified combined multi-agent/computer compatibility contract",
+            "hosted scheduler source, independent observation of server-side prompt application, and a published or live-verified combined multi-agent/computer compatibility contract",
         ),
-        sources=(OPENAI_MULTI_AGENT, OPENAI_COMPUTER),
+        sources=(OPENAI_MULTI_AGENT, OPENAI_COMPUTER, OPENAI_GPT56_CARD),
     ),
     profile(
         application="computer-use",
@@ -102,7 +105,7 @@ PROFILES: tuple[ImplementationProfile, ...] = (
         unavailable_components=(
             "public computer action schema, scheduler API, prompts, limits, and timing",
         ),
-        sources=(META_MUSE,),
+        sources=(META_MUSE, META_MUSE_EVAL),
     ),
     profile(
         application="computer-use",

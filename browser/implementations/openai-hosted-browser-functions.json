@@ -32,6 +32,6 @@
   "random_seed": 20260810,
   "metadata": {
     "fidelity": "exact_public_protocol",
-    "boundary": "Published Responses multi-agent HTTP request, agent-attributed developer calls, and continuation only; hosted scheduler source, injected coordination prompts, and WebSocket response.inject are unavailable."
+    "boundary": "Published Responses multi-agent HTTP request, agent-attributed developer calls, continuation, and disclosed root/subagent injected instructions; hosted scheduler source, independent observation of server-side prompt application, and WebSocket response.inject are unavailable."
   }
 }

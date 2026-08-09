@@ -1,0 +1,24 @@
+{
+  "application": {
+    "name": "swe",
+    "implementation": "kimi-code-0.34.0-upstream"
+  },
+  "limits": {
+    "max_model_calls": 1,
+    "max_concurrency": 1,
+    "wall_time_seconds": 1800,
+    "max_depth": 1
+  },
+  "capture_content": false,
+  "repeats": 1,
+  "random_seed": 20260810,
+  "metadata": {
+    "fidelity": "upstream_runtime_adapter",
+    "version": "0.34.0",
+    "revision": "f0614c53e59f7e1e257412063b059b9eb82764cf",
+    "boundary": "Executes the official TypeScript src/main.ts after matching every tracked worktree blob to the pinned commit, through the caller-installed frozen-lockfile tsx dependency. Kimi owns its prompts, v2 Agent and AgentSwarm tools, permission policy, compaction, subagent scheduling, and workspace tools; ignored and generated dependency content remains outside the attestation.",
+    "accounting": "The public stream-json protocol does not emit whole-tree token or cost totals, so usage is explicitly unknown and incomplete.",
+    "prompt_transport": "The official non-interactive interface accepts the task through --prompt, so local process inspection can observe prompt text during the run.",
+    "workspace_owner": "Kimi Code owns a caller-supplied disposable single-trial worktree; do not add a local environment block."
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "application": {
+    "name": "swe",
+    "implementation": "openai-codex-source-0.147.0"
+  },
+  "limits": {
+    "max_model_calls": 1,
+    "max_concurrency": 1,
+    "wall_time_seconds": 3600,
+    "max_depth": 1
+  },
+  "capture_content": false,
+  "repeats": 1,
+  "random_seed": 20260810,
+  "metadata": {
+    "fidelity": "upstream_runtime_adapter",
+    "version": "rust-v0.147.0",
+    "revision": "be6e8eac029b183056b7e4402879f15d2c85f61b",
+    "boundary": "Builds a private git-archive export of the pinned public Codex source and executes its native codex exec JSONL runtime and multi-agent tools. A run counts as multi-agent only when completed spawn_agent evidence is observed.",
+    "accounting": "The public exec stream does not prove complete child-tree model calls, tokens, or cost; usage remains incomplete and cost unknown.",
+    "build_identity": "The manifest preflight records source-export, Git, Cargo, rustc, and executable identities. Bit reproducibility additionally requires all optional SHA-256 pins and still does not pin the remote model or service policy.",
+    "workspace_owner": "Codex receives one disposable copy with inherited Git metadata stripped and a fresh standalone baseline; do not add a local environment block.",
+    "flagship_system_card_parity_claimed": false
+  }
+}

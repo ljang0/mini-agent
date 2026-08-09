@@ -1,0 +1,24 @@
+{
+  "application": {
+    "name": "swe",
+    "study": "prime-agent-source-0.7.1"
+  },
+  "limits": {
+    "max_model_calls": 1,
+    "max_concurrency": 1,
+    "wall_time_seconds": 1800,
+    "max_depth": 1
+  },
+  "capture_content": false,
+  "repeats": 1,
+  "random_seed": 20260810,
+  "metadata": {
+    "fidelity": "caller_built_runtime_study",
+    "version": "0.7.1",
+    "revision": "95afd319a78ae017a41241d50b013d656a0685ce",
+    "boundary": "Executes a private immutable copy of a caller-built Prime Agent bundle associated with an ordinary clean-Git check of the pinned source revision and exact audited lockfile. The adapter does not install dependencies or build the bundle, and no authoritative released bundle digest proves the source-to-runtime relationship.",
+    "accounting": "Assistant message_end usage and cost are lower bounds because the public event stream does not prove complete child-tree attribution.",
+    "build_identity": "Optional caller-supplied Node, npm, and bundle SHA-256 pins make those local bytes stable for a run; they do not turn them into an authoritative upstream build.",
+    "workspace_owner": "The caller-built bundle owns a disposable single-trial worktree; do not add a local environment block."
+  }
+}

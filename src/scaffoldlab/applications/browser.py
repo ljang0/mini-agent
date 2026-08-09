@@ -9,7 +9,10 @@ from .sources import (
     MACU,
     MACU_PAPER,
     META_MUSE,
+    META_MUSE_EVAL,
+    OPENAI_GPT56_CARD,
     OPENAI_MULTI_AGENT,
+    XAI_GROK420_CARD,
     XAI_MULTI_AGENT,
 )
 
@@ -42,12 +45,13 @@ PROFILES: tuple[ImplementationProfile, ...] = (
             "responses_multi_agent=v1 request and HTTP continuation",
             "agent-attributed developer function calls",
             "shared tools and maximum concurrent subagents",
+            "published root and subagent injected coordination instructions",
         ),
         unavailable_components=(
-            "hosted scheduler source and injected coordination prompts",
+            "hosted scheduler source and independent observation that the service applied the published injected instructions",
             "WebSocket response.inject transport",
         ),
-        sources=(OPENAI_MULTI_AGENT,),
+        sources=(OPENAI_MULTI_AGENT, OPENAI_GPT56_CARD),
     ),
     profile(
         application="browser",
@@ -69,11 +73,12 @@ PROFILES: tuple[ImplementationProfile, ...] = (
         exact_components=(
             "documented hosted multi-agent request",
             "documented web_search tool declaration",
+            "published root and subagent injected coordination instructions",
         ),
         unavailable_components=(
-            "hosted scheduler, search implementation, and internal prompts",
+            "hosted scheduler, search implementation, unpublished internal instructions, and independent observation of server-side prompt application",
         ),
-        sources=(OPENAI_MULTI_AGENT,),
+        sources=(OPENAI_MULTI_AGENT, OPENAI_GPT56_CARD),
     ),
     profile(
         application="browser",
@@ -93,7 +98,7 @@ PROFILES: tuple[ImplementationProfile, ...] = (
             "hosted web_search tool declaration and aggregate usage",
         ),
         unavailable_components=("server scheduler and plaintext child trajectories",),
-        sources=(XAI_MULTI_AGENT,),
+        sources=(XAI_MULTI_AGENT, XAI_GROK420_CARD),
     ),
     profile(
         application="browser",
@@ -113,7 +118,7 @@ PROFILES: tuple[ImplementationProfile, ...] = (
             "hosted web_search tool declaration and aggregate usage",
         ),
         unavailable_components=("server scheduler and plaintext child trajectories",),
-        sources=(XAI_MULTI_AGENT,),
+        sources=(XAI_MULTI_AGENT, XAI_GROK420_CARD),
     ),
     profile(
         application="browser",
@@ -133,7 +138,29 @@ PROFILES: tuple[ImplementationProfile, ...] = (
         unavailable_components=(
             "public API scheduler controls, child traces, prompts, limits, and timing",
         ),
-        sources=(META_MUSE,),
+        sources=(META_MUSE, META_MUSE_EVAL),
+    ),
+    profile(
+        application="browser",
+        profile_id="browser-use-0.13.7-upstream",
+        title="Pinned Browser-Use 0.13.7 Agent and Browser runtime",
+        fidelity="upstream_runtime_adapter",
+        runtime_owner="browser_use_upstream",
+        harnesses=(_h("browser_use_upstream"),),
+        providers=("browser-use-upstream",),
+        environment_types=("none",),
+        model_families=("models supported by Browser-Use 0.13.7 LLM wrappers",),
+        exact_components=(
+            "official Agent policy, prompts, history, Browser runtime, actions, and model loop",
+            "official provider wrapper selected from the pinned source checkout",
+            "clean immutable Git checkout and bounded JSON-stdin process boundary",
+        ),
+        unavailable_components=(
+            "browser binary, Python dependency, model, and provider bit identity require caller pins",
+            "TokenCost records are an observed lower bound and mutable pricing is intentionally not fetched",
+            "the parallel-agents example remains a separate scheduling study rather than this single Agent session",
+        ),
+        sources=(BROWSER_USE,),
     ),
     profile(
         application="browser",

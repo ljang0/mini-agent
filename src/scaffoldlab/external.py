@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
 from .providers import ProviderError
+from .environment_policy import reject_runtime_environment_overrides
 from .types import ModelRequest, ModelResponse, Usage
 
 
@@ -1210,6 +1211,12 @@ class PrimeAgentJSONBackend:
         self.cwd = cwd.resolve()
         if not self.cwd.is_dir():
             raise ValueError(f"Prime Agent cwd is not a directory: {self.cwd}")
+        git_pointer = self.cwd / ".git"
+        if git_pointer.is_file() or git_pointer.is_symlink():
+            raise ValueError(
+                "Prime Agent cwd cannot be a linked Git worktree; use a standalone "
+                "clone or a directory without inherited Git metadata"
+            )
         if not isinstance(executable, str) or not executable:
             raise ValueError("executable must be a non-empty string")
         for name, value in (("provider", provider), ("model", model)):
@@ -1233,6 +1240,11 @@ class PrimeAgentJSONBackend:
             not isinstance(name, str) or not name or "=" in name for name in pass_env
         ):
             raise ValueError("pass_env entries must be non-empty environment names")
+        reject_runtime_environment_overrides(
+            pass_env,
+            label="Prime Agent",
+            reserved_prefixes=("PI_", "PRIME_AGENT_"),
+        )
         if not isinstance(allow_sensitive_environment, bool):
             raise ValueError("allow_sensitive_environment must be a boolean")
         if pass_env and not allow_sensitive_environment:
@@ -1341,51 +1353,66 @@ class PrimeAgentJSONBackend:
         )
         self._resolved_executable = resolved_executable
         self._executable_identity = identity
-        try:
-            process = await asyncio.create_subprocess_exec(
-                resolved_executable,
-                "--version",
-                cwd=str(self.cwd),
-                env=_process_environment(()),
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                start_new_session=os.name == "posix",
-            )
-        except FileNotFoundError as exc:
-            raise ProviderError(
-                f"Prime Agent executable not found: {self.executable!r}"
-            ) from exc
-        captured = _CapturedOutput()
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                _communicate_limited(
-                    process,
-                    input_data=None,
-                    max_output_bytes=min(self.max_output_bytes, 1024 * 1024),
-                    captured=captured,
-                ),
-                timeout=min(self.timeout_seconds, 30.0),
-            )
-        except asyncio.TimeoutError:
+        with tempfile.TemporaryDirectory(
+            prefix="scaffoldlab-prime-version-home-"
+        ) as temp_dir:
+            temp_root = Path(temp_dir)
+            home = temp_root / "home"
+            xdg_config = temp_root / "xdg-config"
+            home.mkdir(mode=0o700)
+            xdg_config.mkdir(mode=0o700)
+            probe_environment = _process_environment(())
+            probe_environment["HOME"] = str(home)
+            probe_environment["XDG_CONFIG_HOME"] = str(xdg_config)
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    resolved_executable,
+                    "--version",
+                    cwd=str(self.cwd),
+                    env=probe_environment,
+                    stdin=asyncio.subprocess.DEVNULL,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    start_new_session=os.name == "posix",
+                )
+            except FileNotFoundError as exc:
+                raise ProviderError(
+                    f"Prime Agent executable not found: {self.executable!r}"
+                ) from exc
+            captured = _CapturedOutput()
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    _communicate_limited(
+                        process,
+                        input_data=None,
+                        max_output_bytes=min(self.max_output_bytes, 1024 * 1024),
+                        captured=captured,
+                    ),
+                    timeout=min(self.timeout_seconds, 30.0),
+                )
+            except asyncio.TimeoutError:
+                await _terminate_process_tree(process)
+                raise ProviderError("Prime Agent version probe timed out")
+            except asyncio.CancelledError:
+                await _terminate_process_tree(process)
+                raise
+            except _ProcessOutputLimitExceeded as exc:
+                await _terminate_process_tree(process)
+                raise ProviderError(
+                    "Prime Agent version probe exceeded its output limit",
+                    raw={
+                        "stdout": bytes(captured.stdout).decode(
+                            "utf-8", errors="replace"
+                        ),
+                        "stderr": bytes(captured.stderr).decode(
+                            "utf-8", errors="replace"
+                        ),
+                    },
+                ) from exc
+            except Exception:
+                await _terminate_process_tree(process)
+                raise
             await _terminate_process_tree(process)
-            raise ProviderError("Prime Agent version probe timed out")
-        except asyncio.CancelledError:
-            await _terminate_process_tree(process)
-            raise
-        except _ProcessOutputLimitExceeded as exc:
-            await _terminate_process_tree(process)
-            raise ProviderError(
-                "Prime Agent version probe exceeded its output limit",
-                raw={
-                    "stdout": bytes(captured.stdout).decode("utf-8", errors="replace"),
-                    "stderr": bytes(captured.stderr).decode("utf-8", errors="replace"),
-                },
-            ) from exc
-        except Exception:
-            await _terminate_process_tree(process)
-            raise
-        await _terminate_process_tree(process)
         combined = "\n".join(
             part
             for part in (

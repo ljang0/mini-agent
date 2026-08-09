@@ -1,0 +1,23 @@
+{
+  "application": {
+    "name": "browser",
+    "implementation": "browser-use-0.13.7-upstream"
+  },
+  "limits": {
+    "max_model_calls": 1,
+    "max_concurrency": 1,
+    "wall_time_seconds": 1800,
+    "max_depth": 1
+  },
+  "capture_content": false,
+  "repeats": 1,
+  "random_seed": 20260810,
+  "metadata": {
+    "fidelity": "upstream_runtime_adapter",
+    "version": "0.13.7",
+    "revision": "f0aa3a8bb03779c71a5aa262d389e3bfe6b77cdc",
+    "boundary": "Executes Browser-Use's official Agent, Browser, prompts, history, actions, provider wrapper, and model loop from a bounded private git archive of the pinned commit. The resolved Git and Python identities are recorded and checked through the trial. It is distinct from the flat parallel-agents example study.",
+    "accounting": "Upstream TokenCost entries are retained as incomplete lower bounds; provider pricing is intentionally not fetched.",
+    "workspace_owner": "Browser-Use owns its browser and tools; do not add a Scaffold Lab browser environment."
+  }
+}

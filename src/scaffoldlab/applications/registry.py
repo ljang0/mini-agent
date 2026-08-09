@@ -394,6 +394,7 @@ def resolve_application_config(
             f"identity still requires: {'; '.join(profile.unavailable_components)}"
         )
     elif profile.fidelity in {
+        "caller_built_runtime_study",
         "source_matched_reimplementation",
         "inference_only_reimplementation",
     }:

@@ -50,7 +50,7 @@ left to documentation convention.
 
 When `harnesses` is omitted, the profile supplies its declared signature. An
 explicit harness list must match exactly. `list-implementations` exposes only exact
-published boundaries and pinned upstream runtimes. `list-studies`, `list-gaps`, and
+published boundaries and pinned upstream artifacts. `list-studies`, `list-gaps`, and
 `list-profiles` expose the remaining tiers. A profile marked `catalog_only` documents
 a source or gap but cannot be run.
 
@@ -64,23 +64,25 @@ a source or gap but cannot be run.
 - An **evaluation environment** supplies task reset and scoring. BrowserGym,
   SWE-bench, and OSWorld belong here even when they also expose an execution API.
 
-Profiles use seven deliberately narrow fidelity labels:
+Profiles use eight deliberately narrow fidelity labels:
 
 | Label | Meaning |
 | --- | --- |
 | `exact_public_protocol` | The documented API request/action/response or released CLI stream boundary is implemented at the named scope; scheduler/runtime internals and executable identity are included only when verified. |
-| `upstream_runtime_adapter` | A clean source checkout at the cataloged revision owns its scheduler; Scaffold Lab wraps its non-interactive boundary and records only observable accounting. |
+| `upstream_runtime_adapter` | A pinned public source runtime or audited official distribution owns its scheduler; Scaffold Lab wraps its non-interactive boundary and records only observable accounting. This label does not imply public source, a bit-reproducible build, or flagship-product parity. |
+| `caller_built_runtime_study` | A caller-built artifact is executed beside source/lockfile evidence, but no authoritative build step or digest proves that the runtime bytes came from that source. |
 | `source_matched_reimplementation` | Public mechanics are reimplemented, with named missing runtime details. |
 | `topology_simulation` | Only disclosed roles, limits, or communication shape are approximated. |
 | `inference_only_reimplementation` | An inference control is implemented without the named training procedure or checkpoint. |
 | `controlled_baseline` | A deliberately simple experimental control with no named-system parity claim. |
 | `documented_gap` | A source, training method, or evaluation target is cataloged but not runnable as that artifact. |
 
-The first two labels are the only implementation labels. The middle four are studies,
+The first two labels are the only implementation labels. The middle five are studies,
 even when runnable. `documented_gap` is catalog-only. Exact public protocols reproduce
-only the named public boundary; upstream adapters reproduce the released runtime only
-under the recorded source revision and caller-supplied dependency/model/environment
-pins. For an exact application selection, the applicable public identity is
+only the named public boundary; upstream adapters execute only the recorded public
+source revision or official distribution boundary. Their dependency, compiler,
+executable, model, and environment identity is part of the claim only when the run
+manifest verifies it. For an exact application selection, the applicable public identity is
 authoritative: CLI versions, source revisions, beta versions, and documented
 computer-model families must match it. Exact MACU
 profiles also require a clean checkout; its dirty-checkout escape hatch remains
@@ -204,10 +206,22 @@ bounds with incomplete/unknown accounting. The bridge covers string context and
 selected backend/environment/limit settings, not structured context, custom tools,
 compaction, persistence, alternate backends, or sampling/orchestrator configuration.
 
-External CLI adapters run only in a caller-provisioned single-trial workspace.
-Scaffold Lab records resolved executable identity, version, Git state, and pre/post
-workspace hashes, but does not claim that a version string proves bit identity with a
-source snapshot.
+The pinned Codex and Grok Build source adapters create private `git archive` exports,
+build and run those exports with isolated configuration/build homes, replace inherited
+workspace Git administration with a fresh standalone baseline, and capture a bounded
+binary patch before deleting the trial. The Claude Code adapter applies the same
+workspace and patch discipline to an audited official distribution; matching runtime
+source is not public. These adapters execute only SWE profiles. They do not reproduce
+the labs' separate browser, computer-use, hosted-service, model, or system-card
+boundaries, and patch generation is not SWE-bench evaluation.
+
+External runtime adapters run only in a caller-provisioned single-trial workspace.
+Before the matrix manifest is fingerprinted, each adapter's optional
+`prepare_for_manifest` preflight resolves the source/distribution, executable, and
+toolchain identities that it can verify. Scaffold Lab records those identities, Git
+state, and pre/post workspace hashes, but does not claim that a version string—or a
+locally compiled executable without every build input pinned—proves bit identity with
+a source snapshot.
 
 ## Artifacts and privacy
 
@@ -216,9 +230,10 @@ Each matrix writes `manifest.json`, `results.jsonl`, `traces/*.jsonl`, and
 records configured provider settings, environment
 configuration, budgets, selected package versions, task/harness data, and a hash of
 `src/scaffoldlab/**/*.py`. That hash is not a hash of the entire checkout, dependency
-lock, Playwright browser binary, or remote hosted-agent definition. In particular, the
-Managed adapter currently records agent/environment IDs and the resolved agent version
-without persisting a sanitized complete model/prompt/tool/roster/environment snapshot.
+lock, or Playwright browser binary. The Managed adapter additionally records a
+canonical SHA-256 of the complete resolved agent JSON returned by the session API and
+checks it for drift, but does not persist that JSON or content-hash the referenced
+mutable environment, resources, and vaults.
 Results include model/tool counts and tool-output bytes at the scope observable to the
 adapter.
 
@@ -258,8 +273,9 @@ contain credentials, screenshots, proprietary code, or personal data.
   observable outer adapter unless an explicit provider-side field says otherwise.
 - OpenAI hosted developer tools use stateless non-streaming HTTP; WebSocket transport
   and live combined native computer/shell compatibility remain unimplemented.
-- Managed Agents artifacts do not yet include a sanitized complete remote agent and
-  environment definition, and primary events are not a complete child-thread trace.
+- Managed Agents artifacts hash but do not persist the resolved remote-agent snapshot;
+  they do not content-hash the mutable environment, and primary events are not a
+  complete child-thread trace.
 - `backend_active_union_seconds` is an interval union, not a causal or
   token-rate-normalized critical path.
 

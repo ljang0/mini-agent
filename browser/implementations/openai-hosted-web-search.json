@@ -18,6 +18,6 @@
   "random_seed": 20260810,
   "metadata": {
     "fidelity": "exact_public_protocol",
-    "boundary": "Published Responses multi-agent request and hosted web_search declaration only; hosted scheduler, search implementation, and internal prompts remain closed."
+    "boundary": "Published Responses multi-agent request, hosted web_search declaration, and disclosed root/subagent injected instructions; hosted scheduler, search implementation, unpublished internal instructions, and independent observation of server-side prompt application remain closed."
   }
 }

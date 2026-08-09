@@ -10,12 +10,19 @@ from typing import Any, Mapping, Sequence
 from .applications import (
     ApplicationSelection,
     list_applications as catalog_applications,
+    list_frontier_labs as catalog_frontier_labs,
     list_gaps as catalog_gaps,
     list_implementations as catalog_implementations,
     list_profiles as catalog_profiles,
     list_studies as catalog_studies,
     resolve_application_config,
 )
+from .browser_use_external import BrowserUseUpstreamBackend
+from .claude_code_source import (
+    CLAUDE_CODE_DISTRIBUTION_VERSION,
+    ClaudeCodeAgentTeamsDistributionBackend,
+)
+from .codex_source import CODEX_SOURCE_REVISION, CodexSourceBackend
 from .evaluation import (
     MatrixRunner,
     _atomic_write_text,
@@ -29,21 +36,30 @@ from .external import (
     PrimeAgentJSONBackend,
     RLMUpstreamBackend,
 )
+from .grok_source import GROK_BUILD_PUBLIC_REVISION, GrokBuildSourceBackend
+from .kimi_upstream import KimiCodeUpstreamBackend
+from .prime_source import PRIME_AGENT_SOURCE_REVISION, PrimeAgentSourceBackend
 from .harnesses import (
     AnthropicManagedAgentsHarness,
     AsyncSubagentsHarness,
     BlockingOrchestratorHarness,
+    BrowserUseUpstreamHarness,
+    ClaudeCodeAgentTeamsDistributionHarness,
+    CodexSourceHarness,
     FixedAgentTeamHarness,
     ExternalContextJSONSearchHarness,
     FlatParallelHarness,
     GrokBuildHarness,
+    GrokBuildSourceHarness,
     Harness,
+    KimiCodeUpstreamHarness,
     MACUHarness,
     MACUUpstreamHarness,
     OpenAIHostedMultiAgentHarness,
     ParallelBestOfNHarness,
     PlatoonRecursiveInferenceHarness,
     PrimeAgentHarness,
+    PrimeAgentSourceHarness,
     RLMREPLHarness,
     RLMUpstreamHarness,
     RecursiveDelegationHarness,
@@ -66,8 +82,13 @@ HARNESS_TYPES: Mapping[str, type[Harness]] = {
     "single": SingleAgentHarness,
     "flat_parallel": FlatParallelHarness,
     "grok_build": GrokBuildHarness,
+    "grok_build_source": GrokBuildSourceHarness,
+    "kimi_code_upstream": KimiCodeUpstreamHarness,
     "parallel_best_of_n": ParallelBestOfNHarness,
     "blocking_orchestrator": BlockingOrchestratorHarness,
+    "browser_use_upstream": BrowserUseUpstreamHarness,
+    "claude_code_agent_teams_distribution": (ClaudeCodeAgentTeamsDistributionHarness),
+    "codex_source": CodexSourceHarness,
     "fixed_agent_team": FixedAgentTeamHarness,
     "async_subagents": AsyncSubagentsHarness,
     "macu_dynamic_dag": MACUHarness,
@@ -79,6 +100,7 @@ HARNESS_TYPES: Mapping[str, type[Harness]] = {
     "external_context_json_search": ExternalContextJSONSearchHarness,
     "openai_hosted_multi_agent": OpenAIHostedMultiAgentHarness,
     "prime_agent": PrimeAgentHarness,
+    "prime_agent_source": PrimeAgentSourceHarness,
     "xai_hosted_multi_agent": XAIHostedMultiAgentHarness,
 }
 
@@ -97,10 +119,20 @@ _EXACT_RUNTIME_PIN_BINDINGS: Mapping[str, tuple[str, str, str]] = {
         "version",
         "Prime Agent version",
     ),
+    "prime-agent-source": (
+        "prime_source_expected_revision",
+        "revision",
+        "Prime Agent source revision",
+    ),
     "grok-build": (
         "grok_expected_version",
         "version",
         "Grok Build version",
+    ),
+    "grok-build-source": (
+        "grok_source_expected_revision",
+        "revision",
+        "Grok Build source revision",
     ),
     "macu-upstream": (
         "macu_expected_checkout_revision",
@@ -112,6 +144,37 @@ _EXACT_RUNTIME_PIN_BINDINGS: Mapping[str, tuple[str, str, str]] = {
         "revision",
         "RLM checkout revision",
     ),
+    "kimi-code-upstream": (
+        "kimi_expected_checkout_revision",
+        "revision",
+        "Kimi Code checkout revision",
+    ),
+    "browser-use-upstream": (
+        "browser_use_expected_checkout_revision",
+        "revision",
+        "Browser-Use checkout revision",
+    ),
+    "codex-source": (
+        "codex_source_expected_revision",
+        "revision",
+        "OpenAI Codex source revision",
+    ),
+    "claude-code-agent-teams": (
+        "claude_code_expected_version",
+        "version",
+        "Claude Code distribution version",
+    ),
+}
+
+_EXACT_RUNTIME_SOURCE_TITLES: Mapping[str, str] = {
+    "claude-code-agent-teams": "Claude Code Agent Teams documentation",
+}
+
+_EXACT_PROVIDER_ORIGINS: Mapping[str, str] = {
+    "openai-responses": "https://api.openai.com/v1",
+    "anthropic-messages": "https://api.anthropic.com/v1",
+    "anthropic-managed-agents": "https://api.anthropic.com/v1",
+    "xai-responses": "https://api.x.ai/v1",
 }
 
 _EXACT_MODEL_PREFIXES: Mapping[str, tuple[str, ...]] = {
@@ -135,59 +198,88 @@ def _matches_model_prefix(model: str, prefix: str) -> bool:
 def _enforce_exact_application_identity(
     args: argparse.Namespace, application: ApplicationSelection | None
 ) -> None:
-    """Fail closed when an exact selection drifts from its public identity.
+    """Fail closed when a catalog selection drifts from its recorded identity.
 
     Raw legacy configs deliberately have no application selection and retain their
-    existing override behavior. Studies cannot reach this path as implementations.
+    existing override behavior. Provider origins and model allowlists apply only to
+    exact implementations; recorded runtime pins apply to every selected profile.
     """
 
-    if application is None or application.selection_kind != "implementation":
+    if application is None:
         return
 
     profile = application.profile
-    allowed_model_prefixes = _EXACT_MODEL_PREFIXES.get(profile.key)
-    if allowed_model_prefixes is not None:
-        selected_model = getattr(args, "model", None)
-        if not isinstance(selected_model, str) or not any(
-            _matches_model_prefix(selected_model, prefix)
-            for prefix in allowed_model_prefixes
+    exact_implementation = application.selection_kind == "implementation"
+    if exact_implementation:
+        official_origin = _EXACT_PROVIDER_ORIGINS.get(args.provider)
+        selected_origin = getattr(args, "base_url", None)
+        if (
+            official_origin is not None
+            and selected_origin is not None
+            and selected_origin.rstrip("/") != official_origin
         ):
             raise ValueError(
-                f"exact implementation {profile.key!r} requires a documented "
-                f"compatible model prefix from {list(allowed_model_prefixes)!r}; "
-                f"--model={selected_model!r} is outside that boundary"
+                f"exact implementation {profile.key!r} requires official provider "
+                f"origin {official_origin!r}; --base-url={selected_origin!r} is a "
+                "different experimental condition. Use an uncataloged compatible "
+                "provider or study for proxies and alternate endpoints."
             )
+
+        allowed_model_prefixes = _EXACT_MODEL_PREFIXES.get(profile.key)
+        if allowed_model_prefixes is not None:
+            selected_model = getattr(args, "model", None)
+            if not isinstance(selected_model, str) or not any(
+                _matches_model_prefix(selected_model, prefix)
+                for prefix in allowed_model_prefixes
+            ):
+                raise ValueError(
+                    f"exact implementation {profile.key!r} requires a documented "
+                    "compatible model prefix from "
+                    f"{list(allowed_model_prefixes)!r}; --model={selected_model!r} "
+                    "is outside that boundary"
+                )
 
     binding = _EXACT_RUNTIME_PIN_BINDINGS.get(args.provider)
     if binding is not None:
         argument_name, source_field, label = binding
+        selection_label = (
+            "exact implementation" if exact_implementation else "catalog study"
+        )
         if not hasattr(args, argument_name):
             raise ValueError(
-                f"exact implementation {profile.key!r} requires runtime pin "
+                f"{selection_label} {profile.key!r} requires runtime pin "
                 f"argument {argument_name!r}"
             )
         selected_pin = getattr(args, argument_name)
+        sources = profile.sources
+        source_title = _EXACT_RUNTIME_SOURCE_TITLES.get(args.provider)
+        if source_title is not None:
+            sources = tuple(
+                source for source in sources if source.title == source_title
+            )
         source_pins = {
             getattr(source, source_field)
-            for source in profile.sources
+            for source in sources
             if getattr(source, source_field)
         }
         if len(source_pins) != 1:
             raise ValueError(
-                f"exact implementation {profile.key!r} must cite exactly one "
+                f"{selection_label} {profile.key!r} must cite exactly one "
                 f"{label} pin; found {sorted(source_pins)!r}"
             )
         recorded_pin = next(iter(source_pins))
         if selected_pin != recorded_pin:
             option = "--" + argument_name.replace("_", "-")
             raise ValueError(
-                f"exact implementation {profile.key!r} is pinned to {label} "
+                f"{selection_label} {profile.key!r} is pinned to {label} "
                 f"{recorded_pin!r}; {option}={selected_pin!r} would change the "
                 "cataloged runtime boundary"
             )
 
-    if args.provider == "macu-upstream" and getattr(
-        args, "macu_allow_dirty_checkout", False
+    if (
+        exact_implementation
+        and args.provider == "macu-upstream"
+        and getattr(args, "macu_allow_dirty_checkout", False)
     ):
         raise ValueError(
             f"exact implementation {profile.key!r} requires a clean MACU checkout; "
@@ -428,6 +520,95 @@ def _build_backend(args: argparse.Namespace, config: Mapping[str, Any]) -> Any:
             max_output_bytes=args.prime_agent_max_output_bytes,
             allow_sensitive_environment=(args.prime_agent_allow_sensitive_environment),
         )
+    if args.provider == "prime-agent-source":
+        if extra_body:
+            raise ValueError(
+                "provider_extra_body is not supported by Prime Agent source"
+            )
+        if any(
+            value is not None
+            for value in (
+                args.input_price,
+                args.output_price,
+                args.cache_read_price,
+                args.cache_write_price,
+            )
+        ):
+            raise ValueError(
+                "Prime Agent source usage does not prove complete child-tree "
+                "accounting; remove token-price flags"
+            )
+        if args.prime_source_checkout is None:
+            raise ValueError("--prime-source-checkout is required")
+        if args.prime_source_cwd is None:
+            raise ValueError(
+                "--prime-source-cwd is required; use an explicit disposable worktree"
+            )
+        for path, label in (
+            (args.prime_source_checkout, "--prime-source-checkout"),
+            (args.prime_source_cwd, "--prime-source-cwd"),
+        ):
+            if _paths_overlap(path, args.output):
+                raise ValueError(f"--output and {label} must be disjoint directories")
+        return PrimeAgentSourceBackend(
+            checkout=args.prime_source_checkout,
+            cwd=args.prime_source_cwd,
+            node_executable=args.prime_source_node_executable,
+            npm_executable=args.prime_source_npm_executable,
+            provider=args.prime_source_provider,
+            model=args.model,
+            expected_revision=args.prime_source_expected_revision,
+            expected_node_sha256=args.prime_source_node_sha256,
+            expected_npm_sha256=args.prime_source_npm_sha256,
+            expected_bundle_sha256=args.prime_source_bundle_sha256,
+            timeout_seconds=args.prime_source_timeout_seconds,
+            pass_env=args.prime_source_pass_env,
+            max_output_bytes=args.prime_source_max_output_bytes,
+            allow_sensitive_environment=(args.prime_source_allow_sensitive_environment),
+        )
+    if args.provider == "browser-use-upstream":
+        if extra_body:
+            raise ValueError(
+                "provider_extra_body is not supported by Browser-Use upstream"
+            )
+        if any(
+            value is not None
+            for value in (
+                args.input_price,
+                args.output_price,
+                args.cache_read_price,
+                args.cache_write_price,
+            )
+        ):
+            raise ValueError(
+                "Browser-Use reports incomplete token lower bounds; remove "
+                "token-price flags"
+            )
+        if args.browser_use_checkout is None:
+            raise ValueError("--browser-use-checkout is required")
+        if not args.model:
+            raise ValueError("--model is required for Browser-Use upstream")
+        if _paths_overlap(args.browser_use_checkout, args.output):
+            raise ValueError(
+                "--output and --browser-use-checkout must be disjoint directories"
+            )
+        return BrowserUseUpstreamBackend(
+            checkout=args.browser_use_checkout,
+            provider=args.browser_use_llm_provider,
+            model=args.model,
+            python_executable=args.browser_use_python_executable,
+            llm_kwargs=args.browser_use_llm_json,
+            browser_kwargs=args.browser_use_browser_json,
+            agent_kwargs=args.browser_use_agent_json,
+            max_steps=args.browser_use_max_steps,
+            process_timeout_seconds=args.browser_use_timeout_seconds,
+            pass_env=args.browser_use_pass_env,
+            expected_checkout_revision=(args.browser_use_expected_checkout_revision),
+            expected_python_sha256=args.browser_use_python_sha256,
+            allow_sensitive_environment=(args.browser_use_allow_sensitive_environment),
+            max_input_bytes=args.browser_use_max_input_bytes,
+            max_output_bytes=args.browser_use_max_output_bytes,
+        )
     if args.provider == "grok-build":
         if args.grok_cwd is None:
             raise ValueError(
@@ -462,6 +643,59 @@ def _build_backend(args: argparse.Namespace, config: Mapping[str, Any]) -> Any:
             expected_version=args.grok_expected_version,
             expected_executable_sha256=args.grok_executable_sha256,
             max_output_bytes=args.grok_max_output_bytes,
+        )
+    if args.provider == "grok-build-source":
+        if extra_body:
+            raise ValueError(
+                "provider_extra_body is not supported by Grok Build source"
+            )
+        if any(
+            value is not None
+            for value in (
+                args.input_price,
+                args.output_price,
+                args.cache_read_price,
+                args.cache_write_price,
+            )
+        ):
+            raise ValueError(
+                "Grok Build source reports incomplete lower-bound usage; remove "
+                "token-price flags"
+            )
+        if args.grok_source_checkout is None:
+            raise ValueError("--grok-source-checkout is required")
+        if args.grok_source_workspace is None:
+            raise ValueError(
+                "--grok-source-workspace is required; use a clean seed workspace"
+            )
+        if not args.model:
+            raise ValueError("--model is required for Grok Build source")
+        for path, label in (
+            (args.grok_source_checkout, "--grok-source-checkout"),
+            (args.grok_source_workspace, "--grok-source-workspace"),
+        ):
+            if _paths_overlap(path, args.output):
+                raise ValueError(f"--output and {label} must be disjoint directories")
+        return GrokBuildSourceBackend(
+            checkout=args.grok_source_checkout,
+            workspace=args.grok_source_workspace,
+            model=args.model,
+            cargo_executable=args.grok_source_cargo_executable,
+            rustc_executable=args.grok_source_rustc_executable,
+            git_executable=args.grok_source_git_executable,
+            sandbox=args.grok_source_sandbox,
+            permission_mode=args.grok_source_permission_mode,
+            max_turns=args.grok_source_max_turns,
+            timeout_seconds=args.grok_source_timeout_seconds,
+            build_timeout_seconds=args.grok_source_build_timeout_seconds,
+            pass_env=args.grok_source_pass_env,
+            allow_sensitive_environment=(args.grok_source_allow_sensitive_environment),
+            expected_checkout_revision=args.grok_source_expected_revision,
+            expected_executable_sha256=args.grok_source_executable_sha256,
+            expected_cargo_sha256=args.grok_source_cargo_sha256,
+            expected_rustc_sha256=args.grok_source_rustc_sha256,
+            expected_git_sha256=args.grok_source_git_sha256,
+            max_output_bytes=args.grok_source_max_output_bytes,
         )
     if args.provider == "macu-upstream":
         if extra_body:
@@ -563,6 +797,177 @@ def _build_backend(args: argparse.Namespace, config: Mapping[str, Any]) -> Any:
             max_input_bytes=args.rlm_max_input_bytes,
             max_output_bytes=args.rlm_max_output_bytes,
         )
+    if args.provider == "kimi-code-upstream":
+        if extra_body:
+            raise ValueError(
+                "provider_extra_body is not supported by Kimi Code upstream"
+            )
+        if any(
+            value is not None
+            for value in (
+                args.input_price,
+                args.output_price,
+                args.cache_read_price,
+                args.cache_write_price,
+            )
+        ):
+            raise ValueError(
+                "Kimi stream-json omits whole-tree usage; remove token-price flags"
+            )
+        if args.kimi_checkout is None:
+            raise ValueError("--kimi-checkout is required")
+        if args.kimi_cwd is None:
+            raise ValueError(
+                "--kimi-cwd is required; use an explicit disposable worktree"
+            )
+        if not args.model:
+            raise ValueError("--model is required for Kimi Code upstream")
+        for path, label in (
+            (args.kimi_checkout, "--kimi-checkout"),
+            (args.kimi_cwd, "--kimi-cwd"),
+        ):
+            if _paths_overlap(path, args.output):
+                raise ValueError(f"--output and {label} must be disjoint directories")
+        return KimiCodeUpstreamBackend(
+            checkout=args.kimi_checkout,
+            cwd=args.kimi_cwd,
+            model=args.model,
+            api_key_env=args.api_key_env or "KIMI_API_KEY",
+            provider_type=args.kimi_provider_type,
+            base_url=args.base_url,
+            expected_revision=args.kimi_expected_checkout_revision,
+            node_executable=args.kimi_node_executable,
+            tsx_executable=args.kimi_tsx_executable,
+            expected_node_sha256=args.kimi_node_sha256,
+            expected_tsx_sha256=args.kimi_tsx_sha256,
+            timeout_seconds=args.kimi_timeout_seconds,
+            max_output_bytes=args.kimi_max_output_bytes,
+            max_swarm_concurrency=args.kimi_max_swarm_concurrency,
+            max_steps_per_turn=args.kimi_max_steps_per_turn,
+            subagent_timeout_seconds=args.kimi_subagent_timeout_seconds,
+            pass_env=args.kimi_pass_env,
+            allow_sensitive_environment=(args.kimi_allow_sensitive_environment),
+            allow_insecure_base_url=args.kimi_allow_insecure_base_url,
+        )
+    if args.provider == "codex-source":
+        if extra_body:
+            raise ValueError("provider_extra_body is not supported by Codex source")
+        if any(
+            value is not None
+            for value in (
+                args.input_price,
+                args.output_price,
+                args.cache_read_price,
+                args.cache_write_price,
+            )
+        ):
+            raise ValueError(
+                "Codex source does not prove complete child-tree accounting; "
+                "remove token-price flags"
+            )
+        if args.codex_source_checkout is None:
+            raise ValueError("--codex-source-checkout is required")
+        if args.codex_source_workspace is None:
+            raise ValueError("--codex-source-workspace is required")
+        if not args.model:
+            raise ValueError("--model is required for Codex source")
+        for path, label in (
+            (args.codex_source_checkout, "--codex-source-checkout"),
+            (args.codex_source_workspace, "--codex-source-workspace"),
+        ):
+            if _paths_overlap(path, args.output):
+                raise ValueError(f"--output and {label} must be disjoint directories")
+        return CodexSourceBackend(
+            checkout=args.codex_source_checkout,
+            workspace=args.codex_source_workspace,
+            model=args.model,
+            reasoning_effort=args.codex_source_reasoning_effort,
+            api_key_env=args.api_key_env or "OPENAI_API_KEY",
+            auth_target_env=args.codex_source_auth_target_env,
+            cargo_executable=args.codex_source_cargo_executable,
+            rustc_executable=args.codex_source_rustc_executable,
+            git_executable=args.codex_source_git_executable,
+            multi_agent_version=args.codex_source_multi_agent_version,
+            max_subagents=args.codex_source_max_subagents,
+            max_depth=args.codex_source_max_depth,
+            max_wait_seconds=args.codex_source_max_wait_seconds,
+            timeout_seconds=args.codex_source_timeout_seconds,
+            build_timeout_seconds=args.codex_source_build_timeout_seconds,
+            max_output_bytes=args.codex_source_max_output_bytes,
+            max_prompt_bytes=args.codex_source_max_prompt_bytes,
+            max_patch_bytes=args.codex_source_max_patch_bytes,
+            pass_env=args.codex_source_pass_env,
+            allow_sensitive_environment=(args.codex_source_allow_sensitive_environment),
+            expected_revision=args.codex_source_expected_revision,
+            expected_executable_sha256=args.codex_source_executable_sha256,
+            expected_cargo_sha256=args.codex_source_cargo_sha256,
+            expected_rustc_sha256=args.codex_source_rustc_sha256,
+            expected_git_sha256=args.codex_source_git_sha256,
+        )
+    if args.provider == "claude-code-agent-teams":
+        if extra_body:
+            raise ValueError(
+                "provider_extra_body is not supported by Claude Code Agent Teams"
+            )
+        if any(
+            value is not None
+            for value in (
+                args.input_price,
+                args.output_price,
+                args.cache_read_price,
+                args.cache_write_price,
+            )
+        ):
+            raise ValueError(
+                "Claude Code does not document authoritative whole-team usage; "
+                "remove token-price flags"
+            )
+        if args.claude_code_distribution_root is None:
+            raise ValueError("--claude-code-distribution-root is required")
+        if args.claude_code_workspace is None:
+            raise ValueError("--claude-code-workspace is required")
+        if args.claude_code_max_budget_usd is None:
+            raise ValueError("--claude-code-max-budget-usd is required")
+        if not args.model:
+            raise ValueError("--model is required for Claude Code Agent Teams")
+        for path, label in (
+            (
+                args.claude_code_distribution_root,
+                "--claude-code-distribution-root",
+            ),
+            (args.claude_code_workspace, "--claude-code-workspace"),
+        ):
+            if _paths_overlap(path, args.output):
+                raise ValueError(f"--output and {label} must be disjoint directories")
+        backend = ClaudeCodeAgentTeamsDistributionBackend(
+            distribution_root=args.claude_code_distribution_root,
+            workspace=args.claude_code_workspace,
+            model=args.model,
+            max_budget_usd=args.claude_code_max_budget_usd,
+            api_key_env=args.api_key_env or "ANTHROPIC_API_KEY",
+            expected_version=args.claude_code_expected_version,
+            expected_executable_sha256=args.claude_code_executable_sha256,
+            native_package_name=args.claude_code_native_package,
+            git_executable=args.claude_code_git_executable,
+            expected_git_sha256=args.claude_code_git_sha256,
+            max_turns=args.claude_code_max_turns,
+            permission_mode=args.claude_code_permission_mode,
+            effort=args.claude_code_effort,
+            timeout_seconds=args.claude_code_timeout_seconds,
+            tool_timeout_seconds=args.claude_code_tool_timeout_seconds,
+            max_output_bytes=args.claude_code_max_output_bytes,
+            max_patch_bytes=args.claude_code_max_patch_bytes,
+            pass_env=args.claude_code_pass_env,
+            allow_sensitive_environment=(args.claude_code_allow_sensitive_environment),
+            require_team_evidence=True,
+        )
+        if not backend.official_distribution_verified:
+            raise ValueError(
+                "this released Claude Code adapter requires a bundled audited "
+                "official platform digest; caller-pinned unknown platforms are "
+                "not release implementations"
+            )
+        return backend
     if args.provider == "xai-responses":
         if not args.model:
             raise ValueError("--model is required for xAI Responses")
@@ -592,8 +997,16 @@ def _validate_compatibility(
         )
     if "prime_agent" in names and provider != "prime-agent":
         raise ValueError("prime_agent harness requires --provider prime-agent")
+    if "prime_agent_source" in names and provider != "prime-agent-source":
+        raise ValueError(
+            "prime_agent_source harness requires --provider prime-agent-source"
+        )
     if "grok_build" in names and provider != "grok-build":
         raise ValueError("grok_build harness requires --provider grok-build")
+    if "grok_build_source" in names and provider != "grok-build-source":
+        raise ValueError(
+            "grok_build_source harness requires --provider grok-build-source"
+        )
     if "xai_hosted_multi_agent" in names and provider != "xai-responses":
         raise ValueError("xai_hosted_multi_agent requires --provider xai-responses")
     if "anthropic_managed_agents" in names and provider != "anthropic-managed-agents":
@@ -604,6 +1017,24 @@ def _validate_compatibility(
         raise ValueError("macu_upstream harness requires --provider macu-upstream")
     if "rlm_upstream" in names and provider != "rlm-upstream":
         raise ValueError("rlm_upstream harness requires --provider rlm-upstream")
+    if "kimi_code_upstream" in names and provider != "kimi-code-upstream":
+        raise ValueError(
+            "kimi_code_upstream harness requires --provider kimi-code-upstream"
+        )
+    if "browser_use_upstream" in names and provider != "browser-use-upstream":
+        raise ValueError(
+            "browser_use_upstream harness requires --provider browser-use-upstream"
+        )
+    if "codex_source" in names and provider != "codex-source":
+        raise ValueError("codex_source harness requires --provider codex-source")
+    if (
+        "claude_code_agent_teams_distribution" in names
+        and provider != "claude-code-agent-teams"
+    ):
+        raise ValueError(
+            "claude_code_agent_teams_distribution harness requires --provider "
+            "claude-code-agent-teams"
+        )
     if "flat_parallel" in names:
         missing = [
             task.task_id
@@ -647,6 +1078,23 @@ def _validate_compatibility(
                 "--provider prime-agent may only run the prime_agent harness; "
                 f"incompatible harnesses: {incompatible}"
             )
+    if provider == "prime-agent-source":
+        warnings.append(
+            "Prime Agent source study executes caller-provided bundle bytes and "
+            "source-owned tools in --prime-source-cwd; use a disposable outer sandbox"
+        )
+        warnings.append(
+            "The source revision and lockfile are recorded, but no adapter-owned "
+            "build or authoritative bundle digest proves source-runtime parity; "
+            "Node, npm, and bundle SHA pins only stabilize caller bytes"
+        )
+        incompatible = sorted(names - {"prime_agent_source"})
+        if incompatible:
+            raise ValueError(
+                "--provider prime-agent-source may only run the "
+                "prime_agent_source harness; incompatible harnesses: "
+                f"{incompatible}"
+            )
     if provider == "grok-build":
         warnings.append(
             "Grok Build can execute tools in --grok-cwd; strict sandboxing still requires a disposable worktree"
@@ -660,11 +1108,33 @@ def _validate_compatibility(
                 "--provider grok-build may only run the grok_build harness; "
                 f"incompatible harnesses: {incompatible}"
             )
+    if provider == "grok-build-source":
+        warnings.append(
+            "Grok Build source compiles a verified private git-archive export, then "
+            "runs its native tools and subagents in a disposable workspace copy and "
+            "exports a bounded binary patch"
+        )
+        warnings.append(
+            "Terminal JSON usage remains a lower bound; reproducible binary identity "
+            "also requires explicit Git, Cargo, rustc, and executable SHA pins"
+        )
+        incompatible = sorted(names - {"grok_build_source"})
+        if incompatible:
+            raise ValueError(
+                "--provider grok-build-source may only run the grok_build_source "
+                f"harness; incompatible harnesses: {incompatible}"
+            )
     if provider in {
         "prime-agent",
+        "prime-agent-source",
         "grok-build",
+        "grok-build-source",
         "macu-upstream",
         "rlm-upstream",
+        "kimi-code-upstream",
+        "browser-use-upstream",
+        "codex-source",
+        "claude-code-agent-teams",
     }:
         if environment_enabled:
             raise ValueError(
@@ -703,6 +1173,75 @@ def _validate_compatibility(
             raise ValueError(
                 "--provider rlm-upstream may only run the rlm_upstream harness; "
                 f"incompatible harnesses: {incompatible}"
+            )
+    if provider == "kimi-code-upstream":
+        warnings.append(
+            "Kimi Code executes source-owned shell/file/subagent tools in --kimi-cwd; "
+            "use a disposable outer sandbox and a scoped model credential"
+        )
+        warnings.append(
+            "Kimi stream-json omits whole-tree tokens and cost, so accounting is "
+            "unknown rather than release-comparable"
+        )
+        warnings.append(
+            "Kimi's official non-interactive interface carries the task in the "
+            "--prompt process argument; local process inspection can observe it"
+        )
+        incompatible = sorted(names - {"kimi_code_upstream"})
+        if incompatible:
+            raise ValueError(
+                "--provider kimi-code-upstream may only run the "
+                "kimi_code_upstream harness; incompatible harnesses: "
+                f"{incompatible}"
+            )
+    if provider == "browser-use-upstream":
+        warnings.append(
+            "Browser-Use owns its Agent, Browser, provider wrapper, prompts, and "
+            "actions; use a scoped credential and isolated browser environment"
+        )
+        warnings.append(
+            "Browser-Use TokenCost entries are incomplete lower bounds and cannot "
+            "establish release-comparable cost"
+        )
+        incompatible = sorted(names - {"browser_use_upstream"})
+        if incompatible:
+            raise ValueError(
+                "--provider browser-use-upstream may only run the "
+                "browser_use_upstream harness; incompatible harnesses: "
+                f"{incompatible}"
+            )
+    if provider == "codex-source":
+        warnings.append(
+            "Codex source builds a private archive of the pinned revision and runs "
+            "native tools in a disposable Git baseline; use a scoped credential "
+            "and isolated outer runner"
+        )
+        warnings.append(
+            "Source and protocol identity do not pin the remote model, service "
+            "routing, managed/cloud policy, or complete child-tree accounting"
+        )
+        incompatible = sorted(names - {"codex_source"})
+        if incompatible:
+            raise ValueError(
+                "--provider codex-source may only run the codex_source harness; "
+                f"incompatible harnesses: {incompatible}"
+            )
+    if provider == "claude-code-agent-teams":
+        warnings.append(
+            "Claude Code Agent Teams executes an official binary distribution, "
+            "not public implementation source, with native tools and a shared model "
+            "credential in a disposable workspace"
+        )
+        warnings.append(
+            "Endpoint-managed files are rejected, but server-managed policy, model "
+            "snapshot, and authoritative whole-team accounting remain unobservable"
+        )
+        incompatible = sorted(names - {"claude_code_agent_teams_distribution"})
+        if incompatible:
+            raise ValueError(
+                "--provider claude-code-agent-teams may only run the "
+                "claude_code_agent_teams_distribution harness; incompatible "
+                f"harnesses: {incompatible}"
             )
     if provider == "xai-responses":
         if environment_enabled:
@@ -773,7 +1312,10 @@ async def _run(args: argparse.Namespace) -> int:
             "tool children from inheriting or exfiltrating credentials"
         )
     backend = _build_backend(args, config)
-    if isinstance(backend, (GrokBuildJSONBackend, PrimeAgentJSONBackend)):
+    if isinstance(
+        backend,
+        (GrokBuildJSONBackend, KimiCodeUpstreamBackend, PrimeAgentJSONBackend),
+    ):
         await backend.verify_version()
     run_metadata: dict[str, Any] = {
         "config_path": str(args.config.resolve()),
@@ -872,10 +1414,16 @@ def _add_common_arguments(parser: argparse.ArgumentParser) -> None:
             "anthropic-messages",
             "anthropic-managed-agents",
             "prime-agent",
+            "prime-agent-source",
+            "browser-use-upstream",
             "grok-build",
+            "grok-build-source",
             "xai-responses",
             "macu-upstream",
             "rlm-upstream",
+            "kimi-code-upstream",
+            "codex-source",
+            "claude-code-agent-teams",
         ),
         default="openai-responses",
     )
@@ -892,6 +1440,12 @@ def build_parser() -> argparse.ArgumentParser:
     applications_parser.add_argument("--json", action="store_true")
     applications_parser.set_defaults(
         handler=lambda args: _list_applications(json_output=args.json)
+    )
+
+    frontier_parser = subparsers.add_parser("list-frontier-sources")
+    frontier_parser.add_argument("--json", action="store_true")
+    frontier_parser.set_defaults(
+        handler=lambda args: _list_frontier_sources(json_output=args.json)
     )
 
     implementations_parser = subparsers.add_parser("list-implementations")
@@ -1000,6 +1554,96 @@ def build_parser() -> argparse.ArgumentParser:
             "acknowledge that Prime Agent code can inspect passed environment values"
         ),
     )
+    run_parser.add_argument("--prime-source-checkout", type=Path)
+    run_parser.add_argument("--prime-source-cwd", type=Path)
+    run_parser.add_argument("--prime-source-node-executable", default="node")
+    run_parser.add_argument("--prime-source-npm-executable", default="npm")
+    run_parser.add_argument("--prime-source-provider")
+    run_parser.add_argument(
+        "--prime-source-expected-revision",
+        default=PRIME_AGENT_SOURCE_REVISION,
+    )
+    run_parser.add_argument("--prime-source-node-sha256")
+    run_parser.add_argument("--prime-source-npm-sha256")
+    run_parser.add_argument("--prime-source-bundle-sha256")
+    run_parser.add_argument(
+        "--prime-source-timeout-seconds", type=float, default=1800.0
+    )
+    run_parser.add_argument(
+        "--prime-source-pass-env", action="append", default=[], metavar="NAME"
+    )
+    run_parser.add_argument(
+        "--prime-source-max-output-bytes", type=int, default=16 * 1024 * 1024
+    )
+    run_parser.add_argument(
+        "--prime-source-allow-sensitive-environment",
+        action="store_true",
+        help=(
+            "acknowledge that Prime Agent source-owned tools and children can "
+            "inspect passed environment values"
+        ),
+    )
+    run_parser.add_argument("--browser-use-checkout", type=Path)
+    run_parser.add_argument(
+        "--browser-use-llm-provider",
+        choices=(
+            "anthropic",
+            "azure-openai",
+            "browser-use",
+            "google",
+            "groq",
+            "litellm",
+            "mistral",
+            "oci-raw",
+            "ollama",
+            "openai",
+            "vercel",
+        ),
+        default="openai",
+    )
+    run_parser.add_argument("--browser-use-python-executable", default="python3")
+    run_parser.add_argument("--browser-use-python-sha256")
+    run_parser.add_argument(
+        "--browser-use-expected-checkout-revision",
+        default="f0aa3a8bb03779c71a5aa262d389e3bfe6b77cdc",
+    )
+    run_parser.add_argument(
+        "--browser-use-llm-json",
+        type=_json_object_argument,
+        default={},
+        metavar="JSON",
+    )
+    run_parser.add_argument(
+        "--browser-use-browser-json",
+        type=_json_object_argument,
+        default={},
+        metavar="JSON",
+    )
+    run_parser.add_argument(
+        "--browser-use-agent-json",
+        type=_json_object_argument,
+        default={},
+        metavar="JSON",
+    )
+    run_parser.add_argument("--browser-use-max-steps", type=int, default=100)
+    run_parser.add_argument("--browser-use-timeout-seconds", type=float, default=1800.0)
+    run_parser.add_argument(
+        "--browser-use-pass-env", action="append", default=[], metavar="NAME"
+    )
+    run_parser.add_argument(
+        "--browser-use-allow-sensitive-environment",
+        action="store_true",
+        help=(
+            "acknowledge that Browser-Use and visited pages can inspect passed "
+            "environment values"
+        ),
+    )
+    run_parser.add_argument(
+        "--browser-use-max-input-bytes", type=int, default=16 * 1024 * 1024
+    )
+    run_parser.add_argument(
+        "--browser-use-max-output-bytes", type=int, default=16 * 1024 * 1024
+    )
     run_parser.add_argument("--grok-cwd", type=Path)
     run_parser.add_argument("--grok-executable", default="grok")
     run_parser.add_argument("--grok-sandbox", default="strict")
@@ -1028,6 +1672,40 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "acknowledge credential exposure when terminal tools inherit environment"
+        ),
+    )
+    run_parser.add_argument("--grok-source-checkout", type=Path)
+    run_parser.add_argument("--grok-source-workspace", type=Path)
+    run_parser.add_argument("--grok-source-cargo-executable", default="cargo")
+    run_parser.add_argument("--grok-source-rustc-executable")
+    run_parser.add_argument("--grok-source-git-executable", default="git")
+    run_parser.add_argument("--grok-source-sandbox", default="strict")
+    run_parser.add_argument("--grok-source-permission-mode", default="dontAsk")
+    run_parser.add_argument("--grok-source-max-turns", type=int, default=64)
+    run_parser.add_argument(
+        "--grok-source-expected-revision",
+        default=GROK_BUILD_PUBLIC_REVISION,
+    )
+    run_parser.add_argument("--grok-source-executable-sha256")
+    run_parser.add_argument("--grok-source-cargo-sha256")
+    run_parser.add_argument("--grok-source-rustc-sha256")
+    run_parser.add_argument("--grok-source-git-sha256")
+    run_parser.add_argument("--grok-source-timeout-seconds", type=float, default=1800.0)
+    run_parser.add_argument(
+        "--grok-source-build-timeout-seconds", type=float, default=1800.0
+    )
+    run_parser.add_argument(
+        "--grok-source-pass-env", action="append", default=[], metavar="NAME"
+    )
+    run_parser.add_argument(
+        "--grok-source-max-output-bytes", type=int, default=16 * 1024 * 1024
+    )
+    run_parser.add_argument(
+        "--grok-source-allow-sensitive-environment",
+        action="store_true",
+        help=(
+            "acknowledge that Grok Build source-owned tools and children can inspect "
+            "passed environment values"
         ),
     )
     run_parser.add_argument("--macu-checkout", type=Path)
@@ -1135,6 +1813,147 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--rlm-max-output-bytes", type=int, default=16 * 1024 * 1024
     )
+    run_parser.add_argument("--kimi-checkout", type=Path)
+    run_parser.add_argument("--kimi-cwd", type=Path)
+    run_parser.add_argument(
+        "--kimi-provider-type",
+        choices=("kimi", "anthropic", "openai"),
+        default="kimi",
+    )
+    run_parser.add_argument("--kimi-tsx-executable", type=Path)
+    run_parser.add_argument("--kimi-node-executable", default="node")
+    run_parser.add_argument("--kimi-node-sha256")
+    run_parser.add_argument("--kimi-tsx-sha256")
+    run_parser.add_argument(
+        "--kimi-expected-checkout-revision",
+        default="f0614c53e59f7e1e257412063b059b9eb82764cf",
+    )
+    run_parser.add_argument(
+        "--kimi-pass-env", action="append", default=[], metavar="NAME"
+    )
+    run_parser.add_argument("--kimi-max-swarm-concurrency", type=int, default=8)
+    run_parser.add_argument("--kimi-max-steps-per-turn", type=int, default=64)
+    run_parser.add_argument(
+        "--kimi-subagent-timeout-seconds", type=float, default=1200.0
+    )
+    run_parser.add_argument("--kimi-timeout-seconds", type=float, default=1800.0)
+    run_parser.add_argument(
+        "--kimi-max-output-bytes", type=int, default=16 * 1024 * 1024
+    )
+    run_parser.add_argument(
+        "--kimi-allow-sensitive-environment",
+        action="store_true",
+        help=(
+            "acknowledge that Kimi source-owned shell and subagent tools inherit "
+            "the scoped model credential"
+        ),
+    )
+    run_parser.add_argument(
+        "--kimi-allow-insecure-base-url",
+        action="store_true",
+        help=(
+            "acknowledge cleartext model-credential transport to a non-loopback "
+            "HTTP --base-url; HTTPS remains the default requirement"
+        ),
+    )
+    run_parser.add_argument("--codex-source-checkout", type=Path)
+    run_parser.add_argument("--codex-source-workspace", type=Path)
+    run_parser.add_argument("--codex-source-cargo-executable", default="cargo")
+    run_parser.add_argument("--codex-source-rustc-executable")
+    run_parser.add_argument("--codex-source-git-executable", default="git")
+    run_parser.add_argument(
+        "--codex-source-expected-revision", default=CODEX_SOURCE_REVISION
+    )
+    run_parser.add_argument("--codex-source-executable-sha256")
+    run_parser.add_argument("--codex-source-cargo-sha256")
+    run_parser.add_argument("--codex-source-rustc-sha256")
+    run_parser.add_argument("--codex-source-git-sha256")
+    run_parser.add_argument("--codex-source-reasoning-effort")
+    run_parser.add_argument(
+        "--codex-source-auth-target-env",
+        choices=("CODEX_API_KEY",),
+        default="CODEX_API_KEY",
+    )
+    run_parser.add_argument(
+        "--codex-source-multi-agent-version", choices=("v1", "v2"), default="v1"
+    )
+    run_parser.add_argument("--codex-source-max-subagents", type=int)
+    run_parser.add_argument("--codex-source-max-depth", type=int, default=1)
+    run_parser.add_argument("--codex-source-max-wait-seconds", type=float)
+    run_parser.add_argument(
+        "--codex-source-timeout-seconds", type=float, default=1800.0
+    )
+    run_parser.add_argument(
+        "--codex-source-build-timeout-seconds", type=float, default=3600.0
+    )
+    run_parser.add_argument(
+        "--codex-source-max-output-bytes", type=int, default=16 * 1024 * 1024
+    )
+    run_parser.add_argument(
+        "--codex-source-max-prompt-bytes", type=int, default=1024 * 1024
+    )
+    run_parser.add_argument(
+        "--codex-source-max-patch-bytes", type=int, default=8 * 1024 * 1024
+    )
+    run_parser.add_argument(
+        "--codex-source-pass-env", action="append", default=[], metavar="NAME"
+    )
+    run_parser.add_argument(
+        "--codex-source-allow-sensitive-environment",
+        action="store_true",
+        help=(
+            "acknowledge that native Codex and its subagents use the scoped model "
+            "credential; shell children receive a filtered environment"
+        ),
+    )
+    run_parser.add_argument("--claude-code-distribution-root", type=Path)
+    run_parser.add_argument("--claude-code-workspace", type=Path)
+    run_parser.add_argument(
+        "--claude-code-expected-version", default=CLAUDE_CODE_DISTRIBUTION_VERSION
+    )
+    run_parser.add_argument("--claude-code-executable-sha256")
+    run_parser.add_argument("--claude-code-native-package")
+    run_parser.add_argument("--claude-code-git-executable", default="git")
+    run_parser.add_argument("--claude-code-git-sha256")
+    run_parser.add_argument("--claude-code-max-budget-usd", type=float)
+    run_parser.add_argument("--claude-code-max-turns", type=int, default=64)
+    run_parser.add_argument(
+        "--claude-code-permission-mode",
+        choices=(
+            "acceptEdits",
+            "auto",
+            "bypassPermissions",
+            "manual",
+            "dontAsk",
+            "plan",
+        ),
+        default="dontAsk",
+    )
+    run_parser.add_argument(
+        "--claude-code-effort",
+        choices=("low", "medium", "high", "xhigh", "max"),
+    )
+    run_parser.add_argument("--claude-code-timeout-seconds", type=float, default=1800.0)
+    run_parser.add_argument(
+        "--claude-code-tool-timeout-seconds", type=float, default=600.0
+    )
+    run_parser.add_argument(
+        "--claude-code-max-output-bytes", type=int, default=16 * 1024 * 1024
+    )
+    run_parser.add_argument(
+        "--claude-code-max-patch-bytes", type=int, default=8 * 1024 * 1024
+    )
+    run_parser.add_argument(
+        "--claude-code-pass-env", action="append", default=[], metavar="NAME"
+    )
+    run_parser.add_argument(
+        "--claude-code-allow-sensitive-environment",
+        action="store_true",
+        help=(
+            "acknowledge that Claude Code teammates and tools inherit the scoped "
+            "model credential in an outer disposable sandbox"
+        ),
+    )
     run_parser.set_defaults(handler=_run)
     return parser
 
@@ -1165,6 +1984,22 @@ def _list_applications(*, json_output: bool = False) -> int:
     else:
         for name in applications:
             print(name)
+    return 0
+
+
+def _list_frontier_sources(*, json_output: bool = False) -> int:
+    records = catalog_frontier_labs()
+    if json_output:
+        print(
+            json.dumps(
+                [record.as_dict() for record in records],
+                indent=2,
+                sort_keys=True,
+            )
+        )
+    else:
+        for record in records:
+            print(record.lab)
     return 0
 
 

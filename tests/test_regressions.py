@@ -113,6 +113,23 @@ class _CountingBackend:
         return _response("answer", usage=Usage(cost_usd=0.25))
 
 
+class _PreflightBackend:
+    def __init__(self) -> None:
+        self.prepared = False
+
+    async def prepare_for_manifest(self) -> None:
+        await asyncio.sleep(0)
+        self.prepared = True
+
+    def provenance(self) -> dict[str, object]:
+        return {"prepared_identity": self.prepared}
+
+    async def complete(self, request: ModelRequest) -> ModelResponse:
+        if not self.prepared:
+            raise AssertionError("backend ran before manifest preflight")
+        return _response("answer")
+
+
 class _FollowUpMACUBackend:
     """Orders c after b's first replan, making b a succeeded descendant."""
 
@@ -567,6 +584,22 @@ class MACURegressionTests(unittest.IsolatedAsyncioTestCase):
 
 
 class EvaluationRegressionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_backend_preflight_is_fingerprinted_before_trials(self) -> None:
+        backend = _PreflightBackend()
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            await MatrixRunner(
+                backend=backend,
+                limits=BudgetLimits(wall_time_seconds=2),
+                output_dir=output_dir,
+            ).run([Task("preflight", "question")], [SingleAgentHarness()])
+            manifest = json.loads(
+                (output_dir / "manifest.json").read_text(encoding="utf-8")
+            )
+
+        self.assertTrue(backend.prepared)
+        self.assertTrue(manifest["backend"]["prepared_identity"])
+
     async def test_trace_path_cannot_escape_output_directory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output_dir = Path(directory) / "artifacts"

@@ -1,0 +1,25 @@
+{
+  "application": {
+    "name": "swe",
+    "implementation": "claude-code-agent-teams-2.1.226"
+  },
+  "limits": {
+    "max_model_calls": 1,
+    "max_concurrency": 1,
+    "wall_time_seconds": 1800,
+    "max_depth": 1
+  },
+  "capture_content": false,
+  "repeats": 1,
+  "random_seed": 20260810,
+  "metadata": {
+    "fidelity": "upstream_runtime_adapter",
+    "version": "2.1.226",
+    "artifact_kind": "official_binary_distribution_not_public_source",
+    "boundary": "Executes the audited official Darwin arm64 Claude Code distribution through its public noninteractive Agent Teams flags. It requires v2.1.178+ implicit-team evidence: distinct named Agent calls, a live session-derived config snapshot with a matching roster, the persistent session task directory, and automatic config cleanup.",
+    "accounting": "The terminal result usage and cost are retained only as lower bounds because authoritative whole-team attribution is not documented.",
+    "managed_policy": "Documented endpoint-managed files fail closed. Server-managed policy remains unobservable and is explicitly outside the reproducible boundary.",
+    "workspace_owner": "Claude Code receives one disposable copy with inherited Git administration stripped and a fresh standalone baseline; do not add a local environment block.",
+    "flagship_system_card_parity_claimed": false
+  }
+}

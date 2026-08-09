@@ -27,6 +27,21 @@ OPENAI_GPT56 = SourceArtifact(
     published="2026-07",
     version="gpt-5.6",
 )
+OPENAI_GPT56_CARD = SourceArtifact(
+    title="OpenAI GPT-5.6 system card",
+    url="https://deploymentsafety.openai.com/gpt-5-6",
+    published="2026-07",
+    version="GPT-5.6",
+)
+OPENAI_CODEX_SOURCE = SourceArtifact(
+    title="OpenAI Codex public source runtime",
+    url=(
+        "https://github.com/openai/codex/tree/be6e8eac029b183056b7e4402879f15d2c85f61b"
+    ),
+    published="2026-08-08",
+    version="rust-v0.147.0",
+    revision="be6e8eac029b183056b7e4402879f15d2c85f61b",
+)
 ANTHROPIC_FABLE = SourceArtifact(
     title="Claude Fable 5 and Mythos 5 system card",
     url=(
@@ -44,6 +59,18 @@ ANTHROPIC_OPUS5 = SourceArtifact(
     ),
     published="2026",
     version="section 8.11.3",
+)
+ANTHROPIC_CLAUDE_CODE_TEAMS = SourceArtifact(
+    title="Claude Code Agent Teams documentation",
+    url="https://code.claude.com/docs/en/agent-teams",
+    published="2026",
+    version="2.1.226",
+)
+ANTHROPIC_CLAUDE_CODE_TOOLS = SourceArtifact(
+    title="Claude Code tool and noninteractive CLI reference",
+    url="https://code.claude.com/docs/en/tools-reference",
+    published="2026",
+    version="2.1.226",
 )
 ANTHROPIC_MANAGED = SourceArtifact(
     title="Anthropic Managed Agents multi-agent orchestration",
@@ -69,6 +96,16 @@ BROWSER_USE = SourceArtifact(
     published="2026",
     version="0.13.7",
     revision="f0aa3a8bb03779c71a5aa262d389e3bfe6b77cdc",
+)
+KIMI_CODE = SourceArtifact(
+    title="Kimi Code Agent and AgentSwarm source runtime",
+    url=(
+        "https://github.com/MoonshotAI/kimi-code/tree/"
+        "f0614c53e59f7e1e257412063b059b9eb82764cf"
+    ),
+    published="2026-08-07",
+    version="0.34.0",
+    revision="f0614c53e59f7e1e257412063b059b9eb82764cf",
 )
 MACU = SourceArtifact(
     title="Multi-Agent Computer Use released runtime",
@@ -117,6 +154,16 @@ PRIME_AGENT = SourceArtifact(
     version="0.7.1",
     revision="95afd319a78ae017a41241d50b013d656a0685ce",
 )
+PRIME_AGENT_BLOG = SourceArtifact(
+    title="Prime Agent launch and runtime design",
+    url="https://www.primeintellect.ai/blog/prime-agent",
+    published="2026",
+)
+PRIME_MULTI_AGENT_SYSTEMS = SourceArtifact(
+    title="Prime Intellect multi-agent systems analysis",
+    url="https://www.primeintellect.ai/blog/multi-agent-systems",
+    published="2026",
+)
 GROK_BUILD = SourceArtifact(
     title="xAI Grok Build released runtime",
     url=(
@@ -133,9 +180,21 @@ XAI_MULTI_AGENT = SourceArtifact(
     published="2026-07-02",
     version="grok-4.20-multi-agent-0309",
 )
+XAI_GROK420_CARD = SourceArtifact(
+    title="xAI Grok 4.20 model card",
+    url="https://data.x.ai/2026-04-07-grok-4-20-model-card.pdf",
+    published="2026-04-07",
+    version="Grok 4.20",
+)
 META_MUSE = SourceArtifact(
     title="Meta Muse Spark 1.1 release and Model API preview",
     url="https://ai.meta.com/blog/introducing-muse-spark-meta-model-api/",
+    published="2026-07-09",
+    version="Muse Spark 1.1",
+)
+META_MUSE_EVAL = SourceArtifact(
+    title="Meta Muse Spark 1.1 evaluation report",
+    url="https://ai.meta.com/static-resource/muse-spark-1-1-evaluation-report",
     published="2026-07-09",
     version="Muse Spark 1.1",
 )

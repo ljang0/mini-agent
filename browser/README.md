@@ -28,6 +28,7 @@ omit `harnesses`; Scaffold Lab resolves the registered signature and rejects dri
 | [`anthropic-managed-web-research.json`](implementations/anthropic-managed-web-research.json) | `anthropic-managed-agents` | published protocol boundary | Exact managed-session, primary-event-list, and aggregate-usage boundary; validates the pinned resolved coordinator and records a snapshot digest. Application-specific remote tools and the mutable environment remain caller-provisioned. |
 | [`xai-hosted-web-research-4.json`](implementations/xai-hosted-web-research-4.json) | `xai-responses` | published protocol boundary | Exact Responses request for the documented four-agent (`reasoning.effort=low`) hosted team with `web_search`. |
 | [`xai-hosted-web-research-16.json`](implementations/xai-hosted-web-research-16.json) | `xai-responses` | published protocol boundary | Exact Responses request for the documented sixteen-agent (`reasoning.effort=high`) hosted team with `web_search`. |
+| [`browser-use-0.13.7-upstream.json`](implementations/browser-use-0.13.7-upstream.json) | `browser-use-upstream` | pinned upstream source runtime | Executes the official 0.13.7 `Agent`, `Browser`, provider wrapper, prompts, history, actions, and model loop from a bounded private archive of the pinned commit. Git/Python identities are recorded; dependency/browser/model identity and complete cost remain caller-pinned gaps. |
 | [`macu-upstream.json`](implementations/macu-upstream.json) | `macu-upstream` | pinned upstream runtime | Executes the clean released MACU checkout at the recorded commit. Dependencies, VM image, tasks, and model snapshots must also be pinned for experimental identity. |
 
 ## Studies, not implementations
@@ -55,6 +56,8 @@ PYTHONPATH=src python3 -m scaffoldlab.cli validate \
   --provider openai-responses
 ```
 
-Hosted and upstream providers need their provider-specific run flags. MACU must
+Hosted and upstream providers need their provider-specific run flags. Browser-Use
+runs one task per invocation and owns the browser/tool loop; the flat-parallel study
+remains a separate scheduler experiment. MACU must
 run one generic task per invocation against a disposable, pinned VM/CUA stack;
 that adapter path is not a claim of parity with a named browser benchmark.

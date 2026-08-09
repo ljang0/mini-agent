@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.metadata
+import inspect
 import json
 import math
 import os
@@ -389,6 +390,11 @@ class MatrixRunner:
             for repeat in range(self.repeats)
         ]
         random.Random(self.random_seed).shuffle(specs)
+        prepare_for_manifest = getattr(self.backend, "prepare_for_manifest", None)
+        if callable(prepare_for_manifest):
+            prepared = prepare_for_manifest()
+            if inspect.isawaitable(prepared):
+                await prepared
         manifest = {
             "schema_version": "scaffoldlab-manifest-v2",
             "scaffoldlab_version": __version__,

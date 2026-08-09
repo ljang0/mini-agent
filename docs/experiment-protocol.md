@@ -4,8 +4,9 @@ Status: draft. No release candidate has been selected.
 
 Every matrix must select one of the three top-level applications—`browser`,
 `computer-use`, or `swe`—and either a registered implementation or study. Only exact
-published API/CLI protocol boundaries and clean revision-pinned upstream runtimes are implementations;
-clean-room variants, simulations, and baselines are studies. The profile's source,
+published API/CLI protocol boundaries, clean revision-pinned public source runtimes,
+and audited official distributions are implementations; clean-room variants,
+simulations, and baselines are studies. The profile's source,
 fidelity/status, harness signature, provider, and environment constraints are part of
 the experimental condition. Catalog-only training methods and evaluation environments
 inform the protocol but are not runnable inference candidates.
@@ -41,8 +42,14 @@ Use these names in every result artifact:
 - `platoon_recursive_inference` (recursive inference only; not RAO training)
 - `external_context_json_search` (non-RLM ablation)
 - `anthropic_managed_agents` (hosted session boundary)
+- `browser_use_upstream` (pinned Browser-Use source runtime; not the flat pattern)
 - `prime_agent`
+- `prime_agent_source` (caller-built bundle study beside pinned source/lock evidence)
 - `grok_build`
+- `grok_build_source` (pinned Cargo-locked public source runtime)
+- `kimi_code_upstream` (pinned Kimi Code Agent/AgentSwarm runtime)
+- `codex_source` (pinned public Codex source runtime; SWE only)
+- `claude_code_agent_teams_distribution` (audited official distribution; not public source or a system-card reconstruction)
 - `xai_hosted_multi_agent` (separate four- and sixteen-agent variants)
 - `openai_hosted_multi_agent`
 
@@ -78,11 +85,12 @@ Scaffold Lab backend invocations. One hosted OpenAI/xAI response, Anthropic Mana
 session, or Prime/Grok/MACU/RLM external session can contain many internal calls. Local
 concurrency, depth, turn, and tool limits do not constrain such provider-owned trees.
 Aggregate-compute comparisons are valid only when `usage_complete` and `cost_known`
-are both true and the candidates use commensurate cost sources. Prime and Grok fail
-those completeness checks today. The audited MACU release omits initial graph-
-generation usage; upstream RLM v0.1.3 does not merge recursive-child summaries into
-the root `UsageSummary`. Those four external candidates are therefore ineligible for
-equal-total-compute claims until full-tree accounting is independently established.
+are both true and the candidates use commensurate cost sources. Prime, Grok Build,
+Codex, and Claude Code do not expose verified complete inner-tree accounting today.
+The audited MACU release omits initial graph-generation usage; upstream RLM v0.1.3
+does not merge recursive-child summaries into the root `UsageSummary`. All six
+external candidates are therefore ineligible for equal-total-compute claims until
+full-tree accounting is independently established.
 The hosted APIs should also be analyzed separately from in-process harnesses because
 their schedulers and intermediate state are closed.
 
@@ -152,10 +160,12 @@ Mythos 5 multi-agent comparison in the joint Fable/Mythos system card.
   transport mode, and accounting source; explicitly label provider-hidden events.
 - Run all pending calls to completion or explicitly mark cancellations; do not hide
   failed or timed-out children.
-- Run each Prime/Grok/MACU/RLM-upstream repeat as a separate invocation with a newly
-  provisioned workspace and output directory. For pinned-source adapters, verify the
-  exact clean checkout and interpreter/executable identity before each run. Combine
-  artifacts only after every trial finishes.
+- Run each Prime/Grok/Codex/Claude Code/MACU/RLM-upstream repeat as a separate
+  invocation with a newly provisioned workspace and output directory. For pinned
+  source or distribution adapters, complete identity preflight before the matrix
+  manifest is fingerprinted; verify the clean checkout/archive, declared toolchain,
+  and executable identities at the adapter's supported scope. Combine artifacts only
+  after every trial finishes.
 - Exercise scheduling, messaging, stopping, invalid actions, computer protocol
   translation, patch persistence, and external-process failure paths with
   deterministic offline tests before any paid-model experiment.
