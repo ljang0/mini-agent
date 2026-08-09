@@ -1,0 +1,41 @@
+{
+  "application": {
+    "name": "swe",
+    "implementation": "openai-hosted-multi-agent-shell"
+  },
+  "environment": {
+    "type": "swe",
+    "protocol": "auto",
+    "workspace_mode": "copy",
+    "isolation": "per_agent",
+    "allow_write": true,
+    "allow_shell": true,
+    "allow_native_shell": true,
+    "command_allowlist": ["git", "python3"],
+    "tool_timeout_seconds": 60,
+    "max_tool_output_bytes": 262144,
+    "export_patch": true,
+    "max_patch_bytes": 1048576
+  },
+  "limits": {
+    "max_model_calls": 24,
+    "max_concurrency": 1,
+    "max_input_tokens": 2000000,
+    "max_output_tokens": 500000,
+    "max_cost_usd": 20.0,
+    "wall_time_seconds": 1800,
+    "max_depth": 1,
+    "max_tool_calls": 128,
+    "max_tool_output_bytes": 16777216,
+    "max_agent_turns": 24
+  },
+  "matrix_max_cost_usd": 40.0,
+  "capture_content": false,
+  "repeats": 1,
+  "random_seed": 20260810,
+  "metadata": {
+    "fidelity": "source_matched_reimplementation",
+    "boundary": "Composes the published Responses multi-agent developer-tool continuation and local-shell protocol; hosted scheduler source, WebSocket transport, exact Codex harness, and live-verified combination are unavailable.",
+    "security": "Native shell bypasses command_allowlist. Run only inside a disposable credential-isolated container or VM."
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "application": {
+    "name": "browser",
+    "implementation": "browser-use-parallel-pattern"
+  },
+  "environment": {
+    "type": "browser",
+    "protocol": "generic",
+    "isolation": "per_agent",
+    "allowed_hosts": ["example.com"],
+    "start_url": "https://example.com",
+    "headless": true,
+    "viewport_width": 1440,
+    "viewport_height": 900,
+    "max_tool_output_bytes": 262144
+  },
+  "limits": {
+    "max_model_calls": 64,
+    "max_concurrency": 8,
+    "max_cost_usd": 5.0,
+    "wall_time_seconds": 900,
+    "max_depth": 1,
+    "max_tool_calls": 256,
+    "max_tool_output_bytes": 8388608,
+    "max_agent_turns": 32
+  },
+  "matrix_max_cost_usd": 25.0,
+  "capture_content": false,
+  "repeats": 1,
+  "random_seed": 20260810,
+  "metadata": {
+    "fidelity": "source_matched_reimplementation",
+    "boundary": "Matches the released distinct-task parallel scheduling pattern and separate logical browser contexts, not the Browser-Use Agent policy or runtime.",
+    "classification": "flat_parallel has no selector and is not best-of-N."
+  }
+}

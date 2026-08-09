@@ -1,0 +1,35 @@
+{
+  "application": {
+    "name": "browser",
+    "implementation": "macu-text-dag"
+  },
+  "environment": {
+    "type": "browser",
+    "protocol": "generic",
+    "isolation": "per_agent",
+    "allowed_hosts": ["example.com"],
+    "start_url": "https://example.com",
+    "headless": true,
+    "viewport_width": 1440,
+    "viewport_height": 900,
+    "max_tool_output_bytes": 262144
+  },
+  "limits": {
+    "max_model_calls": 128,
+    "max_concurrency": 4,
+    "max_cost_usd": 8.0,
+    "wall_time_seconds": 1200,
+    "max_depth": 2,
+    "max_tool_calls": 384,
+    "max_tool_output_bytes": 16777216,
+    "max_agent_turns": 64
+  },
+  "matrix_max_cost_usd": 40.0,
+  "capture_content": false,
+  "repeats": 1,
+  "random_seed": 20260810,
+  "metadata": {
+    "fidelity": "source_matched_reimplementation",
+    "boundary": "Local mutable text DAG and asynchronous ready frontier only; released MACU prompts, CUA subprocesses, VM cloning, file handoffs, and evaluator are unavailable."
+  }
+}

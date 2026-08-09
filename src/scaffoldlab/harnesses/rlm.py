@@ -378,6 +378,6 @@ class RLMREPLHarness(Harness):
             "recoverable_repl_errors": True,
             "operating_system_sandbox": False,
             "shared_budget_ledger": True,
-            "rlm_reproduction": True,
-            "fidelity": "clean_room_canonical_rlm_contract",
+            "rlm_reproduction": False,
+            "fidelity": "source_matched_restricted_rlm_subset",
         }

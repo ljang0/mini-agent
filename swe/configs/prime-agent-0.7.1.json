@@ -1,0 +1,22 @@
+{
+  "application": {
+    "name": "swe",
+    "implementation": "prime-agent-0.7.1"
+  },
+  "limits": {
+    "max_model_calls": 1,
+    "max_concurrency": 1,
+    "wall_time_seconds": 1800,
+    "max_depth": 1
+  },
+  "capture_content": false,
+  "repeats": 1,
+  "random_seed": 20260810,
+  "metadata": {
+    "fidelity": "upstream_runtime_adapter",
+    "version": "0.7.1",
+    "revision": "95afd319a78ae017a41241d50b013d656a0685ce",
+    "boundary": "Invokes the pinned released Prime Agent JSON-mode runtime with persistent Python control and subagents; complete child-tree usage and security sandboxing remain unavailable.",
+    "workspace_owner": "Prime Agent owns a caller-supplied disposable single-trial worktree; do not add a local environment block."
+  }
+}

@@ -5,6 +5,13 @@ As-of date: 2026-08-10.
 The central distinction is between an inference scaffold, a training method, and
 an evaluation environment. They are separate experimental objects.
 
+The public catalog is organized first by application: `browser`, `computer-use`,
+and `swe`. Each entry records its artifact kind, sources, runtime owner, runnable
+status, exact components, and unavailable components. Selecting a profile is not a
+marketing alias: configuration resolution enforces its exact harness signature and
+compatible provider/environment, while `catalog_only` training/evaluation/gap entries
+cannot execute.
+
 The user-supplied frontier-harness brief was correct that Claude Opus 5 has a
 published system card. Anthropic's [official system-card index](https://www.anthropic.com/system-cards)
 lists the July 2026 card. This audit therefore treats Opus 5 and Fable/Mythos 5 as
@@ -14,9 +21,9 @@ separate disclosures rather than assuming the Opus name was speculative.
 
 | System | Publicly supported mechanics | Candidate treatment in Scaffold Lab |
 | --- | --- | --- |
-| [MACU paper](https://arxiv.org/abs/2606.01533), [project](https://jykoh.com/multi-agent-computer-use/), [pinned code](https://github.com/kohjingyu/multi-agent-computer-use/tree/5b1b8f91dfc5dc66a2f06af4b443b3009a9cd105) | Manager creates and continually mutates a validated DAG; ready frontier runs in parallel isolated CUA environments; observations and selected artifacts pass through dependencies. Apache-2.0. | `macu_dynamic_dag` is a MACU-inspired text-DAG subset. It omits CUA sessions, screenshots/state/files, upstream mutation semantics, and OSWorld/VM infrastructure. |
+| [MACU paper](https://arxiv.org/abs/2606.01533), [project](https://jykoh.com/multi-agent-computer-use/), [pinned code](https://github.com/kohjingyu/multi-agent-computer-use/tree/5b1b8f91dfc5dc66a2f06af4b443b3009a9cd105) | Manager creates and continually mutates a validated DAG; ready frontier runs in parallel isolated CUA environments; observations and selected artifacts pass through dependencies. Apache-2.0. | `macu_dynamic_dag` is a MACU-inspired local text-DAG subset. `macu_upstream` separately executes the clean pinned release and ingests its artifacts with explicit manager/CUA/OSWorld settings. The released summary omits initial graph-generation usage, so observed tokens, cost, and manager calls remain lower bounds. |
 | [Browser-Use parallel template](https://docs.browser-use.com/open-source/examples/templates/parallel-browser), [0.13.7 release](https://github.com/browser-use/browser-use/releases/tag/0.13.7) | Different tasks run in separate browser profiles with flat async fan-out and no manager, communication, aggregation, or selector. MIT. | `flat_parallel` reproduces that scheduling pattern and must never be labelled best-of-N. The built-in browser domain adds isolated Playwright contexts but does not copy Browser-Use's agent policy. |
-| [RLM paper](https://arxiv.org/abs/2512.24601), [official `rlms` 0.1.3](https://github.com/alexzhang13/rlm/releases/tag/v0.1.3), [minimal code](https://github.com/alexzhang13/rlm-minimal) | Context is an external REPL variable; the root writes code to inspect/transform it and calls `llm_query`, batched subcalls, and recursive RLM queries on selected data. The upstream runtime supports local, Docker, and hosted sandboxes. MIT. | `rlm_repl` is a clean-room restricted-REPL implementation whose subcalls use Scaffold Lab's ledger/trace. It reproduces the algorithmic boundary, not the upstream package byte-for-byte. `external_context_json_search` remains a separate non-RLM ablation. |
+| [RLM paper](https://arxiv.org/abs/2512.24601), [official `rlms` 0.1.3](https://github.com/alexzhang13/rlm/releases/tag/v0.1.3), [minimal code](https://github.com/alexzhang13/rlm-minimal) | Context is an external REPL variable; the root writes code to inspect/transform it and calls `llm_query`, batched subcalls, and recursive RLM queries on selected data. The upstream runtime supports local, Docker, and hosted sandboxes. MIT. | `swe/rlm-0.1.3-contract` selects the source-matched restricted `rlm_repl`, whose subcalls use Scaffold Lab's ledger/trace. `swe/rlm-0.1.3-upstream` selects `rlm_upstream`, verifies release commit `72d6940142ddfb84ee6be573dc999a37e633e671`, and executes the upstream package in a bounded external process, Docker by default. It injects no domain tools and is not SWE parity. `external_context_json_search` remains a separate non-RLM ablation. |
 | [RAO project](https://apga.github.io/RAO/), [paper](https://arxiv.org/abs/2605.06639), [Platoon snapshot](https://github.com/ApGa/platoon/tree/d9c5857d3a0a056ebc9b047241a2a0c9515aafbe) | A Python-REPL policy launches subagents sequentially or concurrently; RAO trains one shared policy across the tree with hierarchical/local rewards. MIT code. | `platoon_recursive_inference` implements the public recursive inference/control shape only. It is never called faithful RAO because the trained policy and reward procedure are absent. `recursive_delegation` remains a simpler JSON control. |
 | [Recursive Agent Harnesses](https://arxiv.org/abs/2606.13643) | The parent writes executable code that spawns full tool-using agent harnesses in parallel, uses structured calls for small subtasks, and allows children to recurse to a bounded depth. The paper describes established primitives and a controlled evaluation, but does not publish a reference scheduler. | `recursive_delegation` is only a control: it recursively asks one backend policy for JSON actions and has no generated launcher code, filesystem tools, or full child harnesses. It is not RAH. |
 | [Prime Agent launch](https://www.primeintellect.ai/blog/prime-agent), [0.7.1 release](https://github.com/PrimeIntellect-ai/prime-agent/releases/tag/v0.7.1), [tagged source](https://github.com/PrimeIntellect-ai/prime-agent/tree/v0.7.1) | Persistent IPython parent; asynchronous full child sessions; explicit messages/files; daemon persistence, compaction, goals, schedules, bounded autonomous mode, and continual harness state. The release tag resolves to commit `95afd31`. MIT. | `prime_agent` invokes the released JSON runtime. It preserves observed root assistant usage/cost as a lower bound, but v0.7.1 JSON events do not prove complete child-tree attribution. One Scaffold Lab “call” is an external session tree, so usage is always marked incomplete/cost unknown for release gating. |
@@ -24,26 +31,39 @@ separate disclosures rather than assuming the Opus name was speculative.
 | [Prime-RL multi-agent post](https://www.primeintellect.ai/blog/multi-agent-systems), [Verifiers](https://github.com/PrimeIntellect-ai/verifiers), [Prime-RL](https://github.com/PrimeIntellect-ai/prime-rl) | User-authored async environments control several agents and assign environment-specific rewards/credit. | Evaluation/training infrastructure, not an inference-topology candidate. Integrate later as a benchmark executor. |
 | [Prime RLM harness](https://github.com/PrimeIntellect-ai/rlm-harness) | The repository explicitly scopes itself to RLM-style rollouts for RL training; Verifiers also ships RLM evaluation environments. | Evidence for a future upstream training/evaluation integration, not a released inference CLI adapter in this matrix. |
 
-The fidelity labels are deliberately narrow:
+The fidelity labels are deliberately narrow and correspond to registry values:
 
-- **Exact public boundary:** the documented request/response shape and named transport
+- **`exact_public_protocol`:** the documented request/response shape and named transport
   are reproduced at the stated scope, but a closed hosted scheduler is not.
-- **Upstream runtime adapter:** the released executable owns the scheduler; Scaffold
+- **`upstream_runtime_adapter`:** the released executable owns the scheduler; Scaffold
   Lab records caller-provisioned isolation, artifact capture, and only the accounting
   exposed by that runtime.
-- **Topology simulation:** only disclosed roles and communication/scheduling shape
+- **`source_matched_reimplementation`:** disclosed source mechanics are reimplemented,
+  with all missing runtime behavior stated explicitly.
+- **`topology_simulation`:** only disclosed roles and communication/scheduling shape
   are approximated; source prompts, tools, compaction, and timing are unavailable.
-- **Inspired baseline/ablation:** a testable mechanism related to a paper, with no
-  claim of reproducing the named system.
+- **`inference_only_reimplementation`:** inference/control flow is reproduced without
+  the named training method or trained checkpoint.
+- **`controlled_baseline`:** a testable control with no named-system parity claim.
+- **`documented_gap`:** a source, training artifact, or evaluation target is recorded
+  but not runnable as that system.
+
+## Application coverage
+
+| Top-level application | Runnable public boundaries and controls | Cataloged but separate |
+| --- | --- | --- |
+| `browser` | OpenAI hosted multi-agent with client functions or hosted `web_search`; xAI 4/16-agent hosted web research; Anthropic Managed Agents; Browser-Use flat parallel pattern; local and pinned-upstream MACU; Fable/Opus topology simulations | Meta Muse scheduler gap; BrowserGym remains an evaluator target |
+| `computer-use` | OpenAI GA computer and Anthropic `computer_20251124`; a source-matched hosted-OpenAI combination; local and pinned-upstream MACU | Meta Muse action/scheduler gap; OSWorld 2 is an evaluation environment, not a harness |
+| `swe` | Local controls and system-card simulations; OpenAI/Anthropic hosted boundaries; Prime Agent, Grok Build, and pinned RLM external runtimes; restricted local RLM; Platoon inference; SWE plus computer tools | RAO training, Meta Muse scheduling, xAI developer-tool gap, and SWE-bench evaluation remain distinct catalog entries |
 
 ## Frontier-lab disclosures
 
 | Lab | Strongest reproducible public evidence | Classification |
 | --- | --- | --- |
-| OpenAI | [GPT-5.6 Responses multi-agent guide](https://developers.openai.com/api/docs/guides/responses-multi-agent) publishes the hosted invocation, six coordination actions, injected prompts, context inheritance, independent compaction, recommended concurrency, and stateless HTTP/WebSocket continuation. The [GA computer guide](https://developers.openai.com/api/docs/guides/tools-computer-use) and [shell guide](https://developers.openai.com/api/docs/guides/tools-shell) publish client execution protocols. [Codex source](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/handlers/multi_agents.rs) exposes related local handlers, not the hosted scheduler. | Scaffold Lab implements the public beta request and agent-attributed developer-function continuation over non-streaming stateless HTTP. `openai_hosted_multi_agent.json` is tool-less; `openai_hosted_developer_tools.json` exercises developer functions. Computer and local shell are separately implemented protocols, but their combination with hosted multi-agent has not been validated live. The WebSocket transport and hosted scheduler remain unimplemented. |
+| OpenAI | [GPT-5.6 Responses multi-agent guide](https://developers.openai.com/api/docs/guides/responses-multi-agent) publishes the hosted invocation, six coordination actions, injected prompts, context inheritance, independent compaction, recommended concurrency, and stateless HTTP/WebSocket continuation. The [GA computer guide](https://developers.openai.com/api/docs/guides/tools-computer-use) and [shell guide](https://developers.openai.com/api/docs/guides/tools-shell) publish client execution protocols. [Codex source](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/handlers/multi_agents.rs) exposes related local handlers, not the hosted scheduler. | Scaffold Lab implements the public beta request and agent-attributed developer-function continuation over non-streaming stateless HTTP, plus a separate server-side `web_search` profile. GA computer and local shell are separately implemented protocols. Their combination with hosted multi-agent is source-matched but not yet live-validated; WebSocket transport and the hosted scheduler remain unimplemented. |
 | Anthropic | [Fable/Mythos 5 system card](https://www-cdn.anthropic.com/2f9323abbcc4abe219577539efe19a623c9ca2bd/Claude%20Fable%205%20%26%20Claude%20Mythos%205%20System%20Card.pdf) §8.15.3 specifies blocking, fixed-team, and async harnesses. The [Opus 5 system card](https://anthropic.com/claude-opus-5-system-card) §8.11.3 specifies fixed N-agent and async harnesses. Separately, [Managed Agents multiagent orchestration](https://platform.claude.com/docs/en/managed-agents/multiagent-orchestration) publishes a hosted coordinator roster, one delegation level, isolated thread contexts, and shared sandbox/filesystem/vault state. The [Messages computer guide](https://platform.claude.com/docs/en/agents-and-tools/tool-use/computer-use-tool) publishes `computer_20251124`, `text_editor_20250728`, and `bash_20250124`. | System-card local variants remain topology simulations because exact prompts, timing, compaction, limits, and worktrees are absent. `anthropic_managed_agents` uses the public hosted session, primary-event-list, and aggregate-usage boundary; Anthropic still owns its scheduler, child-thread streams, and environment. Messages uses client tool schemas over Scaffold Lab environments only for model/tool-version pairs supported by Anthropic. |
-| xAI | The [pinned Grok Build snapshot](https://github.com/xai-org/grok-build/tree/8a14c91d88875a831a38b3a066b1683116bcb31c) releases subagent source and worktree/capability semantics. Its [current headless interface](https://docs.x.ai/build/cli/headless-scripting) supports scriptable, machine-readable external invocation. The [Grok multi-agent API](https://docs.x.ai/developers/model-capabilities/text/multi-agent) exposes a team total of 4 agents for low/medium effort or 16 for high/xhigh, including a designated leader. | `grok_build` is an upstream-runtime adapter. `xai_hosted_multi_agent` reproduces the documented no-tool HTTP request for both team sizes. Plaintext intermediate state and scheduler/prompt internals remain closed; encrypted continuation state is exposed by the API but is not implemented locally. |
-| Meta | [Muse Spark](https://ai.meta.com/blog/introducing-muse-spark-msl/) discloses parallel multi-agent inference, while [Muse Spark 1.1](https://ai.meta.com/blog/introducing-muse-spark-meta-model-api/) describes a main agent that plans/delegates and subagents that escalate, plus context compaction. Muse 1.1 is available through an OpenAI-compatible Meta Model API, but the public launch material does not specify a hosted multi-agent toggle or scheduler contract. [Meta ARE](https://github.com/facebookresearch/meta-agents-research-environments) releases agent evaluation infrastructure. | Meta and other OpenAI-compatible models can use the generic Responses/Chat backends and local harnesses. That is model portability, not evidence for an exact Muse scheduler. ARE is evaluation infrastructure, not the deployed inference scaffold. |
+| xAI | The [pinned Grok Build snapshot](https://github.com/xai-org/grok-build/tree/8a14c91d88875a831a38b3a066b1683116bcb31c) releases subagent source and worktree/capability semantics. Its [current headless interface](https://docs.x.ai/build/cli/headless-scripting) supports scriptable, machine-readable external invocation. The [Grok multi-agent API](https://docs.x.ai/developers/model-capabilities/text/multi-agent) exposes a team total of 4 agents for low/medium effort or 16 for high/xhigh, including a designated leader and hosted `web_search`/`x_search` tools. | `grok_build` is an upstream-runtime adapter. `xai_hosted_multi_agent` reproduces the documented 4/16-agent HTTP boundary and server-tool declarations. Plaintext intermediate state and scheduler/prompt internals remain closed; encrypted continuation state is exposed by the API but is not implemented locally. Developer tools remain unsupported. |
+| Meta | [Muse Spark 1.1](https://ai.meta.com/blog/introducing-muse-spark-meta-model-api/) describes a main agent that plans/delegates and subagents that escalate, plus context compaction. Muse 1.1 is available through an OpenAI-compatible Meta Model API, but the public launch material does not specify a hosted multi-agent toggle or scheduler contract. [Meta ARE](https://github.com/facebookresearch/meta-agents-research-environments) releases agent evaluation infrastructure. | Meta and other OpenAI-compatible models can use the generic Responses/Chat backends and local harnesses. That is model portability, not evidence for an exact Muse scheduler. The browser, computer-use, and SWE Muse profiles are catalog-only. ARE is evaluation infrastructure, not the deployed inference scaffold. |
 
 ### Hosted-boundary caveats
 
@@ -81,6 +101,30 @@ custom-tool and permission-confirmation `requires_action` events. `retain` prese
 resumable session; `archive` blocks new events while retaining history; `delete`
 permanently removes the session record, events, and sandbox.
 
+### Pinned-runtime accounting caveats
+
+The MACU adapter runs only from a clean checkout at
+`5b1b8f91dfc5dc66a2f06af4b443b3009a9cd105` and keeps the checkout, OSWorld root,
+and result directory disjoint. It passes task content through a private JSON task file,
+bounds stdout/stderr and artifact ingestion, terminates the process group on timeout or
+cancellation, and records explicit manager/CUA providers, models, and scheduler limits.
+This preserves the released scheduler and prompts, subject to the caller's dependency,
+model, task, and VM pins. Code audit found that the release's initial manager call for
+graph generation is not appended to `manager_usages`; `summary.json` therefore omits
+that call from manager counts, tokens, and cost. Scaffold Lab retains the reported
+values only as incomplete, cost-unknown lower bounds.
+
+The upstream RLM adapter runs the official v0.1.3 commit
+`72d6940142ddfb84ee6be573dc999a37e633e671` from a clean checkout using an explicitly
+selected Python (the release requires Python 3.11 or newer). Input travels through a
+bounded JSON-stdin bridge rather than command arguments, process output and lifetime
+are bounded, and Docker is the default upstream environment. The upstream root
+`UsageSummary` describes its own `LMHandler`, while a recursive child RLM creates a
+separate handler whose summary is not merged into the root in v0.1.3. Calls, tokens,
+and optional costs are therefore lower bounds with `usage_complete: false` and
+`cost_known: false`. This adapter preserves the released RLM runtime; it does not add
+Scaffold Lab SWE/browser/computer tools or claim domain-task parity.
+
 ## Tool and evaluation environments
 
 The local domain layer is deliberately smaller than the benchmark integrations it
@@ -96,13 +140,19 @@ can eventually drive:
 | [OSWorld](https://github.com/xlang-ai/OSWorld) | Desktop-computer task environment and evaluator. | Required external VM/evaluator for an OSWorld claim. The Playwright viewport driver is only protocol QA. |
 
 OpenAI's current computer response contains an ordered `actions[]` batch; the client
-executes all actions and returns one original-detail screenshot. Anthropic returns
-`tool_use`, and the client appends an assistant content block followed by a user
-`tool_result`; among these Anthropic Messages client tools, only computer use needs the
-`computer-use-2025-11-24` beta header. Managed Agents uses its separate beta headers
-described above. Anthropic's documented `computer_20251124` model list includes Opus 5
-but not Fable 5 or Mythos 5.
-Scaffold Lab implements both sequences and tests them offline with fake drivers.
+executes every action in order and returns one original-detail screenshot. Its
+`keypress` uses ordered `keys[]`, and mouse actions can carry `keys[]` modifiers.
+Anthropic returns one `tool_use` action, and the client appends the assistant content
+block followed by a user `tool_result`; its keyboard shortcut field is singular
+`key`. The implemented `computer_20251124` vocabulary also includes triple click,
+left mouse down/up, modifier-aware mouse/scroll actions, `hold_key` with bounded
+duration, and failure-safe release of pressed keys/buttons during composite actions.
+Zoom remains deliberately disabled. Among these Anthropic Messages client tools, only
+computer use needs the `computer-use-2025-11-24` beta header. Managed Agents uses its
+separate beta headers described above. Anthropic's documented
+`computer_20251124` model list includes Opus 5 but not Fable 5 or Mythos 5. Scaffold
+Lab implements both sequences and tests action ordering, schema differences, modifier
+release, and recovery screenshots offline with fake drivers.
 
 The SWE example profiles set `allow_native_shell: false`. They expose the portable
 `run_command` fallback through an executable-name allowlist, a fixed system PATH, and a
@@ -114,8 +164,15 @@ an outer process/network sandbox.
 The SWE configs also omit a global workspace; smoke tasks select a dedicated fixture.
 Matrix preflight rejects overlap between run artifacts and every selected SWE source
 before writing the manifest, and direct mode is restricted to a single planned trial.
-Copy mode is intentionally simple and unfiltered, so release tasks still require a
-clean frozen source without old artifacts or evaluator data.
+Copy mode excludes the parent `.git` directory and initializes a deterministic clean
+Git baseline inside each temporary workspace. With `export_patch: true`, the runner
+captures a `git diff --binary --full-index` that includes modified, deleted, binary,
+and untracked files, enforces `max_patch_bytes`, externalizes it to a per-trial
+`patches/*.patch` artifact, and replaces private in-memory bytes with path/hash/size
+metadata before trace/result serialization and temporary cleanup. Copy mode remains
+otherwise unfiltered, so release tasks still require a clean frozen source without
+old artifacts or evaluator data. Durable patch capture is not SWE-bench scoring; the
+pinned Docker evaluator/images remain a separate requirement.
 
 ## Provider portability is not scheduler parity
 
@@ -169,9 +226,11 @@ paper-parity normalized metric is still required.
 
 ## Claims we will not make
 
-- Flat parallelism is best-of-N.
-- A recursive inference wrapper reproduces RAO training.
-- Long context, memory, or compaction is automatically an RLM.
+- Flat parallelism as best-of-N; it has no selector.
+- Recursive inference as a reproduction of RAO training.
+- Long context, memory, or compaction alone as an RLM implementation.
+- The local restricted `rlm_repl` is the upstream `rlms` package, or the pinned
+  upstream adapter provides SWE/browser/computer tool parity.
 - A public API reproduces a closed server scheduler.
 - A version string alone proves that an installed CLI is bit-identical to an audited
   source tree or package artifact.

@@ -1,9 +1,21 @@
 # Architecture
 
-Scaffold Lab keeps four objects separate because changing any one of them changes
-the experiment:
+Scaffold Lab is application-first. The stable top-level registry contains exactly
+`browser`, `computer-use`, and `swe`. An application profile binds a cited source,
+fidelity/status label, harness signature, compatible provider, and environment type;
+the registry rejects catalog-only profiles and any provider, environment, or harness
+that does not match the selected profile.
+
+The runtime still keeps the experimental objects separate because changing any one
+of them changes the experiment:
 
 ```text
+Application (browser | computer-use | swe)
+          |
+          v
+Implementation profile + source/fidelity claim
+          |
+          v
 Task + frozen evaluator
           |
           v
@@ -19,6 +31,22 @@ Tool environment -------------> browser, repository, computer, or hybrid
 Shared budget ledger + trace recorder
 ```
 
+The canonical config selector is:
+
+```json
+{
+  "application": {
+    "name": "browser",
+    "implementation": "openai-hosted-web-search"
+  }
+}
+```
+
+When `harnesses` is omitted, the profile supplies its declared signature. An
+explicit harness list must match exactly. `list-applications` and
+`list-implementations --application <name>` expose the registry; a profile marked
+`catalog_only` documents a source or gap but cannot be run.
+
 - A **harness** decides who works, what each agent sees, when work runs, how agents
   communicate, and who selects or synthesizes the answer.
 - A **provider adapter** translates the common request contract into OpenAI
@@ -28,6 +56,18 @@ Shared budget ledger + trace recorder
   independent of the task's evaluator.
 - An **evaluation environment** supplies task reset and scoring. BrowserGym,
   SWE-bench, and OSWorld belong here even when they also expose an execution API.
+
+Profiles use seven deliberately narrow fidelity labels:
+
+| Label | Meaning |
+| --- | --- |
+| `exact_public_protocol` | The documented public request/action/response boundary is implemented at the named scope; it does not expose a closed scheduler or model training. |
+| `upstream_runtime_adapter` | A clean, pinned released runtime owns its scheduler; Scaffold Lab wraps its non-interactive boundary and records only observable accounting. |
+| `source_matched_reimplementation` | Public mechanics are reimplemented, with named missing runtime details. |
+| `topology_simulation` | Only disclosed roles, limits, or communication shape are approximated. |
+| `inference_only_reimplementation` | An inference control is implemented without the named training procedure or checkpoint. |
+| `controlled_baseline` | A deliberately simple experimental control with no named-system parity claim. |
+| `documented_gap` | A source, training method, or evaluation target is cataloged but not runnable as that artifact. |
 
 This separation prevents a Playwright browser from being called BrowserGym, a
 SWE-bench Docker evaluator from being called an inference harness, or a provider's
@@ -52,8 +92,11 @@ The built-in environments are:
 | `swe_computer` | Composite repository and computer sessions | Supported schemas from both domains | One config does not reproduce a lab's hidden prompts, model compatibility, or scheduler |
 
 `workspace_mode: copy` is the default for SWE state. With `isolation: per_agent`,
-each logical agent receives a distinct copy. This is not yet a filtered or frozen
-benchmark reset: the implementation copies the configured live directory verbatim.
+each logical agent receives a distinct copy. The copy excludes the source `.git`
+directory and creates its own deterministic, clean Git baseline commit, so patch
+capture does not depend on the parent repository's history or staged state. This is
+still not a filtered or frozen benchmark reset: the implementation copies the rest of
+the configured live directory verbatim.
 The example configs omit a global workspace and their smoke tasks explicitly select
 `fixtures/swe_smoke_repo`. Do not point a paid or holdout task at `workspace: "."`.
 Before writing the manifest, matrix preflight rejects an output directory that overlaps
@@ -64,6 +107,14 @@ clean frozen task repository and a disjoint output directory.
 `workspace_mode: direct` is allowed only with shared isolation and is intentionally
 marked in provenance because mutations then persist. Matrix preflight permits direct
 mode only for exactly one planned trial; use copy mode for every multi-trial matrix.
+
+`export_patch: true` captures each SWE session's bounded
+`git diff --binary --full-index` against that fresh baseline, including modified,
+deleted, binary, and previously untracked files. The matrix runner writes durable
+per-trial files under `patches/` before removing temporary workspaces. Result metadata
+contains only the absolute artifact path, SHA-256, byte count, and format; patch bytes
+are not serialized inline into results or traces. `max_patch_bytes` bounds each
+capture. This is an artifact pipeline, not the SWE-bench Docker evaluator.
 
 The portable `run_command` allowlist constrains only the executable name and cannot
 make an interpreter such as `python3` safe. Provider-native shell/bash accepts command
@@ -87,6 +138,11 @@ developer calls sequentially. This is a separate latency condition. The
 tool-less `openai_hosted_multi_agent.json` and developer-function
 `openai_hosted_developer_tools.json` profiles cover those two boundaries separately.
 Native computer/shell combined with hosted multi-agent has not been validated live.
+The OpenAI hosted adapter can declare the server-side `web_search` tool without
+pretending to execute search through the local browser environment. The dedicated
+xAI hosted adapter likewise supports the documented `web_search` and `x_search`
+server-tool declarations; it does not accept arbitrary developer functions or reveal
+plaintext child trajectories.
 
 Anthropic Managed Agents instead owns the environment and session tree. The adapter
 polls the session, lists the condensed primary event stream, and consumes authoritative
@@ -102,6 +158,26 @@ Scaffold Lab model call can represent many internal calls. Prime/Grok usage is
 conservatively labeled incomplete where their public output does not establish full
 tree attribution. The released CLIs retain their own orchestration policy.
 
+The pinned MACU adapter verifies a clean checkout at commit
+`5b1b8f91dfc5dc66a2f06af4b443b3009a9cd105`, keeps checkout, OSWorld, and result
+paths disjoint, passes the task through a private JSON file rather than process
+arguments, and bounds/cancels the released process tree. It records the selected
+manager/CUA models, limits, Git identity, and parsed release artifacts. The audited
+release does not append the initial graph-generation call to `manager_usages`, so its
+summary token/cost totals and manager-call count are observed lower bounds. MACU runs
+therefore remain `usage_complete: false` and `cost_known: false` for release gates.
+
+The local `rlm_repl` is a source-matched restricted subset with a shared Scaffold Lab
+ledger/trace, not the upstream REPL. The separate `swe/rlm-0.1.3-upstream` profile
+selects the `rlm_upstream` adapter, which verifies the official `rlms` v0.1.3 release
+commit
+`72d6940142ddfb84ee6be573dc999a37e633e671`, invokes its selected Python runtime over
+bounded JSON stdin, and defaults to the upstream Docker environment. It injects no
+Scaffold Lab domain tools and makes no SWE parity claim. In v0.1.3, recursive child
+RLMs have separate `LMHandler` summaries that are not merged into the root
+`UsageSummary`; reported calls, tokens, and optional cost are consequently lower
+bounds with incomplete/unknown accounting.
+
 External CLI adapters run only in a caller-provisioned single-trial workspace.
 Scaffold Lab records resolved executable identity, version, Git state, and pre/post
 workspace hashes, but does not claim that a version string proves bit identity with a
@@ -110,7 +186,8 @@ source snapshot.
 ## Artifacts and privacy
 
 Each matrix writes `manifest.json`, `results.jsonl`, `traces/*.jsonl`, and
-`summary.json`. The manifest records configured provider settings, environment
+`summary.json`; SWE runs with patch export also write `patches/*.patch`. The manifest
+records configured provider settings, environment
 configuration, budgets, selected package versions, task/harness data, and a hash of
 `src/scaffoldlab/**/*.py`. That hash is not a hash of the entire checkout, dependency
 lock, Playwright browser binary, or remote hosted-agent definition. In particular, the
@@ -136,16 +213,19 @@ contain credentials, screenshots, proprietary code, or personal data.
 
 ## Remaining fidelity gaps
 
-- MACU still implements its mutable scheduling DAG but not the pinned OSWorld VM,
-  screenshot/file artifact protocol, prompts, or model configuration.
+- `macu_dynamic_dag` remains a local text-DAG subset. `macu_upstream` runs the pinned
+  scheduler and prompts, but exact experiment parity still requires pinned
+  dependencies, model snapshots, task assets, and OSWorld VM image; its released
+  usage summary omits initial graph generation.
 - Fable/Mythos and Opus system-card variants remain topology simulations until exact
   prompts, message injection timing, context limits, compaction, and Git worktrees
   are reproduced.
 - The local Platoon-style candidate is recursive inference only. RAO's trained policy
   and reward procedure are a separate training artifact.
-- The restricted RLM REPL reproduces the public external-context algorithm but is not
-  byte-for-byte the upstream `rlms` runtime; upstream Docker/host REPLs can be tested
-  as separate adapters.
+- The restricted local RLM does not become an RLM merely by searching JSON and is not
+  byte-for-byte upstream. The pinned upstream adapter preserves the released runtime
+  but omits Scaffold Lab browser/SWE/computer tools, and v0.1.3 root accounting omits
+  recursive-child summaries.
 - Per-agent context limits and automatic compaction are not yet enforced local
   policies.
 - Hosted `max_model_calls`, concurrency, depth, turn, and tool limits describe the

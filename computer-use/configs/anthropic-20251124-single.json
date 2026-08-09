@@ -1,0 +1,37 @@
+{
+  "application": {
+    "name": "computer-use",
+    "implementation": "anthropic-computer-20251124-single"
+  },
+  "environment": {
+    "type": "computer",
+    "protocol": "auto",
+    "isolation": "per_agent",
+    "allowed_hosts": ["example.com"],
+    "start_url": "https://example.com",
+    "headless": true,
+    "viewport_width": 1440,
+    "viewport_height": 900,
+    "max_tool_output_bytes": 524288
+  },
+  "limits": {
+    "max_model_calls": 64,
+    "max_concurrency": 1,
+    "max_cost_usd": 5.0,
+    "wall_time_seconds": 900,
+    "max_depth": 1,
+    "max_tool_calls": 256,
+    "max_tool_output_bytes": 16777216,
+    "max_agent_turns": 48
+  },
+  "matrix_max_cost_usd": 25.0,
+  "capture_content": false,
+  "repeats": 1,
+  "random_seed": 20260810,
+  "metadata": {
+    "fidelity": "exact_public_protocol",
+    "boundary": "Exact at the published computer-use-2025-11-24 client protocol and action vocabulary; injected computer prompt, classifier, model training, and product runtime are unavailable.",
+    "zoom": "Disabled because enable_zoom is omitted; zoom requires a separately implemented crop-and-coordinate path.",
+    "environment_surface": "Playwright browser viewport, not Anthropic's reference Linux desktop or a full VM."
+  }
+}

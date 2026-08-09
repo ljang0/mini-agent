@@ -1,0 +1,37 @@
+{
+  "application": {
+    "name": "browser",
+    "implementation": "openai-hosted-multi-agent-functions"
+  },
+  "environment": {
+    "type": "browser",
+    "protocol": "generic",
+    "isolation": "per_agent",
+    "allowed_hosts": ["example.com"],
+    "start_url": "https://example.com",
+    "headless": true,
+    "viewport_width": 1440,
+    "viewport_height": 900,
+    "max_tool_output_bytes": 262144
+  },
+  "limits": {
+    "max_model_calls": 12,
+    "max_concurrency": 1,
+    "max_input_tokens": 2000000,
+    "max_output_tokens": 500000,
+    "max_cost_usd": 20.0,
+    "wall_time_seconds": 1800,
+    "max_depth": 1,
+    "max_tool_calls": 64,
+    "max_tool_output_bytes": 8388608,
+    "max_agent_turns": 12
+  },
+  "matrix_max_cost_usd": 40.0,
+  "capture_content": false,
+  "repeats": 1,
+  "random_seed": 20260810,
+  "metadata": {
+    "fidelity": "exact_public_protocol",
+    "boundary": "Published Responses multi-agent HTTP request, agent-attributed developer calls, and continuation only; hosted scheduler source, injected coordination prompts, and WebSocket response.inject are unavailable."
+  }
+}

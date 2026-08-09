@@ -317,6 +317,39 @@ def _continuation_history(continuation: Any, provider: str) -> list[Mapping[str,
     return [dict(item) for item in history]
 
 
+def _hosted_tool_payloads(
+    metadata: Mapping[str, Any],
+    *,
+    metadata_key: str,
+    allowed_types: frozenset[str],
+    provider: str,
+) -> list[Mapping[str, str]]:
+    """Validate request-scoped server tools and encode their public API shape.
+
+    Server tools are deliberately carried in metadata rather than ``request.tools``:
+    the latter represents developer/client tools whose calls the local runtime must
+    execute.  Accepting only bare type strings prevents arbitrary provider payloads
+    from bypassing this adapter's audited allowlist.
+    """
+
+    raw_tools = metadata.get(metadata_key, ())
+    if not isinstance(raw_tools, (list, tuple)):
+        raise ProviderError(f"{provider} hosted tools must be a list of tool types")
+    encoded: list[Mapping[str, str]] = []
+    seen: set[str] = set()
+    for tool_type in raw_tools:
+        if not isinstance(tool_type, str) or tool_type not in allowed_types:
+            raise ProviderError(
+                f"unsupported {provider} hosted tool {tool_type!r}; "
+                f"allowed types are {sorted(allowed_types)}"
+            )
+        if tool_type in seen:
+            raise ProviderError(f"duplicate {provider} hosted tool {tool_type!r}")
+        seen.add(tool_type)
+        encoded.append({"type": tool_type})
+    return encoded
+
+
 class OpenAIResponsesBackend:
     """OpenAI-compatible Responses API backend.
 
@@ -392,6 +425,7 @@ class OpenAIResponsesBackend:
             ),
             "extra_body": self.extra_body,
             "tool_family": self.tool_family,
+            "supported_hosted_tools": ["web_search"],
         }
 
     async def complete(self, request: ModelRequest) -> ModelResponse:
@@ -415,12 +449,27 @@ class OpenAIResponsesBackend:
             payload["instructions"] = request.system
         if request.max_output_tokens is not None:
             payload["max_output_tokens"] = request.max_output_tokens
-        if request.tools:
-            payload["tools"] = [
-                _openai_tool(tool, native_openai=self.tool_family == "openai")
-                for tool in request.tools
-            ]
         hosted_multi_agent = request.metadata.get("openai_multi_agent") is True
+        if "openai_hosted_tools" in request.metadata and not hosted_multi_agent:
+            raise ProviderError(
+                "OpenAI hosted tools require an openai_hosted_multi_agent request"
+            )
+        hosted_tools = (
+            _hosted_tool_payloads(
+                request.metadata,
+                metadata_key="openai_hosted_tools",
+                allowed_types=frozenset({"web_search"}),
+                provider="OpenAI",
+            )
+            if hosted_multi_agent
+            else []
+        )
+        encoded_tools = [
+            _openai_tool(tool, native_openai=self.tool_family == "openai")
+            for tool in request.tools
+        ]
+        if encoded_tools or hosted_tools:
+            payload["tools"] = [*encoded_tools, *hosted_tools]
         if hosted_multi_agent and not self.model.startswith("gpt-5.6"):
             raise ProviderError(
                 "OpenAI hosted multi-agent beta requires a GPT-5.6 model"
@@ -938,9 +987,9 @@ class XAIResponsesBackend:
     """xAI Responses backend for the documented hosted multi-agent model.
 
     The public API exposes the leader's final output and aggregate billed usage, but
-    not the server scheduler or unencrypted intermediate subagent state. This backend
-    intentionally sends no built-in tools, keeping token pricing comparable without
-    an unimplemented server-tool cost schedule.
+    not the server scheduler or unencrypted intermediate subagent state. Documented
+    server-owned search tools may be enabled per request; developer/client tools stay
+    rejected because the multi-agent model does not support them.
     """
 
     tool_family = "xai_hosted"
@@ -991,7 +1040,8 @@ class XAIResponsesBackend:
             "base_url": self.base_url,
             "timeout_seconds": self.timeout_seconds,
             "hosted_multi_agent_beta": True,
-            "built_in_tools": [],
+            "supported_built_in_tools": ["web_search", "x_search"],
+            "built_in_tools_request_scoped": True,
             "leader_output_only": True,
             "server_scheduler_open": False,
             "plaintext_subagent_state_available": False,
@@ -1023,6 +1073,12 @@ class XAIResponsesBackend:
             raise ProviderError(
                 "xAI multi-agent reasoning_effort must be low, medium, high, or xhigh"
             )
+        hosted_tools = _hosted_tool_payloads(
+            request.metadata,
+            metadata_key="xai_hosted_tools",
+            allowed_types=frozenset({"web_search", "x_search"}),
+            provider="xAI",
+        )
         prompt = request.prompt
         if request.system:
             prompt = f"{request.system}\n\n{prompt}"
@@ -1032,6 +1088,8 @@ class XAIResponsesBackend:
             "reasoning": {"effort": reasoning_effort},
             "input": [{"role": "user", "content": prompt}],
         }
+        if hosted_tools:
+            payload["tools"] = hosted_tools
         started = time.perf_counter()
         data = await _post_json(
             f"{self.base_url}/responses",

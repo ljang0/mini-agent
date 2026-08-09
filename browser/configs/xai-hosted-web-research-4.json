@@ -1,0 +1,23 @@
+{
+  "application": {
+    "name": "browser",
+    "implementation": "xai-hosted-web-research-4"
+  },
+  "limits": {
+    "max_model_calls": 1,
+    "max_concurrency": 1,
+    "max_input_tokens": 2000000,
+    "max_output_tokens": 500000,
+    "max_cost_usd": 20.0,
+    "wall_time_seconds": 1800,
+    "max_depth": 1
+  },
+  "matrix_max_cost_usd": 40.0,
+  "capture_content": false,
+  "repeats": 1,
+  "random_seed": 20260810,
+  "metadata": {
+    "fidelity": "exact_public_protocol",
+    "boundary": "Published low-effort four-agent request, hosted web_search declaration, and aggregate usage only; server scheduling and plaintext child trajectories remain unavailable."
+  }
+}

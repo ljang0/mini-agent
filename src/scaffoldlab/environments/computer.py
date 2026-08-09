@@ -4,7 +4,8 @@ import asyncio
 import base64
 import json
 from abc import ABC, abstractmethod
-from typing import Any, Mapping, Sequence
+from contextlib import asynccontextmanager
+from typing import Any, AsyncIterator, Mapping, Sequence
 
 from ..types import ProtocolError, ToolCall, ToolDefinition
 from .base import ToolEnvironment, ToolExecution
@@ -36,10 +37,13 @@ def _normalize_key(key: str) -> str:
         "RETURN": "Enter",
         "ESC": "Escape",
         "ESCAPE": "Escape",
+        "TAB": "Tab",
         "SPACE": "Space",
         "BACKSPACE": "Backspace",
         "DELETE": "Delete",
         "DEL": "Delete",
+        "HOME": "Home",
+        "END": "End",
         "PAGEUP": "PageUp",
         "PAGEDOWN": "PageDown",
         "UP": "ArrowUp",
@@ -52,6 +56,7 @@ def _normalize_key(key: str) -> str:
         "ARROWRIGHT": "ArrowRight",
         "CTRL": "Control",
         "CONTROL": "Control",
+        "SHIFT": "Shift",
         "ALT": "Alt",
         "OPTION": "Alt",
         "CMD": "Meta",
@@ -59,6 +64,42 @@ def _normalize_key(key: str) -> str:
         "META": "Meta",
     }
     return names.get(key.upper(), key)
+
+
+def _key_list(value: Any, *, field: str, required: bool = False) -> list[str]:
+    if value is None:
+        if required:
+            raise ProtocolError(f"computer action requires {field}")
+        return []
+    if not isinstance(value, list) or not all(
+        isinstance(key, str) and key.strip() for key in value
+    ):
+        raise ProtocolError(f"computer action {field} must be a string list")
+    if required and not value:
+        raise ProtocolError(f"computer action requires non-empty {field}")
+    return [_normalize_key(key.strip()) for key in value]
+
+
+def _shortcut_keys(value: Any, *, field: str) -> list[str]:
+    if not isinstance(value, str) or not value.strip():
+        raise ProtocolError(f"computer action {field} must be a non-empty string")
+    keys = [part.strip() for part in value.split("+")]
+    if any(not key for key in keys):
+        raise ProtocolError(f"computer action {field} contains an empty key")
+    return [_normalize_key(key) for key in keys]
+
+
+@asynccontextmanager
+async def _held_keys(keyboard: Any, keys: Sequence[str]) -> AsyncIterator[None]:
+    pressed: list[str] = []
+    try:
+        for key in keys:
+            await keyboard.down(key)
+            pressed.append(key)
+        yield
+    finally:
+        for key in reversed(pressed):
+            await keyboard.up(key)
 
 
 class PlaywrightComputerDriver(ComputerDriver):
@@ -87,6 +128,20 @@ class PlaywrightComputerDriver(ComputerDriver):
             raise ProtocolError("computer action y coordinate must be numeric")
         return float(x), float(y)
 
+    def _mouse_modifiers(
+        self, action: Mapping[str, Any], action_type: str
+    ) -> list[str]:
+        if "type" in action:
+            return _key_list(action.get("keys"), field="keys[]")
+
+        raw_key = action.get("key")
+        if raw_key is None and action_type == "scroll":
+            # Anthropic's scroll modifier occupies the legacy `text` field.
+            raw_key = action.get("text")
+        if raw_key is None:
+            return []
+        return _shortcut_keys(raw_key, field="key")
+
     async def execute_action(self, action: Mapping[str, Any]) -> None:
         page = self.browser.page
         action_type = action.get("type") or action.get("action")
@@ -100,15 +155,27 @@ class PlaywrightComputerDriver(ComputerDriver):
             elif action_type == "middle_click":
                 button = "middle"
             button = {"wheel": "middle"}.get(str(button), button or "left")
-            await page.mouse.click(x, y, button=button)
+            modifiers = self._mouse_modifiers(action, str(action_type))
+            async with _held_keys(page.keyboard, modifiers):
+                await page.mouse.click(x, y, button=button)
             return
         if action_type in {"double_click", "doubleClick"}:
             x, y = self._coordinate(action)
-            await page.mouse.dblclick(x, y)
+            modifiers = self._mouse_modifiers(action, str(action_type))
+            async with _held_keys(page.keyboard, modifiers):
+                await page.mouse.dblclick(x, y)
+            return
+        if action_type == "triple_click":
+            x, y = self._coordinate(action)
+            modifiers = self._mouse_modifiers(action, str(action_type))
+            async with _held_keys(page.keyboard, modifiers):
+                await page.mouse.click(x, y, button="left", click_count=3)
             return
         if action_type in {"move", "mouse_move"}:
             x, y = self._coordinate(action)
-            await page.mouse.move(x, y)
+            modifiers = self._mouse_modifiers(action, str(action_type))
+            async with _held_keys(page.keyboard, modifiers):
+                await page.mouse.move(x, y)
             return
         if action_type in {"type", "type_text"}:
             text = action.get("text")
@@ -116,22 +183,19 @@ class PlaywrightComputerDriver(ComputerDriver):
                 raise ProtocolError("computer type action requires string text")
             await page.keyboard.type(text)
             return
-        if action_type in {"keypress", "key"}:
-            keys = action.get("keys", action.get("text"))
-            if isinstance(keys, str):
-                keys = [item for item in keys.split("+") if item]
-            if not isinstance(keys, list) or not all(
-                isinstance(key, str) for key in keys
-            ):
-                raise ProtocolError("computer key action requires string keys")
-            shortcut = "+".join(_normalize_key(key) for key in keys)
+        if action_type == "keypress":
+            keys = _key_list(action.get("keys"), field="keys[]", required=True)
+            for key in keys:
+                await page.keyboard.press(key)
+            return
+        if action_type == "key":
+            raw_key = action.get("key")
+            if raw_key is None:
+                raw_key = action.get("text")
+            shortcut = "+".join(_shortcut_keys(raw_key, field="key"))
             await page.keyboard.press(shortcut)
             return
         if action_type == "scroll":
-            coordinate = action.get("coordinate")
-            if coordinate is not None or "x" in action or "y" in action:
-                x, y = self._coordinate(action)
-                await page.mouse.move(x, y)
             delta = action.get("scroll_amount")
             if delta is not None:
                 if not isinstance(delta, (int, float)) or isinstance(delta, bool):
@@ -150,9 +214,20 @@ class PlaywrightComputerDriver(ComputerDriver):
             else:
                 dx = action.get("scroll_x", 0)
                 dy = action.get("scroll_y", 0)
-            if not isinstance(dx, (int, float)) or not isinstance(dy, (int, float)):
+            if (
+                not isinstance(dx, (int, float))
+                or isinstance(dx, bool)
+                or not isinstance(dy, (int, float))
+                or isinstance(dy, bool)
+            ):
                 raise ProtocolError("scroll deltas must be numeric")
-            await page.mouse.wheel(float(dx), float(dy))
+            modifiers = self._mouse_modifiers(action, str(action_type))
+            async with _held_keys(page.keyboard, modifiers):
+                coordinate = action.get("coordinate")
+                if coordinate is not None or "x" in action or "y" in action:
+                    x, y = self._coordinate(action)
+                    await page.mouse.move(x, y)
+                await page.mouse.wheel(float(dx), float(dy))
             return
         if action_type in {"drag", "left_click_drag"}:
             raw_path = action.get("path")
@@ -177,16 +252,50 @@ class PlaywrightComputerDriver(ComputerDriver):
                 ):
                     raise ProtocolError("drag path coordinates must be numeric")
                 points.append((float(point_x), float(point_y)))
-            await page.mouse.move(*points[0])
-            await page.mouse.down()
-            try:
-                for point in points[1:]:
-                    await page.mouse.move(*point)
-            finally:
-                await page.mouse.up()
+            modifiers = self._mouse_modifiers(action, str(action_type))
+            async with _held_keys(page.keyboard, modifiers):
+                await page.mouse.move(*points[0])
+                await page.mouse.down()
+                try:
+                    for point in points[1:]:
+                        await page.mouse.move(*point)
+                finally:
+                    await page.mouse.up()
+            return
+        if action_type in {"left_mouse_down", "left_mouse_up"}:
+            method = (
+                page.mouse.down if action_type == "left_mouse_down" else page.mouse.up
+            )
+            await method(button="left")
+            return
+        if action_type == "hold_key":
+            raw_key = action.get("key")
+            if raw_key is None:
+                raw_key = action.get("text")
+            keys = _shortcut_keys(raw_key, field="key")
+            duration = action.get("duration")
+            if (
+                not isinstance(duration, (int, float))
+                or isinstance(duration, bool)
+                or duration < 0
+                or duration > 100
+            ):
+                raise ProtocolError(
+                    "hold_key duration must be between 0 and 100 seconds"
+                )
+            async with _held_keys(page.keyboard, keys):
+                await asyncio.sleep(float(duration))
             return
         if action_type == "wait":
-            await asyncio.sleep(2.0)
+            duration = action.get("duration", 2.0)
+            if (
+                not isinstance(duration, (int, float))
+                or isinstance(duration, bool)
+                or duration < 0
+                or duration > 100
+            ):
+                raise ProtocolError("wait duration must be between 0 and 100 seconds")
+            await asyncio.sleep(float(duration))
             return
         raise ProtocolError(f"unsupported computer action {action_type!r}")
 

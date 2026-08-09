@@ -10,7 +10,7 @@ import random
 import re
 import shutil
 import tempfile
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional, Sequence
@@ -20,6 +20,7 @@ import regex as timeout_regex  # type: ignore[import]
 from . import __version__
 from .harnesses import Harness
 from .environments.base import EnvironmentFactory
+from .environments.swe import SWEPatchPayload
 from .runtime import ModelBackend, write_trace_jsonl
 from .types import BudgetLimits, RunFailed, RunResult, Task, TraceEvent
 
@@ -32,6 +33,35 @@ def _atomic_write_text(path: Path, content: str) -> None:
         with tempfile.NamedTemporaryFile(
             mode="w",
             encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as stream:
+            temporary_path = Path(stream.name)
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_path, path)
+        temporary_path = None
+        if os.name == "posix":
+            directory_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+
+def _atomic_write_bytes(path: Path, content: bytes) -> None:
+    """Durably replace a binary artifact without exposing a partial destination."""
+
+    temporary_path: Optional[Path] = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
             dir=path.parent,
             prefix=f".{path.name}.",
             suffix=".tmp",
@@ -402,6 +432,7 @@ class MatrixRunner:
             self.output_dir / "summary.json",
         ]
         traces_dir = self.output_dir / "traces"
+        patches_dir = self.output_dir / "patches"
         if self.output_dir.is_symlink():
             raise FileExistsError("output directory cannot be a symbolic link")
         linked = [path for path in artifact_paths if path.is_symlink()]
@@ -409,6 +440,8 @@ class MatrixRunner:
             raise FileExistsError(f"refusing symbolic-link artifacts: {linked}")
         if traces_dir.is_symlink():
             raise FileExistsError("refusing symbolic-link traces directory")
+        if patches_dir.is_symlink():
+            raise FileExistsError("refusing symbolic-link patches directory")
         if not self.overwrite and any(path.exists() for path in artifact_paths):
             raise FileExistsError(
                 f"output directory already contains a run: {self.output_dir}"
@@ -417,11 +450,21 @@ class MatrixRunner:
             raise FileExistsError(
                 f"output directory already contains traces: {self.output_dir}"
             )
+        if not self.overwrite and patches_dir.exists():
+            raise FileExistsError(
+                f"output directory already contains patches: {self.output_dir}"
+            )
         if self.overwrite:
-            if traces_dir.exists():
-                if not traces_dir.is_dir():
-                    raise FileExistsError("traces path exists and is not a directory")
-                shutil.rmtree(traces_dir)
+            for directory, label in (
+                (traces_dir, "traces"),
+                (patches_dir, "patches"),
+            ):
+                if directory.exists():
+                    if not directory.is_dir():
+                        raise FileExistsError(
+                            f"{label} path exists and is not a directory"
+                        )
+                    shutil.rmtree(directory)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         _atomic_write_text(
             self.output_dir / "manifest.json",
@@ -443,15 +486,33 @@ class MatrixRunner:
             result: Optional[RunResult] = None
             trace: tuple[TraceEvent, ...] = ()
             try:
-                result = await harness.run(
-                    task,
-                    self.backend,
-                    self.limits,
-                    capture_content=self.capture_content,
-                    environment_factory=self.environment_factory,
+                finish_patch_export: Any = None
+                prepare_patch_export = getattr(
+                    self.environment_factory,
+                    "prepare_trial_patch_export",
+                    None,
                 )
-                outcome = evaluate_answer(task, result.answer)
-                trace = result.trace
+                if callable(prepare_patch_export):
+                    prepare_patch_export()
+                    finish_patch_export = getattr(
+                        self.environment_factory,
+                        "finish_trial_patch_export",
+                        None,
+                    )
+                try:
+                    result = await harness.run(
+                        task,
+                        self.backend,
+                        self.limits,
+                        capture_content=self.capture_content,
+                        environment_factory=self.environment_factory,
+                    )
+                    result = self._externalize_patch_artifacts(result, trial_id)
+                    outcome = evaluate_answer(task, result.answer)
+                    trace = result.trace
+                finally:
+                    if callable(finish_patch_export):
+                        await finish_patch_export()
                 record = self._success_record(
                     trial_id,
                     task,
@@ -567,6 +628,56 @@ class MatrixRunner:
             json.dumps(summary, indent=2, sort_keys=True) + "\n",
         )
         return records, summary
+
+    def _externalize_patch_artifacts(
+        self, result: RunResult, trial_id: str
+    ) -> RunResult:
+        payloads: list[SWEPatchPayload] = []
+        seen: set[int] = set()
+
+        def collect(value: Any) -> None:
+            if isinstance(value, SWEPatchPayload):
+                identity = id(value)
+                if identity not in seen:
+                    seen.add(identity)
+                    payloads.append(value)
+                return
+            if isinstance(value, Mapping):
+                for child in value.values():
+                    collect(child)
+            elif isinstance(value, (list, tuple)):
+                for child in value:
+                    collect(child)
+
+        collect(result.metadata)
+        if not payloads:
+            return result
+
+        patches_dir = self.output_dir / "patches"
+        patches_dir.mkdir(parents=True, exist_ok=True)
+        replacements: dict[int, Mapping[str, Any]] = {}
+        for index, payload in enumerate(payloads):
+            suffix = "" if len(payloads) == 1 else f"-{index:03d}"
+            path = patches_dir / f"{trial_id}{suffix}.patch"
+            content = payload.content
+            _atomic_write_bytes(path, content)
+            replacements[id(payload)] = {
+                "path": str(path.resolve()),
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "bytes": len(content),
+                "format": "git_diff_binary",
+            }
+
+        def sanitize(value: Any) -> Any:
+            if isinstance(value, SWEPatchPayload):
+                return dict(replacements[id(value)])
+            if isinstance(value, Mapping):
+                return {key: sanitize(child) for key, child in value.items()}
+            if isinstance(value, (list, tuple)):
+                return [sanitize(child) for child in value]
+            return value
+
+        return replace(result, metadata=sanitize(result.metadata))
 
     def _success_record(
         self,

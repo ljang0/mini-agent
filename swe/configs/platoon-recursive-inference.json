@@ -1,0 +1,42 @@
+{
+  "application": {
+    "name": "swe",
+    "implementation": "platoon-recursive-inference"
+  },
+  "environment": {
+    "type": "swe",
+    "protocol": "auto",
+    "workspace_mode": "copy",
+    "isolation": "per_agent",
+    "allow_write": true,
+    "allow_shell": true,
+    "allow_native_shell": false,
+    "command_allowlist": ["git", "python3"],
+    "tool_timeout_seconds": 60,
+    "max_tool_output_bytes": 262144,
+    "export_patch": true,
+    "max_patch_bytes": 1048576
+  },
+  "limits": {
+    "max_model_calls": 160,
+    "max_concurrency": 4,
+    "max_input_tokens": 1000000,
+    "max_output_tokens": 250000,
+    "max_cost_usd": 12.0,
+    "wall_time_seconds": 1500,
+    "max_depth": 3,
+    "max_tool_calls": 256,
+    "max_tool_output_bytes": 8388608,
+    "max_agent_turns": 48
+  },
+  "matrix_max_cost_usd": 50.0,
+  "capture_content": false,
+  "repeats": 1,
+  "random_seed": 20260810,
+  "metadata": {
+    "fidelity": "inference_only_reimplementation",
+    "boundary": "Implements the released recursive sequential/parallel child-control shape only.",
+    "classification": "Not faithful RAO: shared-policy training, hierarchical and local rewards, training data, and a trained checkpoint are absent.",
+    "security": "Restricted in-process Python is a capability layer, not an OS sandbox."
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "application": {
+    "name": "browser",
+    "implementation": "anthropic-managed-web-research"
+  },
+  "limits": {
+    "max_model_calls": 1,
+    "max_concurrency": 1,
+    "max_input_tokens": 2000000,
+    "max_output_tokens": 500000,
+    "max_cost_usd": 20.0,
+    "wall_time_seconds": 1800,
+    "max_depth": 1,
+    "max_tool_calls": 1,
+    "max_tool_output_bytes": 1048576,
+    "max_agent_turns": 1
+  },
+  "matrix_max_cost_usd": 40.0,
+  "capture_content": false,
+  "repeats": 1,
+  "random_seed": 20260810,
+  "metadata": {
+    "fidelity": "exact_public_protocol",
+    "boundary": "Published Managed Agents session, primary-event-list, cleanup, and aggregate-usage boundary; hosted scheduling, child event streams, and the remote agent definition remain unavailable.",
+    "environment_owner": "Anthropic Managed Agents owns the remote environment; do not add a local environment block."
+  }
+}

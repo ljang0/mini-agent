@@ -2,6 +2,12 @@
 
 Status: draft. No release candidate has been selected.
 
+Every matrix must select one of the three top-level applications—`browser`,
+`computer-use`, or `swe`—and a registered implementation profile. The profile's
+source, fidelity/status, harness signature, provider, and environment constraints are
+part of the experimental condition. Catalog-only training methods and evaluation
+environments inform the protocol but are not runnable inference candidates.
+
 ## Questions
 
 The first experiment should isolate six mechanisms:
@@ -26,8 +32,10 @@ Use these names in every result artifact:
 - `fixed_agent_team`
 - `async_subagents`
 - `macu_dynamic_dag`
+- `macu_upstream` (pinned released scheduler; incomplete lower-bound accounting)
 - `recursive_delegation` (generic recursion control; not RAO or RAH)
-- `rlm_repl` (restricted clean-room RLM algorithm implementation)
+- `rlm_repl` (source-matched restricted RLM subset)
+- `rlm_upstream` (pinned `rlms` v0.1.3 runtime; no SWE/domain-tool parity)
 - `platoon_recursive_inference` (recursive inference only; not RAO training)
 - `external_context_json_search` (non-RLM ablation)
 - `anthropic_managed_agents` (hosted session boundary)
@@ -65,13 +73,16 @@ eventual release protocol.
 
 These are target regimes, not both current capabilities. `max_model_calls` counts
 Scaffold Lab backend invocations. One hosted OpenAI/xAI response, Anthropic Managed
-session, or Prime/Grok external session can contain many internal calls. Local
+session, or Prime/Grok/MACU/RLM external session can contain many internal calls. Local
 concurrency, depth, turn, and tool limits do not constrain such provider-owned trees.
 Aggregate-compute comparisons are valid only when `usage_complete` and `cost_known`
-are both true and the candidates use commensurate cost sources. Prime and Grok always
-fail those completeness checks today and are therefore ineligible for equal-total-
-compute claims. The hosted APIs should also be analyzed separately from in-process
-harnesses because their schedulers and intermediate state are closed.
+are both true and the candidates use commensurate cost sources. Prime and Grok fail
+those completeness checks today. The audited MACU release omits initial graph-
+generation usage; upstream RLM v0.1.3 does not merge recursive-child summaries into
+the root `UsageSummary`. Those four external candidates are therefore ineligible for
+equal-total-compute claims until full-tree accounting is independently established.
+The hosted APIs should also be analyzed separately from in-process harnesses because
+their schedulers and intermediate state are closed.
 
 Scaffold Lab token/cost enforcement is post-response, so one outer call can overshoot
 a cap. When a backend reports incomplete accounting, hard resource caps fail closed
@@ -80,9 +91,9 @@ session-wide public-list-cost cap: it pauses threads between model requests, so 
 crossing in-flight request can still leave the final cost slightly above the cap. The
 adapter records `budget_reached` as an incomplete/error trial and does not automatically
 raise the cap or resume the session. The
-Prime/Grok example configs intentionally omit token and dollar caps because their one
-outer session cannot be stopped at a verified complete inner-tree boundary. Per-agent
-token/context limits are not implemented.
+Prime/Grok/MACU/RLM external configs must not imply that Scaffold Lab token/dollar caps
+stop an inner tree at a verified boundary. Per-agent token/context limits are not
+implemented.
 
 ### A. Equal total compute
 
@@ -108,6 +119,9 @@ Fable system-card comparison.
 
 - Pin model IDs, provider API versions, prompts, tool schemas, browser/container/VM
   images, package locks, and source commits.
+- Treat hosted OpenAI `web_search`, hosted xAI `web_search`/`x_search`, and local
+  browser functions as different tool conditions. Record server-tool declarations;
+  do not attribute server search calls to the local browser trace.
 - For hosted configurations, export and hash the resolved agent/model, prompt, tool,
   roster, permissions, and environment definitions. An agent or environment ID alone
   is not a reproducible snapshot.
@@ -117,8 +131,15 @@ Fable system-card comparison.
   rejects overlap before writing the manifest. Use a clean frozen source as well,
   because unfiltered copy mode can still expose older evaluator data or artifacts
   already present there.
-- Use copy mode for matrices. Direct SWE mode mutates one shared source and is accepted
-  only for a single planned trial.
+- Use copy mode for matrices. It excludes the parent `.git`, initializes a fresh clean
+  baseline commit for each copied workspace, and therefore makes a later patch
+  independent of parent Git state. Direct SWE mode mutates one shared source and is
+  accepted only for a single planned trial.
+- For SWE release runs, set `export_patch: true` and a justified
+  `max_patch_bytes`. Preserve each externalized `git diff --binary --full-index`
+  artifact, its SHA-256, and its mapping to trial/session before temporary cleanup.
+  Verify modified, new, deleted, and binary-file cases offline. Do not treat durable
+  patch creation as an evaluator score.
 - Freeze a task contract and evaluator before observing candidate outputs.
 - Randomize harness order with a recorded seed.
 - Run at least three repeats for deterministic-looking tasks and more for high
@@ -129,8 +150,13 @@ Fable system-card comparison.
   transport mode, and accounting source; explicitly label provider-hidden events.
 - Run all pending calls to completion or explicitly mark cancellations; do not hide
   failed or timed-out children.
-- Run each Prime/Grok repeat as a separate invocation with a newly provisioned
-  workspace and output directory. Combine artifacts only after every trial finishes.
+- Run each Prime/Grok/MACU/RLM-upstream repeat as a separate invocation with a newly
+  provisioned workspace and output directory. For pinned-source adapters, verify the
+  exact clean checkout and interpreter/executable identity before each run. Combine
+  artifacts only after every trial finishes.
+- Exercise scheduling, messaging, stopping, invalid actions, computer protocol
+  translation, patch persistence, and external-process failure paths with
+  deterministic offline tests before any paid-model experiment.
 
 ## Metrics
 
@@ -148,6 +174,7 @@ Diagnostic:
 
 - agents created, peak concurrency, recursion depth, DAG replans, tool calls, and
   tool-output bytes;
+- durable SWE patch count/bytes/hash and evaluator acceptance, reported separately;
 - duplicate work, conflicting reports, and unconsumed worker results;
 - coordination-token share and context re-establishment cost;
 - verifier false-selection rate for best-of-N;
@@ -168,6 +195,10 @@ A candidate becomes `RELEASE_READY` only after:
 5. cost, latency, and operational-failure tradeoffs are explicit;
 6. every fidelity claim matches the source audit;
 7. install, run, resume, and failure-recovery instructions work from a clean checkout.
+
+A passing smoke test is internal QA only. It is not evidence that a profile is a
+release winner, and an exact public protocol label is not evidence that a closed
+hosted scheduler has been reproduced.
 
 The best result may be a router rather than one universal harness: use single-agent
 execution for serial/small tasks and escalate only when a decomposition or context

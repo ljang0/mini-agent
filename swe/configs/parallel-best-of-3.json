@@ -1,0 +1,39 @@
+{
+  "application": {
+    "name": "swe",
+    "implementation": "parallel-best-of-3"
+  },
+  "environment": {
+    "type": "swe",
+    "protocol": "auto",
+    "workspace_mode": "copy",
+    "isolation": "per_agent",
+    "allow_write": true,
+    "allow_shell": true,
+    "allow_native_shell": false,
+    "command_allowlist": ["git", "python3"],
+    "tool_timeout_seconds": 60,
+    "max_tool_output_bytes": 262144,
+    "export_patch": true,
+    "max_patch_bytes": 1048576
+  },
+  "limits": {
+    "max_model_calls": 96,
+    "max_concurrency": 3,
+    "max_cost_usd": 8.0,
+    "wall_time_seconds": 1200,
+    "max_depth": 1,
+    "max_tool_calls": 256,
+    "max_tool_output_bytes": 8388608,
+    "max_agent_turns": 48
+  },
+  "matrix_max_cost_usd": 40.0,
+  "capture_content": false,
+  "repeats": 1,
+  "random_seed": 20260810,
+  "metadata": {
+    "fidelity": "controlled_baseline",
+    "boundary": "Three independent candidate workspaces followed by an explicit judge selection.",
+    "classification": "This is best-of-N. The separate flat_parallel harness has no selector and is not best-of-N."
+  }
+}

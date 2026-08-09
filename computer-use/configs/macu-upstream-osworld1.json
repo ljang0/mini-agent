@@ -1,0 +1,21 @@
+{
+  "application": {
+    "name": "computer-use",
+    "implementation": "macu-upstream-osworld1"
+  },
+  "limits": {
+    "max_model_calls": 1,
+    "max_concurrency": 1,
+    "wall_time_seconds": 7200,
+    "max_depth": 1
+  },
+  "capture_content": false,
+  "repeats": 1,
+  "random_seed": 20260810,
+  "metadata": {
+    "fidelity": "upstream_runtime_adapter",
+    "revision": "5b1b8f91dfc5dc66a2f06af4b443b3009a9cd105",
+    "boundary": "Invokes the pinned released MACU scheduler, prompts, CUA subprocesses, VM variants, final selection, and result ingestion; full identity additionally requires pinned dependencies, VM image, tasks, and models.",
+    "benchmark_boundary": "This profile is OSWorld 1.x. Do not compare its scores as OSWorld 2.0 results."
+  }
+}

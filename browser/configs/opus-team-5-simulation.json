@@ -1,0 +1,37 @@
+{
+  "application": {
+    "name": "browser",
+    "implementation": "anthropic-opus5-team-5"
+  },
+  "environment": {
+    "type": "browser",
+    "protocol": "generic",
+    "isolation": "per_agent",
+    "allowed_hosts": ["example.com"],
+    "start_url": "https://example.com",
+    "headless": true,
+    "viewport_width": 1440,
+    "viewport_height": 900,
+    "max_tool_output_bytes": 262144
+  },
+  "limits": {
+    "max_model_calls": 192,
+    "max_concurrency": 5,
+    "max_input_tokens": 1500000,
+    "max_output_tokens": 375000,
+    "max_cost_usd": 15.0,
+    "wall_time_seconds": 1500,
+    "max_depth": 2,
+    "max_tool_calls": 320,
+    "max_tool_output_bytes": 12582912,
+    "max_agent_turns": 56
+  },
+  "matrix_max_cost_usd": 60.0,
+  "capture_content": false,
+  "repeats": 1,
+  "random_seed": 20260810,
+  "metadata": {
+    "fidelity": "topology_simulation",
+    "boundary": "Simulates only the disclosed Opus 5 five-agent topology; unreleased effort, exact prompts, tools, timing, context enforcement, and worktrees are unavailable."
+  }
+}

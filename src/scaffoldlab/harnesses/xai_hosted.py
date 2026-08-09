@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Mapping, Tuple
+from typing import Any, Mapping, Sequence, Tuple
 
 from ..runtime import RunContext
 from ..types import ModelRequest, Task
@@ -12,7 +12,11 @@ class XAIHostedMultiAgentHarness(Harness):
 
     name = "xai_hosted_multi_agent"
 
-    def __init__(self, agent_count: int = 4) -> None:
+    def __init__(
+        self,
+        agent_count: int = 4,
+        hosted_tools: Sequence[str] = (),
+    ) -> None:
         if (
             not isinstance(agent_count, int)
             or isinstance(agent_count, bool)
@@ -22,6 +26,24 @@ class XAIHostedMultiAgentHarness(Harness):
         self.agent_count = agent_count
         # xAI documents low/medium as four agents and high/xhigh as sixteen.
         self.reasoning_effort = "low" if agent_count == 4 else "high"
+        if isinstance(hosted_tools, (str, bytes)) or not isinstance(
+            hosted_tools, Sequence
+        ):
+            raise ValueError("hosted_tools must be a sequence of tool type strings")
+        normalized_tools: list[str] = []
+        for tool_type in hosted_tools:
+            if not isinstance(tool_type, str) or tool_type not in {
+                "web_search",
+                "x_search",
+            }:
+                raise ValueError(
+                    "xAI hosted multi-agent hosted_tools only supports "
+                    "'web_search' and 'x_search'"
+                )
+            if tool_type in normalized_tools:
+                raise ValueError(f"duplicate hosted tool {tool_type!r}")
+            normalized_tools.append(tool_type)
+        self.hosted_tools = tuple(normalized_tools)
 
     async def _execute(
         self, task: Task, context: RunContext
@@ -38,6 +60,7 @@ class XAIHostedMultiAgentHarness(Harness):
                     "xai_multi_agent": True,
                     "reasoning_effort": self.reasoning_effort,
                     "documented_agent_count": self.agent_count,
+                    "xai_hosted_tools": list(self.hosted_tools),
                 },
             )
         )
@@ -48,7 +71,8 @@ class XAIHostedMultiAgentHarness(Harness):
             "documented_agent_count": self.agent_count,
             "reasoning_effort": self.reasoning_effort,
             "leader_output_only": True,
-            "built_in_tools_enabled": False,
+            "hosted_tools": list(self.hosted_tools),
+            "built_in_tools_enabled": bool(self.hosted_tools),
             "intermediate_subagent_state_observed": False,
             "plaintext_subagent_state_available": False,
             "encrypted_continuation_implemented": False,

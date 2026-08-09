@@ -1,0 +1,41 @@
+{
+  "application": {
+    "name": "swe",
+    "implementation": "rlm-0.1.3-contract"
+  },
+  "environment": {
+    "type": "swe",
+    "protocol": "auto",
+    "workspace_mode": "copy",
+    "isolation": "per_agent",
+    "allow_write": true,
+    "allow_shell": false,
+    "allow_native_shell": false,
+    "tool_timeout_seconds": 60,
+    "max_tool_output_bytes": 262144,
+    "export_patch": true,
+    "max_patch_bytes": 1048576
+  },
+  "limits": {
+    "max_model_calls": 128,
+    "max_concurrency": 4,
+    "max_input_tokens": 1000000,
+    "max_output_tokens": 250000,
+    "max_cost_usd": 10.0,
+    "wall_time_seconds": 1200,
+    "max_depth": 3,
+    "max_tool_calls": 128,
+    "max_tool_output_bytes": 8388608,
+    "max_agent_turns": 32
+  },
+  "matrix_max_cost_usd": 40.0,
+  "capture_content": false,
+  "repeats": 1,
+  "random_seed": 20260810,
+  "metadata": {
+    "fidelity": "source_matched_reimplementation",
+    "boundary": "Implements the RLM 0.1.3 external-context contract, persistent restricted code loop, and batched/recursive subcalls; official prompts, unrestricted upstream REPL, compaction, and upstream runtime are unavailable.",
+    "classification": "This is an RLM-like persistent code loop, not external_context_json_search. Domain tools are intentionally withheld from its controller and subcalls.",
+    "security": "Restricted in-process Python is a capability layer, not an OS sandbox."
+  }
+}

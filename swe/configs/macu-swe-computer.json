@@ -1,0 +1,44 @@
+{
+  "application": {
+    "name": "swe",
+    "implementation": "macu-swe-computer-experiment"
+  },
+  "environment": {
+    "type": "swe_computer",
+    "protocol": "auto",
+    "workspace_mode": "copy",
+    "isolation": "per_agent",
+    "allow_write": true,
+    "allow_shell": true,
+    "allow_native_shell": false,
+    "command_allowlist": ["git", "python3"],
+    "allowed_hosts": ["example.com"],
+    "start_url": "https://example.com",
+    "headless": true,
+    "viewport_width": 1440,
+    "viewport_height": 900,
+    "tool_timeout_seconds": 60,
+    "max_tool_output_bytes": 524288,
+    "export_patch": true,
+    "max_patch_bytes": 1048576
+  },
+  "limits": {
+    "max_model_calls": 160,
+    "max_concurrency": 4,
+    "max_cost_usd": 10.0,
+    "wall_time_seconds": 1500,
+    "max_depth": 2,
+    "max_tool_calls": 512,
+    "max_tool_output_bytes": 16777216,
+    "max_agent_turns": 72
+  },
+  "matrix_max_cost_usd": 50.0,
+  "capture_content": false,
+  "repeats": 1,
+  "random_seed": 20260810,
+  "metadata": {
+    "fidelity": "source_matched_reimplementation",
+    "boundary": "Local mutable DAG and ready-frontier scheduling with SWE and computer tools; MACU is a CUA artifact rather than an SWE system-card harness, and its upstream VM/file runtime is unavailable.",
+    "computer_surface": "The computer tool controls a Playwright browser viewport, not the upstream OSWorld VM stack."
+  }
+}

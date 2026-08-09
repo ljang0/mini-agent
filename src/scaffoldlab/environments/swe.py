@@ -15,6 +15,30 @@ from .base import ToolEnvironment, ToolExecution
 
 
 _TRUSTED_PROCESS_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
+_DEFAULT_MAX_PATCH_BYTES = 8 * 1024 * 1024
+
+
+class SWEPatchPayload:
+    """Private in-memory patch carrier externalized by ``MatrixRunner``.
+
+    Its string representation is intentionally redacted because environment summaries
+    are also recorded in traces before the runner has an opportunity to write the
+    patch artifact.
+    """
+
+    __slots__ = ("_content",)
+
+    def __init__(self, content: bytes) -> None:
+        self._content = bytes(content)
+
+    @property
+    def content(self) -> bytes:
+        return self._content
+
+    def __repr__(self) -> str:
+        return f"<SWE patch payload redacted ({len(self._content)} bytes)>"
+
+    __str__ = __repr__
 
 
 def _object_schema(
@@ -34,6 +58,16 @@ def _minimal_process_environment() -> dict[str, str]:
     return {
         "PATH": _TRUSTED_PROCESS_PATH,
         "LANG": os.environ.get("LANG", "C.UTF-8"),
+    }
+
+
+def _minimal_git_environment() -> dict[str, str]:
+    """Keep temporary repositories independent from host Git configuration."""
+
+    return {
+        **_minimal_process_environment(),
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
     }
 
 
@@ -184,6 +218,9 @@ class SWEEnvironment(ToolEnvironment):
         command_allowlist: Sequence[str] = (),
         timeout_seconds: float = 60.0,
         max_output_bytes: int = 256 * 1024,
+        export_patch: bool = False,
+        max_patch_bytes: int = _DEFAULT_MAX_PATCH_BYTES,
+        git_baseline_owned: bool = False,
         protocol: str = "auto",
     ) -> None:
         self.workspace = workspace.resolve()
@@ -201,6 +238,17 @@ class SWEEnvironment(ToolEnvironment):
         self.command_allowlist = tuple(command_allowlist)
         self.timeout_seconds = timeout_seconds
         self.max_output_bytes = max_output_bytes
+        if not isinstance(export_patch, bool):
+            raise ValueError("export_patch must be a boolean")
+        if (
+            not isinstance(max_patch_bytes, int)
+            or isinstance(max_patch_bytes, bool)
+            or max_patch_bytes < 1
+        ):
+            raise ValueError("max_patch_bytes must be a positive integer")
+        self.export_patch = export_patch
+        self.max_patch_bytes = max_patch_bytes
+        self.git_baseline_owned = bool(git_baseline_owned)
         self.protocol = protocol
         self._bash = PersistentBash(
             self.workspace,
@@ -478,6 +526,109 @@ class SWEEnvironment(ToolEnvironment):
             raise
         return process.returncode, stdout, stderr, timed_out
 
+    async def _run_bounded_process(
+        self,
+        argv: Sequence[str],
+        *,
+        timeout_seconds: float,
+        max_stdout_bytes: int,
+        max_stderr_bytes: int,
+    ) -> tuple[int, bytes, bytes]:
+        """Run a process while bounding captured output before it reaches memory."""
+
+        process = await asyncio.create_subprocess_exec(
+            *argv,
+            cwd=self.workspace,
+            env=_minimal_git_environment(),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
+        )
+        assert process.stdout is not None
+        assert process.stderr is not None
+
+        async def read_bounded(
+            stream: asyncio.StreamReader, limit: int, label: str
+        ) -> bytes:
+            captured = bytearray()
+            while True:
+                chunk = await stream.read(64 * 1024)
+                if not chunk:
+                    return bytes(captured)
+                if len(captured) + len(chunk) > limit:
+                    raise RuntimeError(
+                        f"{label} exceeded its configured {limit}-byte limit"
+                    )
+                captured.extend(chunk)
+
+        stdout_task = asyncio.create_task(
+            read_bounded(process.stdout, max_stdout_bytes, "SWE patch")
+        )
+        stderr_task = asyncio.create_task(
+            read_bounded(process.stderr, max_stderr_bytes, "git diff stderr")
+        )
+        wait_task = asyncio.create_task(process.wait())
+        tasks = (stdout_task, stderr_task, wait_task)
+        try:
+            stdout, stderr, returncode = await asyncio.wait_for(
+                asyncio.gather(*tasks), timeout=timeout_seconds
+            )
+        except asyncio.TimeoutError as exc:
+            await _terminate_process_group(process)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise RuntimeError("git diff timed out") from exc
+        except BaseException:
+            await _terminate_process_group(process)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+        return int(returncode), bytes(stdout), bytes(stderr)
+
+    async def _capture_patch(self) -> bytes:
+        intent = await self._run_process(
+            (
+                "git",
+                "add",
+                "--intent-to-add",
+                "--force",
+                "--all",
+                "--",
+                ".",
+            ),
+            timeout_seconds=self.timeout_seconds,
+        )
+        if intent[0] != 0:
+            diagnostic = intent[2][: self.max_output_bytes].decode(
+                "utf-8", errors="replace"
+            )
+            raise RuntimeError(
+                f"could not prepare untracked files for diff: {diagnostic}"
+            )
+        returncode, patch, stderr = await self._run_bounded_process(
+            (
+                "git",
+                "diff",
+                "--binary",
+                "--full-index",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-renames",
+                "HEAD",
+                "--",
+                ".",
+            ),
+            timeout_seconds=self.timeout_seconds,
+            max_stdout_bytes=self.max_patch_bytes,
+            max_stderr_bytes=self.max_output_bytes,
+        )
+        if returncode != 0:
+            diagnostic = stderr.decode("utf-8", errors="replace")
+            raise RuntimeError(f"could not capture SWE patch: {diagnostic}")
+        return patch
+
     async def _run_command(self, args: Mapping[str, Any]) -> ToolExecution:
         if not self.allow_shell:
             raise ProtocolError("command execution is disabled")
@@ -711,7 +862,7 @@ class SWEEnvironment(ToolEnvironment):
         status_text = (
             status[1].decode("utf-8", errors="replace") if status[0] == 0 else ""
         )
-        return {
+        summary: dict[str, Any] = {
             "type": "swe",
             "workspace_sha256": hashlib.sha256(
                 str(self.workspace).encode("utf-8")
@@ -721,6 +872,9 @@ class SWEEnvironment(ToolEnvironment):
             "allow_shell": self.allow_shell,
             "allow_native_shell": self.allow_native_shell,
             "protocol": self.protocol,
+            "git_baseline_owned": self.git_baseline_owned,
+            "patch_export_enabled": self.export_patch,
+            "max_patch_bytes": self.max_patch_bytes,
             "tool_calls": self._calls,
             "write_calls": self._writes,
             "git_status_sha256": hashlib.sha256(
@@ -728,6 +882,9 @@ class SWEEnvironment(ToolEnvironment):
             ).hexdigest(),
             "git_status_chars": len(status_text),
         }
+        if self.export_patch:
+            summary["patch_artifact"] = SWEPatchPayload(await self._capture_patch())
+        return summary
 
     async def close(self) -> None:
         await self._bash.close()

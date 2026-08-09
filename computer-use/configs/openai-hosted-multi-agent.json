@@ -1,0 +1,38 @@
+{
+  "application": {
+    "name": "computer-use",
+    "implementation": "openai-hosted-multi-agent-computer"
+  },
+  "environment": {
+    "type": "computer",
+    "protocol": "auto",
+    "isolation": "per_agent",
+    "allowed_hosts": ["example.com"],
+    "start_url": "https://example.com",
+    "headless": true,
+    "viewport_width": 1440,
+    "viewport_height": 900,
+    "max_tool_output_bytes": 524288
+  },
+  "limits": {
+    "max_model_calls": 24,
+    "max_concurrency": 1,
+    "max_input_tokens": 2000000,
+    "max_output_tokens": 500000,
+    "max_cost_usd": 20.0,
+    "wall_time_seconds": 1800,
+    "max_depth": 1,
+    "max_tool_calls": 128,
+    "max_tool_output_bytes": 16777216,
+    "max_agent_turns": 24
+  },
+  "matrix_max_cost_usd": 40.0,
+  "capture_content": false,
+  "repeats": 1,
+  "random_seed": 20260810,
+  "metadata": {
+    "fidelity": "source_matched_reimplementation",
+    "boundary": "Composes the documented hosted multi-agent request and GA computer client loop; hosted scheduler source, injected prompts, and a published or live-verified combined compatibility contract are unavailable.",
+    "environment_surface": "Each logical agent is routed to an isolated Playwright viewport, not an OpenAI product desktop runtime."
+  }
+}

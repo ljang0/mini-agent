@@ -1,0 +1,46 @@
+{
+  "application": {
+    "name": "swe",
+    "implementation": "openai-hosted-multi-agent-swe-computer"
+  },
+  "environment": {
+    "type": "swe_computer",
+    "protocol": "auto",
+    "workspace_mode": "copy",
+    "isolation": "per_agent",
+    "allow_write": true,
+    "allow_shell": true,
+    "allow_native_shell": false,
+    "command_allowlist": ["git", "python3"],
+    "allowed_hosts": ["example.com"],
+    "start_url": "https://example.com",
+    "headless": true,
+    "viewport_width": 1440,
+    "viewport_height": 900,
+    "tool_timeout_seconds": 60,
+    "max_tool_output_bytes": 524288,
+    "export_patch": true,
+    "max_patch_bytes": 1048576
+  },
+  "limits": {
+    "max_model_calls": 32,
+    "max_concurrency": 1,
+    "max_input_tokens": 2000000,
+    "max_output_tokens": 500000,
+    "max_cost_usd": 20.0,
+    "wall_time_seconds": 1800,
+    "max_depth": 1,
+    "max_tool_calls": 192,
+    "max_tool_output_bytes": 16777216,
+    "max_agent_turns": 32
+  },
+  "matrix_max_cost_usd": 40.0,
+  "capture_content": false,
+  "repeats": 1,
+  "random_seed": 20260810,
+  "metadata": {
+    "fidelity": "source_matched_reimplementation",
+    "boundary": "Composes documented hosted multi-agent and GA computer protocols with local SWE functions; hosted scheduling, exact Codex harness, and a published or live-verified combined contract are unavailable.",
+    "computer_surface": "The computer tool controls a Playwright browser viewport, not a desktop VM."
+  }
+}

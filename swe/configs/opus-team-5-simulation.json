@@ -1,0 +1,40 @@
+{
+  "application": {
+    "name": "swe",
+    "implementation": "anthropic-opus5-team-5"
+  },
+  "environment": {
+    "type": "swe",
+    "protocol": "auto",
+    "workspace_mode": "copy",
+    "isolation": "per_agent",
+    "allow_write": true,
+    "allow_shell": true,
+    "allow_native_shell": false,
+    "command_allowlist": ["git", "python3"],
+    "tool_timeout_seconds": 60,
+    "max_tool_output_bytes": 262144,
+    "export_patch": true,
+    "max_patch_bytes": 1048576
+  },
+  "limits": {
+    "max_model_calls": 192,
+    "max_concurrency": 5,
+    "max_input_tokens": 1500000,
+    "max_output_tokens": 375000,
+    "max_cost_usd": 15.0,
+    "wall_time_seconds": 1500,
+    "max_depth": 2,
+    "max_tool_calls": 320,
+    "max_tool_output_bytes": 12582912,
+    "max_agent_turns": 56
+  },
+  "matrix_max_cost_usd": 60.0,
+  "capture_content": false,
+  "repeats": 1,
+  "random_seed": 20260810,
+  "metadata": {
+    "fidelity": "topology_simulation",
+    "boundary": "Simulates only the disclosed Opus 5 five-agent coding topology; unreleased effort, exact prompts, timing, 1M-token limits, and Git worktrees are unavailable."
+  }
+}

@@ -7,6 +7,11 @@ import math
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from .applications import (
+    list_applications as catalog_applications,
+    list_implementations as catalog_implementations,
+    resolve_application_config,
+)
 from .evaluation import (
     MatrixRunner,
     _atomic_write_text,
@@ -14,7 +19,12 @@ from .evaluation import (
     validate_harness_variants,
 )
 from .environments import build_environment_factory
-from .external import GrokBuildJSONBackend, PrimeAgentJSONBackend
+from .external import (
+    GrokBuildJSONBackend,
+    MACUUpstreamBackend,
+    PrimeAgentJSONBackend,
+    RLMUpstreamBackend,
+)
 from .harnesses import (
     AnthropicManagedAgentsHarness,
     AsyncSubagentsHarness,
@@ -25,11 +35,13 @@ from .harnesses import (
     GrokBuildHarness,
     Harness,
     MACUHarness,
+    MACUUpstreamHarness,
     OpenAIHostedMultiAgentHarness,
     ParallelBestOfNHarness,
     PlatoonRecursiveInferenceHarness,
     PrimeAgentHarness,
     RLMREPLHarness,
+    RLMUpstreamHarness,
     RecursiveDelegationHarness,
     SingleAgentHarness,
     XAIHostedMultiAgentHarness,
@@ -55,9 +67,11 @@ HARNESS_TYPES: Mapping[str, type[Harness]] = {
     "fixed_agent_team": FixedAgentTeamHarness,
     "async_subagents": AsyncSubagentsHarness,
     "macu_dynamic_dag": MACUHarness,
+    "macu_upstream": MACUUpstreamHarness,
     "recursive_delegation": RecursiveDelegationHarness,
     "platoon_recursive_inference": PlatoonRecursiveInferenceHarness,
     "rlm_repl": RLMREPLHarness,
+    "rlm_upstream": RLMUpstreamHarness,
     "external_context_json_search": ExternalContextJSONSearchHarness,
     "openai_hosted_multi_agent": OpenAIHostedMultiAgentHarness,
     "prime_agent": PrimeAgentHarness,
@@ -326,6 +340,106 @@ def _build_backend(args: argparse.Namespace, config: Mapping[str, Any]) -> Any:
             expected_executable_sha256=args.grok_executable_sha256,
             max_output_bytes=args.grok_max_output_bytes,
         )
+    if args.provider == "macu-upstream":
+        if extra_body:
+            raise ValueError("provider_extra_body is not supported by MACU upstream")
+        if args.model:
+            raise ValueError(
+                "--model is not used by MACU upstream; use --macu-manager-model "
+                "and --macu-cua-arg=--model/--macu-cua-arg=MODEL"
+            )
+        if any(
+            value is not None
+            for value in (
+                args.input_price,
+                args.output_price,
+                args.cache_read_price,
+                args.cache_write_price,
+            )
+        ):
+            raise ValueError(
+                "MACU imports whole-tree cost from summary.json; remove token-price flags"
+            )
+        if args.macu_checkout is None:
+            raise ValueError("--macu-checkout is required")
+        if args.macu_result_dir is None:
+            raise ValueError("--macu-result-dir is required")
+        if args.macu_osworld_root is None:
+            raise ValueError("--macu-osworld-root is required")
+        for path, label in (
+            (args.macu_checkout, "--macu-checkout"),
+            (args.macu_osworld_root, "--macu-osworld-root"),
+            (args.macu_result_dir, "--macu-result-dir"),
+        ):
+            if _paths_overlap(path, args.output):
+                raise ValueError(f"--output and {label} must be disjoint directories")
+        return MACUUpstreamBackend(
+            checkout=args.macu_checkout,
+            result_dir=args.macu_result_dir,
+            osworld_root=args.macu_osworld_root,
+            manager_provider=args.macu_manager_provider,
+            manager_model=args.macu_manager_model,
+            cua_provider=args.macu_cua_provider,
+            python_executable=args.macu_python_executable,
+            max_parallelism=args.macu_max_parallelism,
+            max_replans=args.macu_max_replans,
+            max_task_timeout_seconds=args.macu_max_task_timeout_seconds,
+            timeout_seconds=args.macu_timeout_seconds,
+            cua_args=args.macu_cua_arg,
+            pass_env=args.macu_pass_env,
+            expected_checkout_revision=args.macu_expected_checkout_revision,
+            expected_python_sha256=args.macu_python_sha256,
+            allow_dirty_checkout=args.macu_allow_dirty_checkout,
+            allow_sensitive_environment=args.macu_allow_sensitive_environment,
+            max_output_bytes=args.macu_max_output_bytes,
+            max_artifact_bytes=args.macu_max_artifact_bytes,
+        )
+    if args.provider == "rlm-upstream":
+        if extra_body:
+            raise ValueError("provider_extra_body is not supported by RLM upstream")
+        if args.model:
+            raise ValueError("--model is not used by RLM upstream; use --rlm-model")
+        if any(
+            value is not None
+            for value in (
+                args.input_price,
+                args.output_price,
+                args.cache_read_price,
+                args.cache_write_price,
+            )
+        ):
+            raise ValueError(
+                "RLM v0.1.3 usage is a recursive lower bound; remove token-price flags"
+            )
+        if args.rlm_checkout is None:
+            raise ValueError("--rlm-checkout is required")
+        if not args.rlm_model:
+            raise ValueError("--rlm-model is required")
+        if _paths_overlap(args.rlm_checkout, args.output):
+            raise ValueError("--output and --rlm-checkout must be disjoint directories")
+        return RLMUpstreamBackend(
+            checkout=args.rlm_checkout,
+            provider=args.rlm_provider,
+            model=args.rlm_model,
+            python_executable=args.rlm_python_executable,
+            environment=args.rlm_environment,
+            backend_kwargs=args.rlm_backend_json,
+            environment_kwargs=args.rlm_environment_json,
+            max_depth=args.rlm_max_depth,
+            max_iterations=args.rlm_max_iterations,
+            max_budget_usd=args.rlm_max_budget_usd,
+            max_timeout_seconds=args.rlm_max_timeout_seconds,
+            max_tokens=args.rlm_max_tokens,
+            max_errors=args.rlm_max_errors,
+            max_concurrent_subcalls=args.rlm_max_concurrent_subcalls,
+            process_timeout_seconds=args.rlm_process_timeout_seconds,
+            pass_env=args.rlm_pass_env,
+            expected_checkout_revision=args.rlm_expected_checkout_revision,
+            expected_python_sha256=args.rlm_python_sha256,
+            allow_sensitive_environment=args.rlm_allow_sensitive_environment,
+            max_input_bytes=args.rlm_max_input_bytes,
+            max_output_bytes=args.rlm_max_output_bytes,
+        )
     if args.provider == "xai-responses":
         if not args.model:
             raise ValueError("--model is required for xAI Responses")
@@ -363,6 +477,10 @@ def _validate_compatibility(
         raise ValueError(
             "anthropic_managed_agents requires --provider anthropic-managed-agents"
         )
+    if "macu_upstream" in names and provider != "macu-upstream":
+        raise ValueError("macu_upstream harness requires --provider macu-upstream")
+    if "rlm_upstream" in names and provider != "rlm-upstream":
+        raise ValueError("rlm_upstream harness requires --provider rlm-upstream")
     if "flat_parallel" in names:
         missing = [
             task.task_id
@@ -419,7 +537,12 @@ def _validate_compatibility(
                 "--provider grok-build may only run the grok_build harness; "
                 f"incompatible harnesses: {incompatible}"
             )
-    if provider in {"prime-agent", "grok-build"}:
+    if provider in {
+        "prime-agent",
+        "grok-build",
+        "macu-upstream",
+        "rlm-upstream",
+    }:
         if environment_enabled:
             raise ValueError(
                 f"--provider {provider} owns its tools/environment; remove config.environment"
@@ -430,6 +553,32 @@ def _validate_compatibility(
                 f"--provider {provider} requires exactly one trial per invocation "
                 "so filesystem mutations cannot contaminate another trial; provide "
                 "one task, one harness variant, and repeats=1 in a fresh workspace"
+            )
+    if provider == "macu-upstream":
+        warnings.append(
+            "MACU upstream creates VM-backed workers and persistent result artifacts; "
+            "use a pinned checkout, disposable VM pool, and isolated network boundary"
+        )
+        incompatible = sorted(names - {"macu_upstream"})
+        if incompatible:
+            raise ValueError(
+                "--provider macu-upstream may only run the macu_upstream harness; "
+                f"incompatible harnesses: {incompatible}"
+            )
+    if provider == "rlm-upstream":
+        warnings.append(
+            "RLM upstream defaults to its Docker REPL; non-Docker environments need "
+            "an independently enforced outer sandbox"
+        )
+        warnings.append(
+            "rlms v0.1.3 root UsageSummary omits recursive child handlers, so calls, "
+            "tokens, and reported cost are lower bounds"
+        )
+        incompatible = sorted(names - {"rlm_upstream"})
+        if incompatible:
+            raise ValueError(
+                "--provider rlm-upstream may only run the rlm_upstream harness; "
+                f"incompatible harnesses: {incompatible}"
             )
     if provider == "xai-responses":
         if environment_enabled:
@@ -475,7 +624,9 @@ def _validate_compatibility(
 
 
 async def _run(args: argparse.Namespace) -> int:
-    config = _load_config(args.config)
+    config, application, application_warnings = resolve_application_config(
+        _load_config(args.config), provider=args.provider
+    )
     tasks = load_tasks(args.tasks)
     harnesses = _build_harnesses(config)
     limits = _build_limits(config)
@@ -483,7 +634,7 @@ async def _run(args: argparse.Namespace) -> int:
         config
     )
     environment_factory = build_environment_factory(config.get("environment"))
-    warnings = _validate_compatibility(
+    warnings = application_warnings + _validate_compatibility(
         harnesses,
         args.provider,
         args.tasks,
@@ -499,6 +650,13 @@ async def _run(args: argparse.Namespace) -> int:
     backend = _build_backend(args, config)
     if isinstance(backend, (GrokBuildJSONBackend, PrimeAgentJSONBackend)):
         await backend.verify_version()
+    run_metadata: dict[str, Any] = {
+        "config_path": str(args.config.resolve()),
+        "task_path": str(args.tasks.resolve()),
+        "config_metadata": config.get("metadata"),
+    }
+    if application is not None:
+        run_metadata["application"] = application.as_dict()
     runner = MatrixRunner(
         backend=backend,
         limits=limits,
@@ -512,15 +670,13 @@ async def _run(args: argparse.Namespace) -> int:
             else configured_matrix_cap
         ),
         overwrite=args.overwrite,
-        run_metadata={
-            "config_path": str(args.config.resolve()),
-            "task_path": str(args.tasks.resolve()),
-            "config_metadata": config.get("metadata"),
-        },
+        run_metadata=run_metadata,
         environment_factory=environment_factory,
     )
     _, summary = await runner.run(tasks, harnesses)
     summary = {**summary, "warnings": warnings}
+    if application is not None:
+        summary["application"] = application.as_dict()
     _atomic_write_text(
         args.output / "summary.json",
         json.dumps(summary, indent=2, sort_keys=True) + "\n",
@@ -536,13 +692,15 @@ async def _run(args: argparse.Namespace) -> int:
 
 
 def _validate(args: argparse.Namespace) -> int:
-    config = _load_config(args.config)
+    config, application, application_warnings = resolve_application_config(
+        _load_config(args.config), provider=args.provider
+    )
     tasks = load_tasks(args.tasks)
     harnesses = _build_harnesses(config)
     limits = _build_limits(config)
     repeats, random_seed, capture_content, matrix_cap = _matrix_controls(config)
     environment_factory = build_environment_factory(config.get("environment"))
-    warnings = _validate_compatibility(
+    warnings = application_warnings + _validate_compatibility(
         harnesses,
         args.provider,
         args.tasks,
@@ -571,6 +729,8 @@ def _validate(args: argparse.Namespace) -> int:
         "warnings": warnings,
         "valid": True,
     }
+    if application is not None:
+        result["application"] = application.as_dict()
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
 
@@ -589,6 +749,8 @@ def _add_common_arguments(parser: argparse.ArgumentParser) -> None:
             "prime-agent",
             "grok-build",
             "xai-responses",
+            "macu-upstream",
+            "rlm-upstream",
         ),
         default="openai-responses",
     )
@@ -600,6 +762,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     list_parser = subparsers.add_parser("list-harnesses")
     list_parser.set_defaults(handler=lambda args: _list_harnesses())
+
+    applications_parser = subparsers.add_parser("list-applications")
+    applications_parser.add_argument("--json", action="store_true")
+    applications_parser.set_defaults(
+        handler=lambda args: _list_applications(json_output=args.json)
+    )
+
+    implementations_parser = subparsers.add_parser("list-implementations")
+    implementations_parser.add_argument("--application", choices=catalog_applications())
+    implementations_parser.add_argument("--json", action="store_true")
+    implementations_parser.set_defaults(
+        handler=lambda args: _list_implementations(
+            application=args.application, json_output=args.json
+        )
+    )
 
     validate_parser = subparsers.add_parser("validate")
     _add_common_arguments(validate_parser)
@@ -697,6 +874,111 @@ def build_parser() -> argparse.ArgumentParser:
             "acknowledge credential exposure when terminal tools inherit environment"
         ),
     )
+    run_parser.add_argument("--macu-checkout", type=Path)
+    run_parser.add_argument("--macu-result-dir", type=Path)
+    run_parser.add_argument("--macu-osworld-root", type=Path)
+    run_parser.add_argument(
+        "--macu-manager-provider",
+        choices=("openai", "anthropic", "huggingface", "google"),
+        default="anthropic",
+    )
+    run_parser.add_argument("--macu-manager-model", default="claude-opus-4-6")
+    run_parser.add_argument(
+        "--macu-cua-provider", choices=("qwen", "openai"), default="openai"
+    )
+    run_parser.add_argument("--macu-python-executable", default="python3")
+    run_parser.add_argument("--macu-max-parallelism", type=int, default=4)
+    run_parser.add_argument("--macu-max-replans", type=int, default=10)
+    run_parser.add_argument("--macu-max-task-timeout-seconds", type=int, default=5400)
+    run_parser.add_argument("--macu-timeout-seconds", type=float, default=6000.0)
+    run_parser.add_argument(
+        "--macu-cua-arg", action="append", default=[], metavar="ARG"
+    )
+    run_parser.add_argument(
+        "--macu-pass-env", action="append", default=[], metavar="NAME"
+    )
+    run_parser.add_argument(
+        "--macu-expected-checkout-revision",
+        default="5b1b8f91dfc5dc66a2f06af4b443b3009a9cd105",
+    )
+    run_parser.add_argument("--macu-python-sha256")
+    run_parser.add_argument("--macu-allow-dirty-checkout", action="store_true")
+    run_parser.add_argument(
+        "--macu-allow-sensitive-environment",
+        action="store_true",
+        help=(
+            "acknowledge that MACU and its CUA children can inspect every passed "
+            "environment value"
+        ),
+    )
+    run_parser.add_argument(
+        "--macu-max-output-bytes", type=int, default=16 * 1024 * 1024
+    )
+    run_parser.add_argument(
+        "--macu-max-artifact-bytes", type=int, default=16 * 1024 * 1024
+    )
+    run_parser.add_argument("--rlm-checkout", type=Path)
+    run_parser.add_argument(
+        "--rlm-provider",
+        choices=(
+            "openai",
+            "portkey",
+            "openrouter",
+            "vercel",
+            "vllm",
+            "anthropic",
+            "azure_openai",
+            "gemini",
+        ),
+        default="openai",
+    )
+    run_parser.add_argument("--rlm-model")
+    run_parser.add_argument("--rlm-python-executable", default="python3")
+    run_parser.add_argument(
+        "--rlm-environment",
+        choices=("local", "ipython", "docker", "modal", "prime", "daytona", "e2b"),
+        default="docker",
+    )
+    run_parser.add_argument(
+        "--rlm-backend-json",
+        type=_json_object_argument,
+        default={},
+        metavar="JSON",
+    )
+    run_parser.add_argument(
+        "--rlm-environment-json",
+        type=_json_object_argument,
+        default={},
+        metavar="JSON",
+    )
+    run_parser.add_argument("--rlm-max-depth", type=int, default=1)
+    run_parser.add_argument("--rlm-max-iterations", type=int, default=30)
+    run_parser.add_argument("--rlm-max-budget-usd", type=float)
+    run_parser.add_argument("--rlm-max-timeout-seconds", type=float, default=1500.0)
+    run_parser.add_argument("--rlm-max-tokens", type=int)
+    run_parser.add_argument("--rlm-max-errors", type=int)
+    run_parser.add_argument("--rlm-max-concurrent-subcalls", type=int, default=4)
+    run_parser.add_argument("--rlm-process-timeout-seconds", type=float, default=1800.0)
+    run_parser.add_argument(
+        "--rlm-pass-env", action="append", default=[], metavar="NAME"
+    )
+    run_parser.add_argument(
+        "--rlm-expected-checkout-revision",
+        default="72d6940142ddfb84ee6be573dc999a37e633e671",
+    )
+    run_parser.add_argument("--rlm-python-sha256")
+    run_parser.add_argument(
+        "--rlm-allow-sensitive-environment",
+        action="store_true",
+        help=(
+            "acknowledge that the RLM and its REPL can inspect every passed "
+            "environment value"
+        ),
+    )
+    run_parser.add_argument("--rlm-max-input-bytes", type=int, default=64 * 1024 * 1024)
+    run_parser.add_argument(
+        "--rlm-max-output-bytes", type=int, default=16 * 1024 * 1024
+    )
     run_parser.set_defaults(handler=_run)
     return parser
 
@@ -704,6 +986,53 @@ def build_parser() -> argparse.ArgumentParser:
 def _list_harnesses() -> int:
     for name in HARNESS_TYPES:
         print(name)
+    return 0
+
+
+def _list_applications(*, json_output: bool = False) -> int:
+    applications = catalog_applications()
+    if json_output:
+        payload = [
+            {
+                "name": name,
+                "implementation_count": len(catalog_implementations(name)),
+                "runnable_count": sum(
+                    profile.status == "runnable"
+                    for profile in catalog_implementations(name)
+                ),
+                "simulation_count": sum(
+                    profile.status == "simulation"
+                    for profile in catalog_implementations(name)
+                ),
+                "catalog_only_count": sum(
+                    profile.status == "catalog_only"
+                    for profile in catalog_implementations(name)
+                ),
+            }
+            for name in applications
+        ]
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        for name in applications:
+            print(name)
+    return 0
+
+
+def _list_implementations(
+    *, application: str | None = None, json_output: bool = False
+) -> int:
+    implementations = catalog_implementations(application)
+    if json_output:
+        print(
+            json.dumps(
+                [implementation.as_dict() for implementation in implementations],
+                indent=2,
+                sort_keys=True,
+            )
+        )
+    else:
+        for implementation in implementations:
+            print(implementation.key)
     return 0
 
 

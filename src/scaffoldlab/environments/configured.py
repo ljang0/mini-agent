@@ -15,7 +15,13 @@ from .base import EnvironmentFactory, EnvironmentScope, ToolEnvironment
 from .browser import BrowserEnvironment, new_playwright_browser_driver
 from .composite import CompositeEnvironment
 from .computer import ComputerEnvironment, PlaywrightComputerDriver
-from .swe import SWEEnvironment, _TRUSTED_PROCESS_PATH
+from .swe import (
+    SWEEnvironment,
+    _DEFAULT_MAX_PATCH_BYTES,
+    _TRUSTED_PROCESS_PATH,
+    _minimal_git_environment,
+    _terminate_process_group,
+)
 
 
 def _positive_int(raw: Mapping[str, Any], key: str, default: int) -> int:
@@ -78,7 +84,13 @@ class ConfiguredEnvironmentFactory(EnvironmentFactory):
         if environment_type in {"swe", "swe_computer"} and workspace is None:
             # A task may still supply metadata.environment.workspace; validate at run.
             pass
-        for flag in ("allow_write", "allow_shell", "allow_native_shell", "headless"):
+        for flag in (
+            "allow_write",
+            "allow_shell",
+            "allow_native_shell",
+            "headless",
+            "export_patch",
+        ):
             value = config.get(flag, True if flag == "headless" else False)
             if not isinstance(value, bool):
                 raise ValueError(f"environment {flag} must be a boolean")
@@ -92,6 +104,14 @@ class ConfiguredEnvironmentFactory(EnvironmentFactory):
         self.allow_write = bool(config.get("allow_write", False))
         self.allow_shell = bool(config.get("allow_shell", False))
         self.allow_native_shell = bool(config.get("allow_native_shell", False))
+        self.export_patch = bool(config.get("export_patch", False))
+        if self.export_patch and self.environment_type not in {"swe", "swe_computer"}:
+            raise ValueError("environment export_patch requires an SWE environment")
+        if self.export_patch and self.workspace_mode != "copy":
+            raise ValueError(
+                "environment export_patch requires workspace_mode='copy' so patch "
+                "capture cannot mutate the caller's Git index"
+            )
         self.command_allowlist = _string_list(config, "command_allowlist")
         if (
             self.environment_type in {"swe", "swe_computer"}
@@ -123,6 +143,11 @@ class ConfiguredEnvironmentFactory(EnvironmentFactory):
         self.max_output_bytes = _positive_int(
             config, "max_tool_output_bytes", 256 * 1024
         )
+        self.max_patch_bytes = _positive_int(
+            config, "max_patch_bytes", _DEFAULT_MAX_PATCH_BYTES
+        )
+        self._patch_export_armed = False
+        self._deferred_temporary_roots: list[Path] = []
         self._validate_start_url()
 
     def _validate_start_url(self) -> None:
@@ -165,6 +190,42 @@ class ConfiguredEnvironmentFactory(EnvironmentFactory):
         )
         return ConfiguredEnvironmentScope(self, task, source_workspace)
 
+    def prepare_trial_patch_export(self) -> None:
+        """Defer copy cleanup until the matrix runner externalizes private patches."""
+
+        if not self.export_patch:
+            return
+        if self._patch_export_armed or self._deferred_temporary_roots:
+            raise RuntimeError("a prior SWE patch-export trial is still active")
+        self._patch_export_armed = True
+
+    @property
+    def patch_export_cleanup_deferred(self) -> bool:
+        return self.export_patch and self._patch_export_armed
+
+    def register_deferred_temporary_root(self, root: Path) -> None:
+        if not self.patch_export_cleanup_deferred:
+            raise RuntimeError("SWE patch-export cleanup is not armed")
+        self._deferred_temporary_roots.append(root)
+
+    async def finish_trial_patch_export(self) -> None:
+        """Remove every retained copy even when artifact export or grading failed."""
+
+        roots = tuple(self._deferred_temporary_roots)
+        self._deferred_temporary_roots.clear()
+        self._patch_export_armed = False
+        first_error: BaseException | None = None
+        for root in roots:
+            try:
+                await asyncio.to_thread(shutil.rmtree, root)
+            except FileNotFoundError:
+                pass
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+        if first_error is not None:
+            raise first_error
+
     def validate_artifact_path(self, output_dir: Path, tasks: Sequence[Task]) -> None:
         if self.environment_type not in {"swe", "swe_computer"}:
             return
@@ -195,6 +256,8 @@ class ConfiguredEnvironmentFactory(EnvironmentFactory):
     def provenance(self) -> Mapping[str, Any]:
         redacted = dict(self.config)
         redacted.setdefault("allow_native_shell", self.allow_native_shell)
+        redacted.setdefault("export_patch", self.export_patch)
+        redacted.setdefault("max_patch_bytes", self.max_patch_bytes)
         if "workspace" in redacted:
             workspace = str(redacted.pop("workspace"))
             redacted["workspace_path_redacted"] = True
@@ -231,6 +294,7 @@ class ConfiguredEnvironmentScope(EnvironmentScope):
         self.source_workspace = source_workspace
         self._environments: dict[str, ToolEnvironment] = {}
         self._temporary_roots: list[Path] = []
+        self._defer_temporary_cleanup = factory.patch_export_cleanup_deferred
         self._lock = asyncio.Lock()
         self._closed = False
 
@@ -250,14 +314,20 @@ class ConfiguredEnvironmentScope(EnvironmentScope):
             return source_workspace
         temporary_root = Path(tempfile.mkdtemp(prefix="scaffoldlab-swe-trial-"))
         self._temporary_roots.append(temporary_root)
+        if self._defer_temporary_cleanup:
+            self.factory.register_deferred_temporary_root(temporary_root)
         destination = temporary_root / "workspace"
 
         def copy_workspace() -> None:
+            def ignore_git_metadata(_directory: str, names: list[str]) -> list[str]:
+                return [".git"] if ".git" in names else []
+
             shutil.copytree(
                 source_workspace,
                 destination,
                 symlinks=True,
                 ignore_dangling_symlinks=False,
+                ignore=ignore_git_metadata,
             )
 
         copy_task = asyncio.create_task(asyncio.to_thread(copy_workspace))
@@ -269,7 +339,60 @@ class ConfiguredEnvironmentScope(EnvironmentScope):
             except Exception:
                 pass
             raise
+        await self._initialize_git_baseline(destination)
         return destination
+
+    async def _initialize_git_baseline(self, workspace: Path) -> None:
+        environment = {
+            **_minimal_git_environment(),
+            "GIT_AUTHOR_NAME": "Scaffold Lab",
+            "GIT_AUTHOR_EMAIL": "scaffoldlab@invalid",
+            "GIT_COMMITTER_NAME": "Scaffold Lab",
+            "GIT_COMMITTER_EMAIL": "scaffoldlab@invalid",
+            "GIT_AUTHOR_DATE": "2000-01-01T00:00:00Z",
+            "GIT_COMMITTER_DATE": "2000-01-01T00:00:00Z",
+        }
+        commands = (
+            ("git", "init", "--quiet"),
+            ("git", "add", "--all", "--force", "--", "."),
+            (
+                "git",
+                "-c",
+                "commit.gpgSign=false",
+                "commit",
+                "--quiet",
+                "--allow-empty",
+                "--no-verify",
+                "-m",
+                "Scaffold Lab temporary baseline",
+            ),
+            ("git", "status", "--porcelain=v1", "--untracked-files=all"),
+        )
+        for index, command in enumerate(commands):
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                cwd=workspace,
+                env=environment,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(), timeout=self.factory.timeout_seconds
+                )
+            except BaseException:
+                await _terminate_process_group(process)
+                raise
+            if process.returncode != 0:
+                diagnostic = stderr[: self.factory.max_output_bytes].decode(
+                    "utf-8", errors="replace"
+                )
+                raise RuntimeError(
+                    f"could not create temporary Git baseline: {diagnostic}"
+                )
+            if index == len(commands) - 1 and stdout:
+                raise RuntimeError("temporary Git baseline was not clean after commit")
 
     async def _new_playwright(self) -> Any:
         driver = await new_playwright_browser_driver(
@@ -300,6 +423,9 @@ class ConfiguredEnvironmentScope(EnvironmentScope):
                 command_allowlist=self.factory.command_allowlist,
                 timeout_seconds=self.factory.timeout_seconds,
                 max_output_bytes=self.factory.max_output_bytes,
+                export_patch=self.factory.export_patch,
+                max_patch_bytes=self.factory.max_patch_bytes,
+                git_baseline_owned=self.factory.workspace_mode == "copy",
                 protocol=self.factory.protocol,
             )
         if environment_type == "browser":
@@ -326,6 +452,9 @@ class ConfiguredEnvironmentScope(EnvironmentScope):
                 command_allowlist=self.factory.command_allowlist,
                 timeout_seconds=self.factory.timeout_seconds,
                 max_output_bytes=self.factory.max_output_bytes,
+                export_patch=self.factory.export_patch,
+                max_patch_bytes=self.factory.max_patch_bytes,
+                git_baseline_owned=self.factory.workspace_mode == "copy",
                 protocol=self.factory.protocol,
             )
             driver = await self._new_playwright()
@@ -379,14 +508,15 @@ class ConfiguredEnvironmentScope(EnvironmentScope):
                 if first_error is None:
                     first_error = exc
         self._environments.clear()
-        for root in self._temporary_roots:
-            try:
-                await asyncio.to_thread(shutil.rmtree, root)
-            except FileNotFoundError:
-                pass
-            except BaseException as exc:
-                if first_error is None:
-                    first_error = exc
+        if not self._defer_temporary_cleanup:
+            for root in self._temporary_roots:
+                try:
+                    await asyncio.to_thread(shutil.rmtree, root)
+                except FileNotFoundError:
+                    pass
+                except BaseException as exc:
+                    if first_error is None:
+                        first_error = exc
         self._temporary_roots.clear()
         if first_error is not None:
             raise first_error

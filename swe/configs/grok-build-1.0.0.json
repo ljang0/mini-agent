@@ -1,0 +1,22 @@
+{
+  "application": {
+    "name": "swe",
+    "implementation": "grok-build-1.0.0"
+  },
+  "limits": {
+    "max_model_calls": 1,
+    "max_concurrency": 1,
+    "wall_time_seconds": 1800,
+    "max_depth": 1
+  },
+  "capture_content": false,
+  "repeats": 1,
+  "random_seed": 20260810,
+  "metadata": {
+    "fidelity": "upstream_runtime_adapter",
+    "version": "1.0.0",
+    "revision": "8a14c91d88875a831a38b3a066b1683116bcb31c",
+    "boundary": "Invokes the pinned released Grok Build headless JSON runtime with native subagents and worktree semantics; some compaction, side-model, unfinished-child usage, and npm/source bit identity remain incomplete.",
+    "workspace_owner": "Grok Build owns a caller-supplied disposable single-trial worktree; do not add a local environment block."
+  }
+}
