@@ -59,6 +59,10 @@ tests. Those unselected runs are intentionally **uncataloged**: they do not rece
 an implementation identity or a 1:1 claim. Release-facing runs should select a
 profile from an application's `implementations/` or `studies/` directory.
 
+For a consolidated per-profile source map, runtime prerequisites, run modes, and an
+explicit account of which benchmark evaluators are and are not implemented, see the
+[reference and benchmark runbook](docs/reference-and-benchmark-runbook.md).
+
 ## Shared harness primitives
 
 The application profiles resolve to these reusable mechanisms:
