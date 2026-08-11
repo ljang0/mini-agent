@@ -224,6 +224,103 @@ def _show_profile(args: argparse.Namespace) -> int:
     return 0
 
 
+def _list_catalog(args: argparse.Namespace) -> int:
+    from .catalog import (
+        list_gaps,
+        list_implementations,
+        list_profiles,
+        list_studies,
+    )
+
+    loaders = {
+        "all": list_profiles,
+        "implementation": list_implementations,
+        "study": list_studies,
+        "gap": list_gaps,
+    }
+    profiles = loaders[args.kind](args.application)
+    if args.json:
+        print(json.dumps([profile.as_dict() for profile in profiles], indent=2))
+    else:
+        for profile in profiles:
+            print(profile.key)
+    return 0
+
+
+def _show_implementation(args: argparse.Namespace) -> int:
+    from .catalog import get_profile
+
+    profile = get_profile(args.application, args.name)
+    print(json.dumps(profile.as_dict(), indent=2, sort_keys=True))
+    return 0
+
+
+def _list_frontiers(args: argparse.Namespace) -> int:
+    from .catalog import get_frontier_source, list_frontier_sources
+
+    sources = (
+        (get_frontier_source(args.lab),)
+        if args.lab is not None
+        else list_frontier_sources()
+    )
+    if args.json:
+        payload = []
+        for source in sources:
+            item = source.as_dict()
+            if args.application is not None:
+                item["application_statuses"] = [
+                    status
+                    for status in item["application_statuses"]
+                    if status["application"] == args.application
+                ]
+                item["applications"] = [args.application]
+            payload.append(item)
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+    for source in sources:
+        statuses = (
+            source.application_statuses
+            if args.application is None
+            else tuple(
+                status
+                for status in source.application_statuses
+                if status.application == args.application
+            )
+        )
+        summary = ", ".join(
+            f"{status.application}={status.status}" for status in statuses
+        )
+        print(f"{source.lab}\t{summary}")
+    return 0
+
+
+def _validate_reference(args: argparse.Namespace) -> int:
+    from .references import get_reference
+
+    reference = get_reference(args.application, args.implementation)
+    return reference.validate(
+        tasks=args.tasks,
+        config=args.config,
+        provider=args.provider,
+    )
+
+
+def _run_reference(args: argparse.Namespace) -> int:
+    from .references import get_reference
+
+    reference = get_reference(args.application, args.implementation)
+    extra = tuple(args.reference_arguments)
+    if extra and extra[0] == "--":
+        extra = extra[1:]
+    return reference.run(
+        tasks=args.tasks,
+        config=args.config,
+        output=args.output,
+        provider=args.provider,
+        arguments=extra,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="mini-agent")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -255,6 +352,66 @@ def build_parser() -> argparse.ArgumentParser:
     show.add_argument("--profile", default="default")
     show.add_argument("--model", default="")
     show.set_defaults(handler=_show_profile)
+
+    catalog = subparsers.add_parser(
+        "catalog", help="list migrated implementations, studies, and gaps"
+    )
+    catalog.add_argument("--application", choices=("swe", "web", "cua"))
+    catalog.add_argument(
+        "--kind",
+        choices=("all", "implementation", "study", "gap"),
+        default="all",
+    )
+    catalog.add_argument("--json", action="store_true")
+    catalog.set_defaults(handler=_list_catalog)
+
+    implementation = subparsers.add_parser(
+        "implementation", help="inspect one migrated catalog entry"
+    )
+    implementation.add_argument(
+        "--application", required=True, choices=("swe", "web", "cua")
+    )
+    implementation.add_argument("--name", required=True)
+    implementation.set_defaults(handler=_show_implementation)
+
+    frontiers = subparsers.add_parser(
+        "frontiers", help="show the complete frontier-lab coverage matrix"
+    )
+    frontiers.add_argument("--application", choices=("swe", "web", "cua"))
+    frontiers.add_argument("--lab")
+    frontiers.add_argument("--json", action="store_true")
+    frontiers.set_defaults(handler=_list_frontiers)
+
+    validate = subparsers.add_parser(
+        "validate-reference", help="validate a pinned reference evaluation"
+    )
+    validate.add_argument(
+        "--application", required=True, choices=("swe", "web", "cua")
+    )
+    validate.add_argument("--implementation", required=True)
+    validate.add_argument("--tasks", type=Path, required=True)
+    validate.add_argument("--config", type=Path, required=True)
+    validate.add_argument("--provider")
+    validate.set_defaults(handler=_validate_reference)
+
+    evaluate = subparsers.add_parser(
+        "eval-reference",
+        help="run a pinned reference through the preserved evaluator",
+    )
+    evaluate.add_argument(
+        "--application", required=True, choices=("swe", "web", "cua")
+    )
+    evaluate.add_argument("--implementation", required=True)
+    evaluate.add_argument("--tasks", type=Path, required=True)
+    evaluate.add_argument("--config", type=Path, required=True)
+    evaluate.add_argument("--provider")
+    evaluate.add_argument("--output", type=Path, required=True)
+    evaluate.add_argument(
+        "reference_arguments",
+        nargs=argparse.REMAINDER,
+        help="runtime-specific arguments after --",
+    )
+    evaluate.set_defaults(handler=_run_reference)
     return parser
 
 

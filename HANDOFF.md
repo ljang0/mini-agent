@@ -11,6 +11,8 @@ New work should use:
 - Core loop: [`src/mini_agent/agent.py`](src/mini_agent/agent.py)
 - Communication wrapper: [`src/mini_agent/orchestrator.py`](src/mini_agent/orchestrator.py)
 - Profiles: [`src/mini_agent/profiles`](src/mini_agent/profiles)
+- Migrated catalog: [`src/mini_agent/catalog.py`](src/mini_agent/catalog.py)
+- Exact references: [`src/mini_agent/references.py`](src/mini_agent/references.py)
 
 ## Implemented
 
@@ -23,6 +25,9 @@ New work should use:
 - cua-speed-run `observe/step/done` client and an evaluator-free OSWorld environment bridge.
 - Resolved YAML profiles with prompts, tools, limits, generation/observation/history policy, source pins, fidelity labels, and gaps.
 - Minimal multi-agent orchestration through `spawn_agent`, `send_message`, `read_messages`, and `wait`.
+- Complete 1:1 catalog view: 55 profiles, 18 labs, and all 54 lab/application status cells.
+- Exact delegation for all 18 runnable references through the preserved evaluator.
+- `mini-agent` commands for catalog/frontier inspection and reference validation/evaluation.
 - Deterministic offline tests for all new control-flow and environment boundaries.
 
 ## Fidelity boundaries
@@ -30,6 +35,8 @@ New work should use:
 - `baseline` means a model in the wrapper.
 - `profile` means published details were applied where the wrapper supports them; inspect `fidelity_gaps`.
 - `reference` is reserved for executing a pinned upstream or hosted runtime.
+- The 28 studies retain their original non-exact labels; the nine gaps remain unavailable.
+- Reference runtimes own their loops and cannot be `MiniAgent` workers without changing the measured implementation.
 - The BrowseComp-Plus JSONL backend is a deterministic test backend, not an official-score replacement for its Lucene index.
 - The OSWorld bridge never invokes the evaluator; the outer benchmark runner retains termination and grading ownership.
 - Training methods, benchmark datasets, graders, and verifiers remain separate from the inference harness.
@@ -38,7 +45,7 @@ New work should use:
 
 1. Run single-agent pilots in the order SWE, BrowseComp-Plus, cua-speed-run.
 2. Add benchmark-owned task loaders and graders without importing them into `MiniAgent`.
-3. Add model profiles only from pinned public sources and record unsupported behavior as gaps.
+3. Add native model profiles only from pinned public sources and record unsupported behavior as gaps.
 4. Run multi-agent experiments only after the matching single-agent profile passes deterministic and benchmark-level validation.
 5. Compare communication policies without adding topology-specific agent classes unless results require them.
 

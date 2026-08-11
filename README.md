@@ -89,6 +89,56 @@ Profiles live under [`src/mini_agent/profiles`](src/mini_agent/profiles). A reso
 
 A profile is not automatically a reproduction of a proprietary product, trained search policy, or full upstream agent. Known differences stay machine-readable in `fidelity_gaps`.
 
+## Frontier implementations
+
+The complete audited catalog is available through `mini-agent`: 55 entries across
+18 frontier labs, split into 18 exact runnable references, 28 controlled studies,
+and 9 documented gaps. The migration changes only the application names
+`browser -> web` and `computer-use -> cua`; IDs, source pins, fidelity labels,
+limitations, and runtime ownership remain unchanged.
+
+```bash
+# All migrated entries, or one fidelity partition.
+mini-agent catalog --json
+mini-agent catalog --application web --kind implementation
+
+# The complete 18-lab x 3-application coverage matrix.
+mini-agent frontiers --json
+
+# Inspect one exact reference, study, or gap.
+mini-agent implementation \
+  --application swe --name openai-codex-source-0.147.0
+```
+
+Exact references keep their original hosted protocol or pinned upstream runtime.
+They are not forced through `MiniAgent`, because replacing an upstream-owned loop
+would stop being a 1:1 run. Validate and execute them through the preserved
+evaluation boundary:
+
+```bash
+mini-agent validate-reference \
+  --application swe \
+  --implementation openai-codex-source-0.147.0 \
+  --tasks /path/to/tasks.jsonl \
+  --config /path/to/reference-config.json \
+  --provider codex-source
+
+mini-agent eval-reference \
+  --application swe \
+  --implementation openai-codex-source-0.147.0 \
+  --tasks /path/to/tasks.jsonl \
+  --config /path/to/reference-config.json \
+  --provider codex-source \
+  --output runs/codex-reference \
+  -- --codex-source-checkout /path/to/pinned/codex
+```
+
+Runtime-specific arguments follow `--` and are passed as literal argument tokens,
+never shell text. The selected config, implementation, provider, tasks, and output
+are checked before delegation and cannot be overridden. External dependencies,
+credentials, benchmark data, VMs, and pinned checkouts are still supplied by the
+caller. See the [frontier migration matrix](docs/frontier-migration.md).
+
 ## Multi-agent is communication
 
 [`Orchestrator`](src/mini_agent/orchestrator.py) creates ordinary `MiniAgent` instances with separate environments and one shared budget/trace context. It adds four tools:
@@ -115,8 +165,17 @@ python3 -m ruff check src tests
 python3 -m mypy src/mini_agent
 ```
 
-Deterministic tests cover history ordering, invalid actions, budgets, cancellation, workspace isolation, retrieval, CUA translation, hidden-verifier separation, spawning, messaging, waiting, failure, and root-only submission. Smoke tests validate plumbing; they are not evidence that an agent is a release winner.
+Deterministic tests cover history ordering, invalid actions, budgets, cancellation,
+workspace isolation, retrieval, CUA translation, hidden-verifier separation,
+spawning, messaging, waiting, failure, root-only submission, all 55 catalog
+mappings, all 54 frontier coverage cells, and reference CLI reachability in SWE,
+web, and CUA. Smoke tests validate plumbing; they are not evidence that an agent
+is a release winner.
 
 ## Repository transition
 
-The former Scaffold Lab v0.2 state is preserved by the `scaffoldlab-v0.2-handoff` tag. The `scaffoldlab` package and CLI remain temporarily available for compatibility with the prior harness/reference catalog, but `mini_agent` and `mini-agent` are the authoritative interfaces for new work. See [`HANDOFF.md`](HANDOFF.md) and the [`documentation index`](docs/README.md).
+The former Scaffold Lab v0.2 state is preserved by the
+`scaffoldlab-v0.2-handoff` tag. Its package remains an internal compatibility
+implementation for exact reference execution, but `mini_agent` and `mini-agent`
+are the authoritative public interfaces. See [`HANDOFF.md`](HANDOFF.md) and the
+[`documentation index`](docs/README.md).
