@@ -4,6 +4,11 @@ Scaffold Lab is an application-first, provider-neutral experiment runtime for
 comparing multi-agent systems under shared model/tool budgets, evaluators, traces,
 and fidelity labels. The only top-level applications are:
 
+For project status and the next implementation milestone, start with the
+[handoff](HANDOFF.md). The [documentation index](docs/README.md) routes to the
+architecture, source audit, experiment protocol, frontier-lab coverage, and the
+per-profile reference and benchmark runbook.
+
 | Application | Entry point | Exact implementations, studies, and gaps |
 | --- | --- | --- |
 | Browser | [`browser/`](browser/) | Exact OpenAI/xAI/Anthropic hosted boundaries plus pinned Browser-Use and MACU runtimes live in `implementations/`; the Browser-Use flat-fan-out pattern, local MACU subset, and card topologies remain `studies/`. |
