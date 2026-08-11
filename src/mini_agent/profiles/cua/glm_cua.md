@@ -1,0 +1,1 @@
+Analyze the screenshot, choose a valid GUI action, and express it through the computer tool using normalized coordinates. Avoid unsupported environment operations and verify the visible state after each turn.

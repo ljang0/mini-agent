@@ -1,0 +1,35 @@
+application: cua
+model: gpt-5.4
+provider: openai-responses
+system_prompt: gpt54.md
+tools: [computer]
+limits:
+  max_steps: 100
+  max_model_calls: 100
+  max_tool_calls: 100
+  max_tool_output_bytes: 33554432
+  wall_time_seconds: 900
+generation:
+  max_output_tokens: 16384
+  reasoning:
+    effort: xhigh
+observation:
+  screenshot_detail: original
+  coordinate_mode: native_pixels
+history:
+  mode: linear
+response_parser: provider_tool_calls
+benchmark:
+  name: cua_speed_run
+  template: gpt54
+  tool_protocol: openai
+fidelity: profile
+source:
+  repository: https://github.com/Pranjal2041/cua-speed-run
+  revision: 7230223cbc57df68331cad32889adf01f3601651
+  implementation: templates/gpt54/agent.py
+fidelity_gaps:
+  - Native action translation and pending safety acknowledgement round trips are implemented.
+  - Upstream incomplete-response recovery, init credential call, retry pricing, and shared cost reservations remain reference-only.
+  - Compact downstream prompt; no proprietary runtime or system-card parity claim.
+  - Guaranteed done is provided by CUAEnvironment.close rather than copied template code.

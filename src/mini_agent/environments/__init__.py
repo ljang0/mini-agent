@@ -1,4 +1,4 @@
-from .base import BaseEnvironment, Environment, EnvironmentAdapter
+from .base import BaseEnvironment, Environment
 from .cua import (
     CUAEnvironment,
     CUASpeedRunClient,
@@ -7,7 +7,13 @@ from .cua import (
     OSWorldEnvironment,
 )
 from .swe import BashEnvironment
-from .web import BrowseCompPlusBackend, JsonlSearchBackend, WebEnvironment
+from .swebench import DockerSWEEnvironment, swebench_doctor, swebench_image_name
+from .web import (
+    BrowseCompPlusBackend,
+    JsonlSearchBackend,
+    WebEnvironment,
+    directory_identity,
+)
 
 __all__ = [
     "BaseEnvironment",
@@ -17,9 +23,12 @@ __all__ = [
     "CUASpeedRunClient",
     "ComputerObservation",
     "Environment",
-    "EnvironmentAdapter",
+    "DockerSWEEnvironment",
     "JsonlSearchBackend",
     "OSWorldClient",
     "OSWorldEnvironment",
     "WebEnvironment",
+    "directory_identity",
+    "swebench_doctor",
+    "swebench_image_name",
 ]

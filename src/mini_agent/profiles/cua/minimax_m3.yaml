@@ -1,0 +1,17 @@
+application: cua
+model: MiniMax-M3
+provider: anthropic-messages
+system_prompt: minimax_m3.md
+tools: [computer]
+limits: {max_steps: 100, max_model_calls: 100, max_tool_calls: 100, max_tool_output_bytes: 33554432, wall_time_seconds: 900}
+generation: {max_output_tokens: 8192}
+observation: {coordinate_mode: normalized_1000, image_format: PNG}
+history: {mode: linear}
+response_parser: provider_tool_calls
+benchmark: {name: cua_speed_run, template: minimax_m3, tool_protocol: generic}
+fidelity: profile
+source: {repository: https://github.com/Pranjal2041/cua-speed-run, revision: 7230223cbc57df68331cad32889adf01f3601651, implementation: templates/minimax_m3/agent.py}
+fidelity_gaps:
+  - MiniMax Anthropic-compatible endpoint details, XML parser retries, and image chunking require a model adapter.
+  - Provider retry ladder and pricing remain external.
+  - Generic tool profile, not native Anthropic-computer protocol parity.

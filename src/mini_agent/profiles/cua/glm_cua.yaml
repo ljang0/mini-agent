@@ -1,0 +1,17 @@
+application: cua
+model: glm-4.5v
+provider: openai-compatible-chat
+system_prompt: glm_cua.md
+tools: [computer]
+limits: {max_steps: 100, max_model_calls: 100, max_tool_calls: 100, max_tool_output_bytes: 33554432, wall_time_seconds: 900}
+generation: {max_output_tokens: 2048}
+observation: {coordinate_mode: normalized_1000, screenshot_detail: original}
+history: {mode: linear}
+response_parser: provider_tool_calls
+benchmark: {name: cua_speed_run, template: glm_cua, tool_protocol: generic}
+fidelity: profile
+source: {repository: https://github.com/Pranjal2041/cua-speed-run, revision: 7230223cbc57df68331cad32889adf01f3601651, implementation: templates/glm_cua/agent.py}
+fidelity_gaps:
+  - AutoGLM think/answer pseudo-code parsing and constant-interval retry policy require a downstream adapter.
+  - Zhipu platform transport and hosted policy remain external.
+  - Source-informed profile, not model-runtime parity.

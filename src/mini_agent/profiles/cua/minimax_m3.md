@@ -1,0 +1,1 @@
+Use the current screenshot and the computer tool to advance the visible task. Coordinates follow the configured normalized convention. Keep the trajectory compact, correct invalid actions from the next observation, and end only after visual confirmation.

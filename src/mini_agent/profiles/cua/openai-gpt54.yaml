@@ -27,5 +27,6 @@ source:
   revision: 7230223cbc57df68331cad32889adf01f3601651
   implementation: templates/gpt54/agent.py
 fidelity_gaps:
-  - Uses the wrapper's generic computer function rather than the provider-native computer tool.
-  - Upstream retry and cost-reservation policy remains external.
+  - Alias of the gpt54 source-informed profile; CLI must select protocol=openai for the native tool.
+  - Native action translation and pending safety acknowledgement round trips are implemented; upstream incomplete-response recovery, init credential calls, and shared cost reservations remain reference-only.
+  - The prompt is a compact downstream adaptation, not a verbatim system-card reproduction.

@@ -1,0 +1,56 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - run: python -m pip install -e '.[dev]'
+      - run: python -m unittest discover -s tests -v
+      - run: python -m compileall -q src tests
+      - run: ruff check src tests
+      - run: mypy src/mini_agent
+      - if: matrix.python == '3.13'
+        run: |
+          python -m build
+          twine check dist/*
+          release_tmp="$(mktemp -d)"
+          python -m venv "$release_tmp/wheel"
+          "$release_tmp/wheel/bin/pip" install dist/*.whl
+          (
+            cd "$release_tmp"
+            "$release_tmp/wheel/bin/python" -c "import importlib.util, mini_agent; assert mini_agent.__version__ == '0.3.0'; assert importlib.util.find_spec('scaffoldlab') is None"
+            "$release_tmp/wheel/bin/mini-agent" profile --application web --profile default
+            "$release_tmp/wheel/bin/mini-agent" reference list --application swe
+          )
+          python -m venv "$release_tmp/sdist"
+          "$release_tmp/sdist/bin/pip" install dist/*.tar.gz
+          (
+            cd "$release_tmp"
+            "$release_tmp/sdist/bin/python" -c "import importlib.util, mini_agent; assert mini_agent.__version__ == '0.3.0'; assert importlib.util.find_spec('scaffoldlab') is None"
+            "$release_tmp/sdist/bin/mini-agent" profile --application cua --profile gpt54
+          )
+          python -m pip download --only-binary=:all: --requirement requirements/cua-export.lock --dest "$release_tmp/wheelhouse"
+          dependency_args=()
+          for dependency in "$release_tmp"/wheelhouse/*.whl; do
+            dependency_args+=(--dependency-wheel "$dependency")
+          done
+          "$release_tmp/wheel/bin/mini-agent" export --target cua-speed-run --profile gpt54 --model gpt-5.4 --provider openai-responses --wheel dist/*.whl "${dependency_args[@]}" --output "$release_tmp/submission"
+          python -m venv "$release_tmp/bootstrap"
+          OPENAI_API_KEY=fixture PIP_NO_INDEX=1 "$release_tmp/bootstrap/bin/python" "$release_tmp/submission/init.py"
+          "$release_tmp/bootstrap/bin/python" -c "import mini_agent; assert mini_agent.__version__ == '0.3.0'"

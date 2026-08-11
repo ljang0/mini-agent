@@ -1,0 +1,35 @@
+application: web
+model: PeterJinGo/SearchR1-nq_hotpotqa_train-qwen2.5-32b-em-grpo-v0.3
+provider: openai-compatible-chat
+system_prompt: search-r1.md
+tools: [search]
+limits:
+  max_steps: 100
+  max_model_calls: 100
+  max_output_tokens: 102400
+  max_tool_calls: 1000
+  max_tool_output_bytes: 8388608
+  wall_time_seconds: 900
+generation:
+  max_output_tokens: 1024
+  temperature: 0.7
+observation:
+  snippet_tokens: 512
+history:
+  mode: linear
+response_parser: search_r1_tags
+benchmark:
+  name: browsecomp_plus
+  retrieval: bm25
+  top_k: 5
+fidelity: profile
+source:
+  repository: https://github.com/texttron/BrowseComp-Plus
+  revision: 046949032b0328319cc9a02663a759ec601d9402
+  implementation: search_agent/search_r1_client.py
+  task_template: search_agent/prompts.py:QUERY_TEMPLATE_NO_GET_DOCUMENT
+  snippet_tokenizer: Qwen/Qwen3-0.6B
+fidelity_gaps:
+  - The executable adapter parses the published <search> protocol and inserts local results as <information>, but submits a stateless compatible-Chat transcript rather than the upstream Transformers generation loop and stopping criteria.
+  - Model weights, tokenizer/chat template, endpoint, sampling implementation, and EOS IDs require caller-controlled pins.
+  - Running the published checkpoint is inference evaluation, not reproduction of Search-R1 policy training.

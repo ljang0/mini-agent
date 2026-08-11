@@ -1,0 +1,17 @@
+application: cua
+model: z-ai/glm-5v-turbo
+provider: openai-compatible-chat
+system_prompt: glm5v_turbo.md
+tools: [computer]
+limits: {max_steps: 100, max_model_calls: 100, max_tool_calls: 100, max_tool_output_bytes: 33554432, wall_time_seconds: 900}
+generation: {max_output_tokens: 8192}
+observation: {coordinate_mode: normalized_1000, screenshot_detail: original}
+history: {mode: linear}
+response_parser: provider_tool_calls
+benchmark: {name: cua_speed_run, template: glm5v_turbo, tool_protocol: generic}
+fidelity: profile
+source: {repository: https://github.com/Pranjal2041/cua-speed-run, revision: 7230223cbc57df68331cad32889adf01f3601651, implementation: templates/glm5v_turbo/agent.py}
+fidelity_gaps:
+  - OSWorld-V2 parse/retry policy and model-managed memory require a downstream adapter.
+  - OpenRouter routing preferences and pricing are external provider behavior.
+  - Source-informed profile, not a GLM runtime reproduction.

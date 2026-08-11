@@ -9,12 +9,8 @@
 
 ## Preserved Scaffold Lab research material
 
-These documents describe the v0.2 research behind the catalog now exposed by
-`mini-agent catalog`, `mini-agent frontiers`, and the reference evaluation
-commands. The `scaffoldlab` package is retained internally so exact execution
-paths remain unchanged during migration.
-
-- [Experiment protocol](experiment-protocol.md)
-- [Frontier lab coverage](frontier-lab-coverage.md)
-- [Reference and benchmark runbook](reference-and-benchmark-runbook.md)
-- [Source audit](source-audit.md)
+The v0.2 package, tests, configs, topology studies, and their original
+documentation are archived under
+[`research/scaffoldlab`](../research/scaffoldlab) and excluded from the wheel.
+Those documents are historical research records; their old commands and paths
+are not part of the `mini-agent` 0.3 public interface.

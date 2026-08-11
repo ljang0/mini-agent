@@ -1,0 +1,2 @@
+{"query_id":"q1","query":"Which document discusses alpha evidence?","answer":"Document 1","gold_docids":["1"]}
+{"query_id":"q2","query":"Which document discusses beta evidence?","answer":"Document 2","gold_docids":["2"]}

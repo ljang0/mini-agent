@@ -1,0 +1,1 @@
+Inspect the screenshot and use normalized computer actions to complete the task. Prefer a small number of reliable operations, wait when necessary, and use the next screenshot to confirm progress and completion.

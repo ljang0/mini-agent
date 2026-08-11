@@ -1,0 +1,12 @@
+include README.md
+include HANDOFF.md
+include CONTRIBUTING.md
+include SECURITY.md
+include LICENSE
+include src/mini_agent/py.typed
+recursive-include src/mini_agent/profiles *.yaml *.md
+recursive-include docs *.md
+recursive-include requirements *.lock
+recursive-include tests *.py *.json *.jsonl *.tsv
+prune research
+global-exclude __pycache__ *.py[cod]

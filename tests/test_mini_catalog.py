@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import unittest
-from copy import deepcopy
 from dataclasses import replace
 
 from mini_agent.catalog import (
@@ -23,23 +22,13 @@ from mini_agent.catalog import (
     list_profiles,
     list_studies,
 )
-from scaffoldlab.applications import (
-    FRONTIER_LABS as LEGACY_FRONTIER_SOURCES,
-    PROFILES as LEGACY_PROFILES,
-)
-
-
 class MiniCatalogTests(unittest.TestCase):
     def test_every_profile_is_exposed_one_to_one(self) -> None:
         self.assertEqual(len(PROFILES), 55)
         self.assertEqual(len(IMPLEMENTATIONS), 18)
         self.assertEqual(len(STUDIES), 28)
         self.assertEqual(len(GAPS), 9)
-        self.assertEqual([value.legacy for value in PROFILES], list(LEGACY_PROFILES))
-        self.assertEqual(
-            {value.profile_id for value in PROFILES},
-            {value.profile_id for value in LEGACY_PROFILES},
-        )
+        self.assertEqual(len({value.key for value in PROFILES}), 55)
         for value in PROFILES:
             with self.subTest(key=value.key):
                 expected = value.legacy.as_dict()
@@ -68,14 +57,6 @@ class MiniCatalogTests(unittest.TestCase):
 
     def test_exact_implementation_partition_is_preserved(self) -> None:
         self.assertEqual(len(IMPLEMENTATIONS), 18)
-        self.assertEqual(
-            [value.legacy for value in IMPLEMENTATIONS],
-            [
-                value
-                for value in LEGACY_PROFILES
-                if value.catalog_kind == "implementation"
-            ],
-        )
         self.assertEqual(
             {
                 application: len(values)
@@ -132,25 +113,19 @@ class MiniCatalogTests(unittest.TestCase):
     def test_every_frontier_source_and_status_is_exposed_one_to_one(self) -> None:
         self.assertEqual(len(FRONTIER_SOURCES), 18)
         self.assertEqual(len(FRONTIER_SOURCES_BY_LAB), 18)
-        self.assertEqual(
-            [value.legacy for value in FRONTIER_SOURCES],
-            list(LEGACY_FRONTIER_SOURCES),
-        )
-        self.assertEqual(
-            {value.lab for value in FRONTIER_SOURCES},
-            {value.lab for value in LEGACY_FRONTIER_SOURCES},
-        )
+        self.assertEqual(len({value.lab for value in FRONTIER_SOURCES}), 18)
         self.assertEqual(
             sum(len(value.application_statuses) for value in FRONTIER_SOURCES), 54
         )
         for source in FRONTIER_SOURCES:
             with self.subTest(lab=source.lab):
-                expected_source = deepcopy(source.legacy.as_dict())
-                expected_source["applications"] = list(source.applications)
-                expected_source["application_statuses"] = [
-                    status.as_dict() for status in source.application_statuses
-                ]
-                self.assertEqual(source.as_dict(), expected_source)
+                serialized = source.as_dict()
+                self.assertEqual(serialized["lab"], source.lab)
+                self.assertEqual(serialized["applications"], list(source.applications))
+                self.assertEqual(
+                    serialized["application_statuses"],
+                    [status.as_dict() for status in source.application_statuses],
+                )
                 self.assertEqual(set(source.applications), set(APPLICATIONS))
                 self.assertEqual(source.flagship_exact, source.legacy.flagship_exact)
                 self.assertEqual(source.limitation, source.legacy.limitation)

@@ -1,0 +1,17 @@
+application: cua
+model: super_nova_ext
+provider: openai-compatible-chat
+system_prompt: meta.md
+tools: [computer]
+limits: {max_steps: 100, max_model_calls: 100, max_tool_calls: 100, max_tool_output_bytes: 33554432, wall_time_seconds: 900}
+generation: {max_output_tokens: 8192}
+observation: {coordinate_mode: normalized_1000, screenshot_detail: original}
+history: {mode: linear}
+response_parser: provider_tool_calls
+benchmark: {name: cua_speed_run, template: meta, tool_protocol: generic}
+fidelity: profile
+source: {repository: https://github.com/Pranjal2041/cua-speed-run, revision: 7230223cbc57df68331cad32889adf01f3601651, implementation: templates/meta/agent.py}
+fidelity_gaps:
+  - Exact response recovery ladder and image-placeholder compaction require model-adapter wiring.
+  - Hosted relay policy and provider implementation are not reproduced.
+  - Source-informed generic computer profile only.

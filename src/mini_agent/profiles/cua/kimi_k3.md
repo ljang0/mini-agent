@@ -1,0 +1,1 @@
+Reason from the current screenshot and emit literal structured GUI actions through the computer tool. Keep enough state to continue the task, retain only useful screenshots, and confirm the final visible result.

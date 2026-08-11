@@ -12,10 +12,6 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 from unittest.mock import AsyncMock, patch
 
-from scaffoldlab.environments.base import ToolExecution
-from scaffoldlab.providers import OpenAIResponsesBackend
-from scaffoldlab.runtime import ScriptedBackend
-
 from mini_agent import (
     BackendModel,
     BudgetExceeded,
@@ -24,11 +20,15 @@ from mini_agent import (
     ModelResponse,
     ProtocolError,
     RunContext,
+    ScriptedBackend,
     ScriptedModel,
     ToolCall,
     ToolDefinition,
+    ToolResult,
     Usage,
 )
+from mini_agent.providers import OpenAIResponsesBackend
+from mini_agent.types import ToolExecution
 from mini_agent.environments import (
     BashEnvironment,
     CUAEnvironment,
@@ -204,7 +204,7 @@ class MiniAgentLoopTests(unittest.IsolatedAsyncioTestCase):
         model = BackendModel(backend)
         from mini_agent.types import Message
 
-        with patch("scaffoldlab.providers._post_json", post):
+        with patch("mini_agent.providers._post_json", post):
             await model.query(
                 (
                     Message(role="system", content="system"),
@@ -220,6 +220,76 @@ class MiniAgentLoopTests(unittest.IsolatedAsyncioTestCase):
         payload = post.await_args.kwargs["payload"]
         self.assertEqual(payload["input"][0]["content"][0]["type"], "input_text")
         self.assertEqual(payload["input"][0]["content"][1]["type"], "input_image")
+
+    async def test_openai_computer_safety_checks_are_acknowledged_next_turn(self) -> None:
+        computer_call = {
+            "status": "completed",
+            "output": [
+                {
+                    "type": "computer_call",
+                    "call_id": "computer-1",
+                    "actions": [{"type": "click", "x": 1, "y": 2}],
+                    "pending_safety_checks": [
+                        {"id": "check-1", "code": "external_side_effect"}
+                    ],
+                }
+            ],
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }
+        completed = {
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": "done"}],
+                }
+            ],
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }
+        post = AsyncMock(side_effect=(computer_call, completed))
+        model = BackendModel(OpenAIResponsesBackend(model="test", api_key="key"))
+        from mini_agent.types import Message
+
+        tools = (ToolDefinition(name="computer", kind="openai_computer"),)
+        messages = [Message(role="user", content="task")]
+        with patch("mini_agent.providers._post_json", post):
+            response = await model.query(messages, tools)
+            messages.extend(
+                (
+                    Message(role="assistant", tool_calls=response.tool_calls),
+                    Message(
+                        role="tool",
+                        tool_results=(
+                            ToolResult(
+                                call_id="computer-1",
+                                name="computer",
+                                output="ok",
+                                kind="openai_computer",
+                                image_data_url="data:image/png;base64,AAAA",
+                                native_output={
+                                    "acknowledged_safety_checks": [
+                                        {
+                                            "id": "check-1",
+                                            "code": "external_side_effect",
+                                        }
+                                    ]
+                                },
+                            ),
+                        ),
+                    ),
+                )
+            )
+            await model.query(messages, tools)
+        payload = post.await_args_list[1].kwargs["payload"]
+        output = next(
+            item
+            for item in payload["input"]
+            if item.get("type") == "computer_call_output"
+        )
+        self.assertEqual(
+            output["acknowledged_safety_checks"],
+            [{"id": "check-1", "code": "external_side_effect"}],
+        )
 
 
 class DomainEnvironmentTests(unittest.IsolatedAsyncioTestCase):
@@ -298,6 +368,36 @@ class DomainEnvironmentTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(openai_web.fidelity_gaps)
         anthropic_cua = load_profile("cua", "anthropic")
         self.assertEqual(anthropic_cua.history["images_to_keep"], 7)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            swe = root / "swe.yaml"
+            swe.write_text(
+                "application: swe\ntools: [bash]\n"
+                "observation: {truncation: tail_only}\n"
+                "benchmark: {name: swe_bench}\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "truncation must be head_tail"):
+                load_profile("swe", swe)
+
+            web = root / "web.yaml"
+            web.write_text(
+                "application: web\ntools: [search]\n"
+                "history: {mode: provider_continuation}\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "only linear history"):
+                load_profile("web", web)
+
+            cua = root / "cua.yaml"
+            cua.write_text(
+                "application: cua\ntools: [computer]\n"
+                "benchmark: {name: typo-benchmark, template: made-up}\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "benchmark name"):
+                load_profile("cua", cua)
 
 
 class _FakeComputerClient:

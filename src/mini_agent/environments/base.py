@@ -1,21 +1,24 @@
 from __future__ import annotations
 
+import uuid
 from typing import Protocol, Sequence
 
-from scaffoldlab.environments.base import ToolExecution
-
-from ..types import ToolCall, ToolDefinition
+from ..types import ToolCall, ToolDefinition, ToolExecution
 
 
 class Environment(Protocol):
-    """The entire domain boundary used by :class:`MiniAgent`."""
+    """The complete domain boundary used by :class:`MiniAgent`."""
 
     def tools(self) -> Sequence[ToolDefinition]: ...
 
     async def execute(self, action: ToolCall) -> ToolExecution: ...
 
+    def resource_identity(self) -> str: ...
+
 
 class BaseEnvironment:
+    """Optional lifecycle hooks shared by the small built-in environments."""
+
     async def initial_observation(self) -> ToolExecution | None:
         return None
 
@@ -25,19 +28,14 @@ class BaseEnvironment:
     async def close(self) -> None:
         return None
 
+    def resource_identity(self) -> str:
+        """Return this wrapper's explicit resource identity for isolation checks."""
 
-class EnvironmentAdapter(BaseEnvironment):
-    """Expose a legacy Scaffold Lab environment through the minimal contract."""
+        identity = getattr(self, "_mini_agent_resource_identity", None)
+        if identity is None:
+            identity = f"{type(self).__module__}.{type(self).__qualname__}:{uuid.uuid4()}"
+            setattr(self, "_mini_agent_resource_identity", identity)
+        return identity
 
-    def __init__(self, environment: object, *, provider_family: str = "generic") -> None:
-        self.environment = environment
-        self.provider_family = provider_family
 
-    def tools(self) -> Sequence[ToolDefinition]:
-        return self.environment.tools(self.provider_family)  # type: ignore[attr-defined,no-any-return]
-
-    async def execute(self, action: ToolCall) -> ToolExecution:
-        return await self.environment.execute(action)  # type: ignore[attr-defined,no-any-return]
-
-    async def close(self) -> None:
-        await self.environment.close()  # type: ignore[attr-defined]
+__all__ = ["BaseEnvironment", "Environment", "ToolExecution"]

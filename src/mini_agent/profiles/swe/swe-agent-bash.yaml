@@ -22,4 +22,5 @@ source:
   revision: 3ea751c087f32b16e039a2233dd6eefecef325d5
   implementation: config/bash_only.yaml
 fidelity_gaps:
-  - This is the bash-only wrapper profile, not the complete SWE-agent runtime.
+  - This is a provider-tool-call bash profile, not the complete SWE-agent runtime.
+  - It does not reproduce SWE-agent's exact prompt parser, submit command, or trajectory lifecycle.

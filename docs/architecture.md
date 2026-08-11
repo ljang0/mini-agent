@@ -14,7 +14,7 @@ The loop lives entirely in `src/mini_agent/agent.py`. Provider parsing, benchmar
 
 ## Accounting boundary
 
-`RunContext` wraps model and tool operations with the existing concurrency-safe `BudgetLedger` and `TraceRecorder`. One context can be shared by a single agent or an entire orchestrated group. It accounts for:
+`RunContext` wraps model and tool operations with mini-agent's concurrency-safe `BudgetLedger` and `TraceRecorder`. One context can be shared by a single agent or an entire orchestrated group. It accounts for:
 
 - Model calls, tokens, known cost, concurrency, and wall time.
 - Tool calls and tool-output bytes.
@@ -40,7 +40,7 @@ Fidelity labels distinguish minimal baselines, source-informed wrapper profiles,
 
 ## Catalog and reference boundary
 
-`catalog.py` is an immutable mini-agent view of the complete prior audit. It maps
+`catalog.py` is an immutable mini-agent copy of the complete prior audit. It maps
 only application names (`browser` to `web`, `computer-use` to `cua`) and preserves
 all 55 IDs, statuses, fidelity claims, source pins, exact components, and known
 gaps. Its execution modes are deliberately narrow:
@@ -49,17 +49,17 @@ gaps. Its execution modes are deliberately narrow:
 - `study`: one of 28 controlled reconstructions, simulations, or baselines.
 - `unavailable`: one of nine source-backed gaps.
 
-`references.py` delegates exact references to the preserved evaluator without a
-shell and without translating their prompts, tools, continuation state, or
-lifecycle. Provider, implementation, and config identity are checked before the
-delegation. This path still uses the existing shared budget ledger and trace
-recorder.
+`references.py` lists and authorizes exact references without importing their
+loops. Execution crosses the lazy `references_runtime` boundary. A source checkout
+may load `research/scaffoldlab` only when an explicit reference command runs. A
+clean wheel contains neither that archive nor the `scaffoldlab` package, so the
+preserved evaluator must be installed or exposed separately, along with the
+selected reference's pinned checkout or distribution when applicable and its
+other prerequisites.
 
-The same module exposes studies through a distinct `StudyRuntime`. It uses the
-preserved evaluator but cannot serialize as a reference, and exact references
-cannot serialize as studies. Both paths bind the UTF-8 configuration bytes by
-SHA-256 and recheck the expected catalog key inside the evaluator before any
-backend is constructed.
+Archived studies retain distinct non-exact labels and are research data, not a
+second installed execution framework. They can be recreated later as profiles and
+orchestrator experiment configurations.
 
 Reference runtimes are not `MiniAgent` workers. An upstream runtime that owns its
 loop cannot be embedded in `MiniAgent.run` or spawned by its orchestrator without
@@ -70,6 +70,8 @@ references.
 
 `Orchestrator` wraps each base environment with four communication tools and starts the same `MiniAgent` class for every participant. It maintains agent IDs, inboxes, task status, a maximum-agent bound, shared accounting, cancellation, and root-only submission.
 
-Each agent receives a separate environment instance from the caller's factory. Sharing is therefore explicit: immutable retrieval data can be shared safely, while SWE workspaces and CUA machines default to isolation.
+Each agent receives a wrapper with an explicit resource identity. Immutable web
+retrieval data may be shared behind separate wrappers. SWE resources must differ.
+Only the root CUA wrapper receives desktop tools; child agents communicate.
 
 The wrapper does not define planners, roles, teams, DAGs, debate rounds, or topology-specific agent classes. Those are experiment policies expressed through tasks, prompts, and communication unless evidence justifies another primitive.

@@ -1,0 +1,26 @@
+application: swe
+model: ""
+provider: ""
+system_prompt: swebench.md
+tools: [bash]
+limits:
+  max_steps: 250
+  max_model_calls: 250
+  max_tool_calls: 1000
+  max_tool_output_bytes: 16777216
+  wall_time_seconds: 7200
+generation: {}
+observation:
+  truncation: head_tail
+history:
+  mode: linear
+response_parser: provider_tool_calls
+benchmark:
+  name: swe_bench
+fidelity: profile
+source:
+  repository: https://github.com/SWE-agent/mini-swe-agent
+  revision: a83fcae82d2a08f0ee0c688f9d137b3566c097f8
+  implementation: src/minisweagent/config/benchmarks/swebench.yaml
+fidelity_gaps:
+  - Reuses the provider-native bash action shape but not mini-swe-agent's exact prompts, format-error retries, submission sentinel, or trajectory lifecycle.

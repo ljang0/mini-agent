@@ -1,0 +1,27 @@
+application: swe
+model: ""
+provider: ""
+system_prompt: mini-swe-backticks.md
+tools: [bash]
+limits:
+  max_steps: 250
+  max_model_calls: 250
+  max_tool_calls: 1000
+  max_tool_output_bytes: 16777216
+  wall_time_seconds: 7200
+observation:
+  truncation: head_tail
+history:
+  mode: linear
+response_parser: mini_swe_text
+benchmark:
+  name: swe_bench
+fidelity: profile
+source:
+  repository: https://github.com/SWE-agent/mini-swe-agent
+  revision: a83fcae82d2a08f0ee0c688f9d137b3566c097f8
+  implementation: src/minisweagent/config/mini_textbased.yaml
+fidelity_gaps:
+  - Reproduces the named-backtick action regex through MiniAgent, but uses a compact prompt and automatic patch capture.
+  - Does not reproduce upstream format-error retries, Jinja observation templates, or exact trajectory timing.
+  - The exact completion-sentinel action is translated into MiniAgent's ordinary final-answer transition.

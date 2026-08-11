@@ -1,4 +1,4 @@
-"""Thin access to preserved runtimes retained in :mod:`scaffoldlab`.
+"""Thin access to preserved Scaffold Lab runtimes behind an optional boundary.
 
 References and studies are deliberately not translated into ``MiniAgent`` loops.
 They run the preserved evaluator in-process so its catalog checks, provider
@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar, Mapping, Sequence
 
-from scaffoldlab.applications import (
+from .research_catalog import (
     ImplementationProfile,
     resolve_application_config,
 )
@@ -290,11 +290,10 @@ def _safe_arguments(arguments: Sequence[str]) -> tuple[str, ...]:
 
 
 def _legacy_main(arguments: Sequence[str]) -> int:
-    # Import lazily: listing reference manifests does not need the provider/runtime
-    # dependency graph, and tests can prove delegation without starting a process.
-    from scaffoldlab.cli import main
+    # Listing manifests never imports the archived harness dependency graph.
+    from .references_runtime import preserved_scaffold_main
 
-    return main(tuple(arguments))
+    return preserved_scaffold_main(tuple(arguments))
 
 
 __all__ = [

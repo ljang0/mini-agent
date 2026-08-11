@@ -1,210 +1,216 @@
 # mini-agent
 
-One small agent loop for controlled SWE, web, CUA, and multi-agent experiments.
-
-The core idea is intentionally narrow: give a model a task and a small legal toolset, keep a linear history, and otherwise get out of the model's way. The same [`MiniAgent`](src/mini_agent/agent.py) runs every application. Applications are environments, model-specific behavior is a profile, and multi-agent execution adds only bounded tasks and communication tools.
+One small agent loop for SWE, offline web research, computer use, and bounded
+multi-agent experiments.
 
 ```python
-from mini_agent import MiniAgent, RunContext
+from mini_agent import MiniAgent
 
 agent = MiniAgent(
     model=model,
     environment=environment,
     system_prompt=system_prompt,
     max_steps=64,
-    context=RunContext(),
+    context=context,
 )
 result = await agent.run(task)
 ```
 
-`agent.py` is the complete inference loop and is kept near 100 lines. It has no planner, memory framework, topology registry, domain branches, or dynamic privileged-tool registration.
+The complete domain-neutral loop is [108 readable lines](https://github.com/ljang0/mini-agent/blob/main/src/mini_agent/agent.py).
+It maintains a linear history, asks the model for actions, executes only declared
+environment tools, records budget/trace events, and stops. Provider codecs,
+parsers, environments, datasets, graders, and orchestration remain outside it.
 
-## Applications
+## What works
 
-| Application | Minimal tools | Default reproducible boundary |
+| Domain | Agent tools | Reproducible evaluation boundary |
 |---|---|---|
-| SWE | `bash(command)` | Isolated workspace copy; one stateless shell per action |
-| Web | `search(query)` | BrowseComp-Plus fixed local corpus and BM25 index |
-| CUA | `computer(actions)` | cua-speed-run `observe/step/done` contract |
+| SWE | `bash(command)` | private local copy or persistent SWE-bench Docker container; binary patch captured before cleanup; official 4.1.0 prediction/grader contract |
+| Web | `search(query)` | BrowseComp-Plus fixed corpus, canonical top-5 Lucene BM25, 512-token snippets, per-query official records and pinned evaluator argv |
+| CUA | `computer(...)` | cua-speed-run agent plane and exact two-file export; OSWorld reset/step/record/evaluate bridge with the verifier kept outside the agent |
+| Multi-agent | four communication tools | ordinary `MiniAgent` instances, bounded async lifecycle, shared and per-agent budgets, stable resource identities, root-only result |
 
-SWE follows the simplicity of [mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent/tree/a83fcae82d2a08f0ee0c688f9d137b3566c097f8) and keeps full [SWE-agent](https://github.com/SWE-agent/SWE-agent/tree/3ea751c087f32b16e039a2233dd6eefecef325d5) as a reference boundary. Web uses [BrowseComp-Plus](https://github.com/texttron/BrowseComp-Plus/tree/046949032b0328319cc9a02663a759ec601d9402). CUA first targets [cua-speed-run](https://github.com/Pranjal2041/cua-speed-run/tree/7230223cbc57df68331cad32889adf01f3601651) and includes an evaluator-free bridge for [OSWorld](https://github.com/xlang-ai/OSWorld/tree/091f5ef1d5544bc74953c77875d5feb5bed30108).
+The web profiles implement all eight published BrowseComp client families through
+the same wrapper: OpenAI, Anthropic, Gemini, GLM/Z.ai, GPT-OSS, Qwen, Search-R1,
+and Tongyi. SWE includes mini-swe tool-call, text, named-backtick, and XML action
+profiles plus a minimal SWE-agent bash profile. CUA maps all 18 cua-speed-run
+templates: 13 MiniAgent profiles, two external nested-agent references, and three
+fixtures.
 
-## Install and run
+Profiles are source-informed implementations, not claims that a normalized
+wrapper reproduces a proprietary runtime or training method. Every profile has a
+fidelity label and explicit gaps. Exact upstream loops remain external references.
+
+## Install
 
 ```bash
+python3 -m pip install mini-agent
+# or, from a source checkout
 python3 -m pip install -e .
+# optional benchmark dependencies
+python3 -m pip install -e '.[web,swebench,cua]'
 ```
 
-Inspect the exact resolved profile before a run:
-
-```bash
-mini-agent profile --application web --profile default --model openai/gpt-5.4
-```
-
-Run SWE against an isolated copy of a repository:
-
-```bash
-mini-agent run \
-  --application swe \
-  --model openai/gpt-5.4 \
-  --profile default \
-  --workspace /path/to/repository \
-  --task "Fix the failing test and verify the change" \
-  --output runs/swe-example
-```
-
-Run web against either the canonical BrowseComp-Plus Lucene index or a small deterministic JSONL corpus:
-
-```bash
-mini-agent run \
-  --application web \
-  --model anthropic/claude-sonnet-4-6 \
-  --profile anthropic \
-  --index-path /path/to/browsecomp-plus-index \
-  --task "Research the question and cite document IDs"
-```
-
-JSONL fixture documents use `{"docid": "...", "text": "..."}`. The pure-Python backend is for deterministic tests and small corpora; official BrowseComp-Plus measurements use its pinned Lucene index and Pyserini.
-
-Run CUA through a cua-speed-run gateway:
-
-```bash
-mini-agent run \
-  --application cua \
-  --model openai/gpt-5.4 \
-  --profile openai-gpt54 \
-  --env-url http://127.0.0.1:8000 \
-  --task "Complete the visible desktop task"
-```
-
-The CUA agent can access only its model and `observe`, `step`, and `done`. It cannot reset, snapshot, open a shell, or invoke the hidden verifier.
-
-## Profiles and fidelity
-
-Profiles live under [`src/mini_agent/profiles`](src/mini_agent/profiles). A resolved manifest records the complete system prompt, tool list, limits, provider settings, benchmark, source revision, and fidelity gaps.
-
-- **Baseline:** a model running in the minimal wrapper.
-- **Profile:** the wrapper configured from published prompt/tool/API details.
-- **Reference:** a pinned upstream or hosted runtime executed outside the wrapper.
-
-A profile is not automatically a reproduction of a proprietary product, trained search policy, or full upstream agent. Known differences stay machine-readable in `fidelity_gaps`.
-
-## Frontier implementations
-
-The complete audited catalog is available through `mini-agent`: 55 entries across
-18 frontier labs, split into 18 exact runnable references, 28 controlled studies,
-and 9 documented gaps. The migration changes only the application names
-`browser -> web` and `computer-use -> cua`; IDs, source pins, fidelity labels,
-limitations, and runtime ownership remain unchanged.
-
-```bash
-# All migrated entries, or one fidelity partition.
-mini-agent catalog --json
-mini-agent catalog --application web --kind implementation
-mini-agent applications --json
-mini-agent harnesses
-
-# The complete 18-lab x 3-application coverage matrix.
-mini-agent frontiers --json
-
-# Inspect one exact reference, study, or gap.
-mini-agent implementation \
-  --application swe --name openai-codex-source-0.147.0
-```
-
-Exact references keep their original hosted protocol or pinned upstream runtime.
-They are not forced through `MiniAgent`, because replacing an upstream-owned loop
-would stop being a 1:1 run. Validate and execute them through the preserved
-evaluation boundary:
-
-```bash
-mini-agent validate-reference \
-  --application swe \
-  --implementation openai-codex-source-0.147.0 \
-  --tasks /path/to/tasks.jsonl \
-  --config /path/to/reference-config.json \
-  --provider codex-source
-
-mini-agent eval-reference \
-  --application swe \
-  --implementation openai-codex-source-0.147.0 \
-  --tasks /path/to/tasks.jsonl \
-  --config /path/to/reference-config.json \
-  --provider codex-source \
-  --output runs/codex-reference \
-  -- --codex-source-checkout /path/to/pinned/codex
-```
-
-Runtime-specific arguments follow `--` and are passed as literal argument tokens,
-never shell text. The selected config, implementation, provider, tasks, and output
-are checked before delegation and cannot be overridden. External dependencies,
-credentials, benchmark data, VMs, and pinned checkouts are still supplied by the
-caller. See the [frontier migration matrix](docs/frontier-migration.md).
-
-The 28 controlled studies use a separate command and retain their original
-non-exact fidelity labels:
-
-```bash
-mini-agent validate-study \
-  --application swe \
-  --study single-agent-control \
-  --tasks /path/to/tasks.jsonl \
-  --config /path/to/study-config.json \
-  --provider openai-responses
-
-mini-agent eval-study \
-  --application swe \
-  --study single-agent-control \
-  --tasks /path/to/tasks.jsonl \
-  --config /path/to/study-config.json \
-  --provider openai-responses \
-  --output runs/single-agent-study \
-  -- --model MODEL
-```
-
-All 46 runnable catalog rows are therefore reachable through `mini-agent`; the
-nine documented gaps fail closed. Delegated configurations are bound by SHA-256
-and expected catalog key between wrapper authorization and evaluator loading.
-
-## Multi-agent is communication
-
-[`Orchestrator`](src/mini_agent/orchestrator.py) creates ordinary `MiniAgent` instances with separate environments and one shared budget/trace context. It adds four tools:
+The public CLI is intentionally small:
 
 ```text
-spawn_agent(task, profile=None) -> agent_id
-send_message(agent_id, message) -> acknowledgement
-read_messages() -> messages
-wait(agent_ids=None) -> statuses
+mini-agent run
+mini-agent eval
+mini-agent grade
+mini-agent doctor
+mini-agent export
+mini-agent profile
+mini-agent catalog
+mini-agent reference list|validate|run
 ```
 
-Any known agent may message another. The wrapper owns only IDs, inboxes, async lifecycle, bounded spawning, cancellation, and root submission. Child results are delivered to their parent as messages; only `/root` produces the run result.
+Inspect a fully resolved prompt and policy:
 
-Each agent receives a separate environment instance from the caller's factory. Reusing an environment is rejected unless `allow_shared_environment=True` is explicitly selected. Immutable retrieval backends can still be shared behind separate lightweight environment objects, while SWE workspaces and CUA sessions default to isolation.
+```bash
+mini-agent profile --application web --profile openai --model gpt-5.4
+```
 
-## Reproducibility and tests
+Run one local task:
 
-Every model and tool call uses the shared budget ledger and trace recorder. `run.json` contains the resolved manifest and aggregate usage; `trace.jsonl` contains the event trace when `--output` is supplied.
+```bash
+mini-agent run --application swe --model openai/gpt-5.4 \
+  --profile mini-swe-tool-call --workspace /path/to/repo \
+  --task 'Fix the failing tests' --output runs/local-swe
+
+mini-agent run --application web --model openai/gpt-5.4 \
+  --profile default --corpus tests/fixtures/browsecomp_plus/corpus.jsonl \
+  --task 'Find the answer and cite document IDs'
+
+mini-agent run --application cua --model openai/gpt-5.4 \
+  --profile gpt54 --env-url http://127.0.0.1:8000 \
+  --task 'Complete the visible desktop task'
+```
+
+Add `--mode multi --max-agents 4` to a one-task run to add only
+`spawn_agent`, `send_message`, `read_messages`, and `wait`. Web agents receive
+separate wrappers over immutable retrieval data; SWE agents receive separate
+copies; only the root CUA agent controls the desktop.
+
+## Evaluations
+
+`eval` performs generation and writes durable, resumable artifacts:
+
+```text
+run/
+  manifest.json
+  instances/<task-id>/result.json
+  instances/<task-id>/trace.jsonl
+  artifacts/
+  official/
+  summary.json
+```
+
+SWE example:
+
+```bash
+mini-agent eval --application swe --model openai/gpt-5.4 \
+  --profile swebench --tasks /data/swebench.jsonl --output runs/swe \
+  --max-workers 2
+mini-agent grade --application swe --predictions runs/swe/predictions.jsonl \
+  --dataset-name princeton-nlp/SWE-bench_Verified --run-id mini-agent-smoke
+```
+
+BrowseComp-Plus uses `--index-path` plus a resolved local `--tokenizer-path` for
+canonical runs. `--corpus` is a deterministic fixture backend only. The official
+grader requires both the pinned source checkout and a local judge-model snapshot:
+
+```bash
+mini-agent eval --application web --model openai/gpt-5.4 \
+  --profile openai --tasks /data/browsecomp/queries.tsv \
+  --index-path /data/browsecomp/lucene-index \
+  --tokenizer-path /models/qwen-tokenizer --output runs/web
+mini-agent grade --application web --checkout /src/BrowseComp-Plus \
+  --input-dir runs/web/official --ground-truth /data/ground_truth.json \
+  --eval-dir runs/web/grades --judge-model /models/Qwen2.5-72B-Instruct
+```
+
+Add `--mode multi --max-agents 4 --child-profile PROFILE` to SWE or web
+generation to run the same batch contract with communication-enabled MiniAgents.
+Child profiles are explicitly allowlisted and each task still produces one
+root-owned official record.
+
+CUA `eval` delegates provisioning, clock, seeds, hidden verification, and scoring
+to the pinned cua-speed-run checkout. Export the desired single- or multi-agent
+submission first. The mini-agent wheel is embedded and hash-checked so the
+submission itself remains exactly two files. `init.py` installs the runtime and
+its complete dependency wheel set from the embedded, hash-checked wheelhouse; it
+does not use a package index or depend on preinstalled Python packages.
+
+```bash
+python3 -m build
+python3 -m pip download --only-binary=:all: \
+  --requirement requirements/cua-export.lock --dest dist/cua-wheelhouse
+dependency_args=()
+for dependency in dist/cua-wheelhouse/*.whl; do
+  dependency_args+=(--dependency-wheel "$dependency")
+done
+mini-agent export --target cua-speed-run --profile gpt54 \
+  --model gpt-5.4 --provider openai-responses \
+  --wheel dist/mini_agent-0.3.0-py3-none-any.whl \
+  "${dependency_args[@]}" \
+  --mode multi --max-agents 4 --child-profile gpt54 \
+  --output submissions/gpt54-multi
+mini-agent eval --application cua --checkout /src/cua-speed-run \
+  --cua-executable /src/cua-speed-run/.venv/bin/cua-speed-run \
+  --submission submissions/gpt54-multi --benchmark /data/osworld-mini \
+  --output runs/cua
+```
+
+Repeat `--dependency-wheel` for every file downloaded for the target Python and
+platform (including conditional lock entries). Export verifies the closed wheel
+set with offline pip resolution, embeds every artifact and digest in `init.py`,
+and bootstrap uses `--no-index`. The CUA runner console script and its Python
+interpreter must resolve inside the verified pinned checkout; execution imports
+the pinned checkout source directly. Codex CLI and Claude Code keep their own
+nested loops and therefore remain references, not MiniAgent profiles.
+
+Before real runs, use `mini-agent doctor --application ...`. Missing credentials,
+data, Docker/VM, Java, tokenizer snapshots, or hardware produce a machine-readable
+`blocked` result; a skipped or blocked smoke is never presented as passing.
+
+## Reproducibility and research boundaries
+
+Every model and tool call uses `RunContext`'s shared ledger and trace. Batch
+records are atomic, resume manifests are fingerprinted, and official evaluator
+inputs are kept separate from internal traces. Benchmark answers, qrels, graders,
+verifiers, and training procedures never enter the agent core.
+
+The former Scaffold Lab tree and its 28 topology studies are archived under
+[research/scaffoldlab](https://github.com/ljang0/mini-agent/tree/main/research/scaffoldlab) and preserved by tag
+`scaffoldlab-v0.2-handoff`. It is not installed. The read-only catalog still
+exposes 55 audited rows across 18 labs without promoting studies or gaps to exact
+implementations:
+
+```bash
+mini-agent catalog --json
+mini-agent catalog --frontiers --json
+mini-agent reference list --application swe
+```
+
+Catalog and reference listing work from the normal `mini-agent` installation.
+Explicit `reference validate` and `reference run` commands additionally require
+the preserved Scaffold Lab evaluator from the tagged/source archive (or an
+equivalent separate installation), plus the selected reference's pinned
+checkout or distribution, credentials, and environment where applicable. The
+archive and its loops are not bundled into the `mini-agent` wheel.
+
+## Verification
 
 ```bash
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 PYTHONPATH=src python3 -m compileall -q src tests
-python3 -m ruff check src tests
-python3 -m mypy src/mini_agent
+ruff check src tests
+mypy src/mini_agent
+python3 -m build
+twine check dist/*
 ```
 
-Deterministic tests cover history ordering, invalid actions, budgets, cancellation,
-workspace isolation, retrieval, CUA translation, hidden-verifier separation,
-spawning, messaging, waiting, failure, root-only submission, all 55 catalog
-mappings, all 54 frontier coverage cells, and reference CLI reachability in SWE,
-web, and CUA. Every exact reference and every study also passes offline config,
-provider, harness, environment, and CLI resolution. Smoke tests validate plumbing;
-they are not evidence that an agent
-is a release winner.
-
-## Repository transition
-
-The former Scaffold Lab v0.2 state is preserved by the
-`scaffoldlab-v0.2-handoff` tag. Its package remains an internal compatibility
-implementation for exact reference execution, but `mini_agent` and `mini-agent`
-are the authoritative public interfaces. See [`HANDOFF.md`](HANDOFF.md) and the
-[`documentation index`](docs/README.md).
+See [architecture](https://github.com/ljang0/mini-agent/blob/main/docs/architecture.md),
+[handoff](https://github.com/ljang0/mini-agent/blob/main/HANDOFF.md),
+[contributing](https://github.com/ljang0/mini-agent/blob/main/CONTRIBUTING.md), and
+[security](https://github.com/ljang0/mini-agent/blob/main/SECURITY.md).

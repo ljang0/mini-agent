@@ -7,18 +7,23 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Mapping, Sequence
 
-from scaffoldlab.environments.base import ToolExecution
-
 from .agent import MiniAgent
 from .environments.base import BaseEnvironment
 from .runtime import RunContext
-from .types import AgentResult, ProtocolError, ToolCall, ToolDefinition
+from .types import (
+    AgentResult,
+    BudgetLimits,
+    ProtocolError,
+    ToolCall,
+    ToolDefinition,
+    ToolExecution,
+)
 
 
 AgentBuilder = Callable[
     [str, Any, RunContext, str | None], MiniAgent | Awaitable[MiniAgent]
 ]
-EnvironmentFactory = Callable[[str], Any | Awaitable[Any]]
+EnvironmentFactory = Callable[[str, str | None], Any | Awaitable[Any]]
 
 
 @dataclass(frozen=True)
@@ -169,6 +174,22 @@ class CommunicationEnvironment(BaseEnvironment):
             await self.base.close()
 
 
+class AdvisoryEnvironment(BaseEnvironment):
+    """Environment for agents that may communicate but cannot act on a resource."""
+
+    def __init__(self, resource: str = "advisory") -> None:
+        self._resource = resource
+
+    def tools(self) -> Sequence[ToolDefinition]:
+        return ()
+
+    async def execute(self, action: ToolCall) -> ToolExecution:
+        raise ProtocolError(f"advisory agent cannot execute {action.name!r}")
+
+    def resource_identity(self) -> str:
+        return self._resource
+
+
 class Orchestrator:
     """Bounded async tasks and mailboxes around otherwise ordinary MiniAgents."""
 
@@ -180,6 +201,8 @@ class Orchestrator:
         context: RunContext,
         max_agents: int = 4,
         allow_shared_environment: bool = False,
+        allowed_child_profiles: Sequence[str] = (),
+        per_agent_limits: BudgetLimits | None = None,
     ) -> None:
         if not isinstance(max_agents, int) or isinstance(max_agents, bool) or max_agents < 1:
             raise ValueError("max_agents must be a positive integer")
@@ -190,8 +213,12 @@ class Orchestrator:
         if not isinstance(allow_shared_environment, bool):
             raise ValueError("allow_shared_environment must be a boolean")
         self.allow_shared_environment = allow_shared_environment
+        if not all(isinstance(value, str) and value for value in allowed_child_profiles):
+            raise ValueError("allowed_child_profiles must contain non-empty strings")
+        self.allowed_child_profiles = frozenset(allowed_child_profiles)
+        self.per_agent_limits = per_agent_limits
         self._records: dict[str, AgentRecord] = {}
-        self._environment_ids: set[int] = set()
+        self._environment_ids: set[str] = set()
         self._child_counts: dict[str, int] = {}
         self._message_sequence = 0
         self._lock = asyncio.Lock()
@@ -230,6 +257,8 @@ class Orchestrator:
                 raise ProtocolError(f"unknown parent agent {parent_id!r}")
             if len(self._records) >= self.max_agents:
                 raise ProtocolError(f"maximum agent count reached ({self.max_agents})")
+            if profile is not None and profile not in self.allowed_child_profiles:
+                raise ProtocolError(f"child profile {profile!r} is not allowlisted")
             child_number = self._child_counts.get(parent_id, 0) + 1
             self._child_counts[parent_id] = child_number
             agent_id = f"{parent_id}/{child_number}"
@@ -265,33 +294,50 @@ class Orchestrator:
         task: str,
         profile: str | None,
     ) -> AgentRecord:
-        raw_base = self.environment_factory(agent_id)
+        raw_base = self.environment_factory(agent_id, profile)
         base: Any = await raw_base if inspect.isawaitable(raw_base) else raw_base
-        if id(base) in self._environment_ids and not self.allow_shared_environment:
-            raise ValueError(
-                "environment_factory reused an environment; pass "
-                "allow_shared_environment=True only for an explicit shared experiment"
-            )
-        self._environment_ids.add(id(base))
         try:
-            environment = CommunicationEnvironment(base, self, agent_id)
+            resource_identity = base.resource_identity()
         except BaseException:
             await base.close()
             raise
+        if not isinstance(resource_identity, str) or not resource_identity:
+            await base.close()
+            raise ValueError("environment resource_identity must be a non-empty string")
+        if (
+            resource_identity in self._environment_ids
+            and not self.allow_shared_environment
+        ):
+            await base.close()
+            raise ValueError(
+                "environment_factory reused a resource identity; pass "
+                "allow_shared_environment=True only for an explicit shared experiment"
+            )
+        self._environment_ids.add(resource_identity)
+        environment: CommunicationEnvironment | None = None
         try:
+            environment = CommunicationEnvironment(base, self, agent_id)
             built = self.agent_builder(agent_id, environment, self.context, profile)
             agent = await built if inspect.isawaitable(built) else built
         except BaseException:
-            await environment.close()
+            self._environment_ids.discard(resource_identity)
+            try:
+                await (environment.close() if environment is not None else base.close())
+            except BaseException:
+                pass
             raise
         if not isinstance(agent, MiniAgent):
+            self._environment_ids.discard(resource_identity)
             await environment.close()
             raise TypeError("agent_builder must return MiniAgent")
         if agent.agent_id != agent_id or agent.context is not self.context:
+            self._environment_ids.discard(resource_identity)
             await environment.close()
             raise ValueError(
                 "agent_builder must use the supplied agent_id and shared context"
             )
+        if self.per_agent_limits is not None:
+            self.context.configure_agent(agent_id, self.per_agent_limits)
         record = AgentRecord(
             agent_id=agent_id,
             parent_id=parent_id,
@@ -469,6 +515,7 @@ class Orchestrator:
 
 
 __all__ = [
+    "AdvisoryEnvironment",
     "AgentBuilder",
     "AgentRecord",
     "CommunicationEnvironment",

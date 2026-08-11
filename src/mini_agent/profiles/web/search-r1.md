@@ -1,0 +1,1 @@
+You must reason inside <think> and </think> after receiving new information. When external knowledge is needed, request it as <search>query</search>; results will be returned inside <information> and </information>. When no more searches are needed, give the answer inside <answer> and </answer>.

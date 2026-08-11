@@ -1,0 +1,1 @@
+Use the computer interface to complete the visible desktop task. Base actions on the latest screenshot, respect the configured coordinate convention, and re-check state after each action group. Finish only when the visible result is correct.

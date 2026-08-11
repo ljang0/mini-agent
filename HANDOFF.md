@@ -1,63 +1,43 @@
 # mini-agent handoff
 
-## Current direction
+Version 0.3.0 is a breaking rebuild. `mini_agent` is self-contained and is the
+only installed package and CLI. The pre-0.3 Scaffold Lab implementation is
+preserved at tag `scaffoldlab-v0.2-handoff` and archived under
+`research/scaffoldlab`; normal imports and wheels do not load it.
 
-The repository is now centered on one domain-neutral agent loop for SWE, web, and CUA. The previous Scaffold Lab v0.2 handoff is preserved at tag `scaffoldlab-v0.2-handoff`; the `scaffoldlab` Python package remains as a compatibility layer for its existing adapters and regression suite.
+Implemented boundaries:
 
-New work should use:
+- `agent.py`: one 108-line domain-neutral inference loop.
+- `runtime.py`: shared global/per-agent budgets, concurrency, cancellation, and
+  content-addressed traces.
+- SWE: safe local copies, private Git baseline/HOME, Docker SWE-bench instances,
+  binary patches before cleanup, batch resume, predictions, and official grader.
+- Web: inference-safe task loading, canonical BrowseComp-Plus retrieval policy,
+  accounting, all eight published client families, official records and grader.
+- CUA: validated PNG/actions/retries, coordinate translation/resizing, guaranteed
+  `/done`, exact submission export with an embedded hash-checked 0.3.0 wheel and
+  closed dependency-wheel set installed with `--no-index`, all 18 template
+  mappings, and OSWorld runner. The pinned external runner owns the clock and
+  verifier; its executable is required to live inside that checkout.
+- Multi-agent: ordinary MiniAgents plus four communication tools, explicit
+  allowlists, stable resource identities, shared/per-agent budgets, and root-only
+  submission.
+- References: read-only 18-lab catalog in the default package; exact old/upstream
+  loops cross a lazy optional external-runtime boundary. Source checkouts may
+  load the archived evaluator only when an explicit reference command runs;
+  clean wheels require that preserved evaluator and the selected pinned runtime
+  to be supplied separately.
 
-- Package: `mini_agent`
-- CLI: `mini-agent`
-- Core loop: [`src/mini_agent/agent.py`](src/mini_agent/agent.py)
-- Communication wrapper: [`src/mini_agent/orchestrator.py`](src/mini_agent/orchestrator.py)
-- Profiles: [`src/mini_agent/profiles`](src/mini_agent/profiles)
-- Migrated catalog: [`src/mini_agent/catalog.py`](src/mini_agent/catalog.py)
-- Exact references: [`src/mini_agent/references.py`](src/mini_agent/references.py)
+Release gates are the root `tests` suite, compile, Ruff, Mypy, sdist/wheel build,
+Twine metadata validation, clean-wheel installation, and CLI smokes. Real domain
+smokes are intentionally conditional on `mini-agent doctor`; they are internal QA
+and are not benchmark claims.
 
-## Implemented
+SWE and web batch generation accept `--mode multi` and keep the same official
+artifact schemas. For CUA, mode is embedded by `mini-agent export`; the upstream
+runner then executes that exact two-file submission. BrowseComp grading requires
+a resolved local judge-model snapshot rather than a mutable hosted model name.
 
-- A roughly 100-line `MiniAgent` loop with linear history and no domain logic.
-- Shared, concurrency-safe model/tool budgets and traces.
-- Existing OpenAI, Anthropic, and OpenAI-compatible provider codecs behind `BackendModel`.
-- First-turn image input plus screenshot tool-result continuation.
-- One-tool SWE environment with per-agent workspace copies and stateless bash actions.
-- BrowseComp-Plus Lucene adapter plus deterministic JSONL BM25 fixtures.
-- cua-speed-run `observe/step/done` client and an evaluator-free OSWorld environment bridge.
-- Resolved YAML profiles with prompts, tools, limits, generation/observation/history policy, source pins, fidelity labels, and gaps.
-- Minimal multi-agent orchestration through `spawn_agent`, `send_message`, `read_messages`, and `wait`.
-- Complete 1:1 catalog view: 55 profiles, 18 labs, and all 54 lab/application status cells.
-- Exact delegation for all 18 runnable references through the preserved evaluator.
-- Distinct preserved execution for all 28 non-exact studies; nine gaps fail closed.
-- `mini-agent` commands for catalog/frontier inspection and reference validation/evaluation.
-- SHA-bound config and catalog-key checks across delegated validation/evaluation.
-- Deterministic offline tests for all new control-flow and environment boundaries.
-
-## Fidelity boundaries
-
-- `baseline` means a model in the wrapper.
-- `profile` means published details were applied where the wrapper supports them; inspect `fidelity_gaps`.
-- `reference` is reserved for executing a pinned upstream or hosted runtime.
-- The 28 studies retain their original non-exact labels; the nine gaps remain unavailable.
-- Reference runtimes own their loops and cannot be `MiniAgent` workers without changing the measured implementation.
-- The BrowseComp-Plus JSONL backend is a deterministic test backend, not an official-score replacement for its Lucene index.
-- The OSWorld bridge never invokes the evaluator; the outer benchmark runner retains termination and grading ownership.
-- Training methods, benchmark datasets, graders, and verifiers remain separate from the inference harness.
-
-## Next research work
-
-1. Run single-agent pilots in the order SWE, BrowseComp-Plus, cua-speed-run.
-2. Add benchmark-owned task loaders and graders without importing them into `MiniAgent`.
-3. Add native model profiles only from pinned public sources and record unsupported behavior as gaps.
-4. Run multi-agent experiments only after the matching single-agent profile passes deterministic and benchmark-level validation.
-5. Compare communication policies without adding topology-specific agent classes unless results require them.
-
-## Verification
-
-```bash
-PYTHONPATH=src python3 -m unittest discover -s tests -v
-PYTHONPATH=src python3 -m compileall -q src tests
-python3 -m ruff check src tests
-python3 -m mypy src/mini_agent
-PYTHONPATH=src python3 -m mini_agent profile \
-  --application web --profile default --model openai/test-model
-```
+Future work should add new environments or profiles without copying the loop.
+Only add a new primitive when an experiment cannot be expressed as prompt,
+provider adapter, environment tool, or communication policy.

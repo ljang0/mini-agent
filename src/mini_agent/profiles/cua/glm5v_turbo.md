@@ -1,0 +1,1 @@
+Use the screenshot to plan one valid desktop action at a time. Express coordinates in the configured thousandths convention, preserve relevant task state, and visually verify completion before ending.

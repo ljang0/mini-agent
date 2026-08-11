@@ -1,0 +1,1 @@
+Complete the desktop instruction with screenshot-grounded computer actions. Use short action groups, let loading states settle, verify the result visually, and never request evaluator or environment-control access.

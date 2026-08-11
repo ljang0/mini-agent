@@ -1,7 +1,7 @@
 """A minimal agent loop for SWE, web, CUA, and communication experiments."""
 
 from .agent import MiniAgent
-from .models import BackendModel, Model, ScriptedModel
+from .models import BackendModel, Model, ScriptedBackend, ScriptedModel
 from .orchestrator import Orchestrator
 from .runtime import RunContext
 from .types import (
@@ -30,10 +30,11 @@ __all__ = [
     "ProtocolError",
     "RunContext",
     "ScriptedModel",
+    "ScriptedBackend",
     "ToolCall",
     "ToolDefinition",
     "ToolResult",
     "Usage",
 ]
 
-__version__ = "0.2.1"
+__version__ = "0.3.0"

@@ -12,13 +12,13 @@ from dataclasses import asdict, dataclass
 from types import MappingProxyType
 from typing import Any, Mapping
 
-from scaffoldlab.applications import (
+from .research_catalog import (
     FRONTIER_LABS as _LEGACY_FRONTIER_SOURCES,
     FRONTIER_MANIFEST_AS_OF,
     PROFILES as _LEGACY_PROFILES,
 )
-from scaffoldlab.applications.base import ImplementationProfile
-from scaffoldlab.applications.frontier_manifest import (
+from .research_catalog.base import ImplementationProfile
+from .research_catalog.frontier_manifest import (
     FrontierDistributionIdentity,
     FrontierLabRecord,
 )

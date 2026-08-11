@@ -44,16 +44,16 @@ The authoritative machine-readable view is:
 
 ```bash
 mini-agent catalog --json
-mini-agent frontiers --json
-mini-agent applications --json
-mini-agent harnesses
+mini-agent catalog --frontiers --json
+mini-agent reference list
 ```
 
-All 18 exact references and all 28 studies are validateable and runnable through
-the `mini-agent` CLI. They remain separate execution modes; a study never acquires
-an exactness claim by being runnable. The nine gaps have no execution command.
+All 18 exact references remain addressable through the optional external runtime
+boundary. The 28 old topology studies are archived research and do not become a
+second installed framework. The nine gaps have no execution command.
 
-Exact reference execution requires the same credentials, checked-out source or
-installed distribution, environment, and task/evaluator configuration as the
-preserved runtime. Missing public prompts, schedulers, compaction, timing, model
-snapshots, and managed-service policy remain explicit limitations.
+Exact reference execution requires the separately supplied preserved evaluator
+plus the same credentials, checked-out source or installed distribution,
+environment, and task/evaluator configuration as the selected runtime. Missing
+public prompts, schedulers, compaction, timing, model snapshots, and
+managed-service policy remain explicit limitations.

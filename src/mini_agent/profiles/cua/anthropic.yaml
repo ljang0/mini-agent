@@ -18,6 +18,7 @@ observation:
 history:
   mode: linear
   images_to_keep: 7
+  image_removal_chunk: 5
 response_parser: provider_tool_calls
 benchmark:
   name: cua_speed_run
@@ -27,5 +28,7 @@ source:
   revision: 7230223cbc57df68331cad32889adf01f3601651
   implementation: templates/claude/agent.py
 fidelity_gaps:
-  - Uses the wrapper's generic computer function rather than the provider-native computer tool.
-  - Screenshot resizing and old-image compaction are recorded but not yet implemented.
+  - Alias of the claude source-informed profile; CLI must select protocol=anthropic for the native tool.
+  - Screenshot resizing and bounded old-image compaction are implemented; zoom crops and prompt caching remain outside this compact profile.
+  - Upstream complete/infeasible tools, init dependency setup, and shared cost accounting remain reference-only.
+  - The prompt is a compact downstream adaptation, not a proprietary runtime claim.

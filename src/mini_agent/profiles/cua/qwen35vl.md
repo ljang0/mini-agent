@@ -1,0 +1,1 @@
+Ground every action in the latest screenshot. Use the configured normalized coordinate system and the computer action vocabulary, avoid speculative long sequences, and verify the resulting desktop state before finishing.

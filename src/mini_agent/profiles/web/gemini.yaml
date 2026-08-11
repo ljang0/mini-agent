@@ -1,0 +1,34 @@
+application: web
+model: gemini-2.5-flash
+provider: openai-compatible-chat
+system_prompt: ""
+tools: [search]
+limits:
+  max_steps: 100
+  max_model_calls: 100
+  max_output_tokens: 10000
+  max_tool_calls: 1000
+  max_tool_output_bytes: 8388608
+  wall_time_seconds: 900
+generation:
+  max_output_tokens: 10000
+observation:
+  snippet_tokens: 512
+history:
+  mode: linear
+response_parser: gemini_function_calls
+benchmark:
+  name: browsecomp_plus
+  retrieval: bm25
+  top_k: 5
+fidelity: profile
+source:
+  repository: https://github.com/texttron/BrowseComp-Plus
+  revision: 046949032b0328319cc9a02663a759ec601d9402
+  implementation: search_agent/gemini_client.py
+  task_template: search_agent/prompts.py:QUERY_TEMPLATE_NO_GET_DOCUMENT
+  snippet_tokenizer: Qwen/Qwen3-0.6B
+fidelity_gaps:
+  - This executable profile uses a caller-supplied compatible Chat endpoint and local MiniAgent search rather than Google GenAI automatic function calling over MCP.
+  - Upstream thought parts, maximum_remote_calls, SDK response persistence, and exact message timing are not reproduced.
+  - The upstream model, tokenizer, endpoint, and dependency artifacts require caller-controlled pins.

@@ -3,9 +3,7 @@ from __future__ import annotations
 from collections import deque
 from typing import Any, Mapping, Protocol, Sequence
 
-from scaffoldlab.types import ModelRequest
-
-from .types import Message, ModelResponse, ToolDefinition, ToolResult
+from .types import Message, ModelRequest, ModelResponse, ToolDefinition, ToolResult
 
 
 class Model(Protocol):
@@ -113,4 +111,26 @@ class ScriptedModel:
         return self.responses.popleft()
 
 
-__all__ = ["BackendModel", "Model", "ScriptedModel"]
+class ScriptedBackend:
+    """Deterministic backend adapter for CLI and evaluation integration tests."""
+
+    tool_family = "generic"
+
+    def __init__(self, responses: Mapping[str, Sequence[ModelResponse]]) -> None:
+        self._responses = {
+            agent_id: deque(values) for agent_id, values in responses.items()
+        }
+        self.requests: list[ModelRequest] = []
+
+    async def complete(self, request: ModelRequest) -> ModelResponse:
+        self.requests.append(request)
+        queue = self._responses.get(request.agent_id)
+        if not queue:
+            raise AssertionError(f"no scripted response for {request.agent_id}")
+        return queue.popleft()
+
+    def provenance(self) -> Mapping[str, Any]:
+        return {"provider": "scripted", "deterministic": True}
+
+
+__all__ = ["BackendModel", "Model", "ScriptedBackend", "ScriptedModel"]

@@ -1,0 +1,19 @@
+{
+  "external_reference": ["claude_code", "codex_cli"],
+  "fixture": ["android_scripted", "android_scripted_batched", "linux_scripted"],
+  "mini_agent_profile": [
+    "claude",
+    "gemini35",
+    "gemini3_flash_preview",
+    "glm5v_turbo",
+    "glm_cua",
+    "gpt54",
+    "kimi_k3",
+    "meta",
+    "minimax_m3",
+    "qwen35vl",
+    "qwen3vl",
+    "qwen_vl_remote",
+    "qwen_vllm"
+  ]
+}

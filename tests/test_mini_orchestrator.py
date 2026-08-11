@@ -4,8 +4,6 @@ import asyncio
 import unittest
 from typing import Any, Sequence
 
-from scaffoldlab.environments.base import ToolExecution
-
 from mini_agent import (
     BudgetExceeded,
     BudgetLimits,
@@ -18,6 +16,7 @@ from mini_agent import (
     ToolDefinition,
 )
 from mini_agent.environments.base import BaseEnvironment
+from mini_agent.types import ToolExecution
 
 
 class _IsolatedEnvironment(BaseEnvironment):
@@ -42,6 +41,65 @@ def _call(call_id: str, name: str, arguments: dict[str, Any]) -> ModelResponse:
 
 
 class MiniOrchestratorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stable_resource_identity_rejects_distinct_shared_wrappers(self) -> None:
+        class Shared(_IsolatedEnvironment):
+            def resource_identity(self) -> str:
+                return "swe-workspace:/same"
+
+        root = ScriptedModel([_call("spawn", "spawn_agent", {"task": "child"})])
+
+        def builder(
+            agent_id: str, env: Any, shared: RunContext, profile: str | None
+        ) -> MiniAgent:
+            del profile
+            return MiniAgent(
+                model=root,
+                environment=env,
+                context=shared,
+                agent_id=agent_id,
+            )
+
+        orchestrator = Orchestrator(
+            agent_builder=builder,
+            environment_factory=lambda agent_id, _profile: Shared(agent_id),
+            context=RunContext(BudgetLimits(max_model_calls=4, max_tool_calls=4)),
+            max_agents=2,
+        )
+        with self.assertRaisesRegex(ValueError, "resource identity"):
+            await orchestrator.run("lead")
+
+    async def test_child_profile_allowlist_is_enforced_as_an_observation(self) -> None:
+        root = ScriptedModel(
+            [
+                _call(
+                    "spawn",
+                    "spawn_agent",
+                    {"task": "child", "profile": "not-allowed"},
+                ),
+                ModelResponse(text="recovered"),
+            ]
+        )
+
+        def builder(
+            agent_id: str, env: Any, shared: RunContext, profile: str | None
+        ) -> MiniAgent:
+            return MiniAgent(
+                model=root,
+                environment=env,
+                context=shared,
+                agent_id=agent_id,
+            )
+
+        result = await Orchestrator(
+            agent_builder=builder,
+            environment_factory=lambda agent_id, _profile: _IsolatedEnvironment(agent_id),
+            context=RunContext(BudgetLimits(max_model_calls=4, max_tool_calls=4)),
+            max_agents=2,
+            allowed_child_profiles=("approved",),
+        ).run("lead")
+        self.assertEqual(result.answer, "recovered")
+        self.assertIn("not allowlisted", result.messages[-2].content)
+
     async def test_spawn_peer_message_wait_and_root_only_submission(self) -> None:
         environments: dict[str, _IsolatedEnvironment] = {}
         models = {
@@ -66,7 +124,9 @@ class MiniOrchestratorTests(unittest.IsolatedAsyncioTestCase):
         }
         context = RunContext(BudgetLimits(max_model_calls=8, max_tool_calls=8))
 
-        async def environment_factory(agent_id: str) -> _IsolatedEnvironment:
+        async def environment_factory(
+            agent_id: str, _profile: str | None
+        ) -> _IsolatedEnvironment:
             environment = _IsolatedEnvironment(agent_id)
             environments[agent_id] = environment
             return environment
@@ -127,7 +187,7 @@ class MiniOrchestratorTests(unittest.IsolatedAsyncioTestCase):
 
         orchestrator = Orchestrator(
             agent_builder=builder,
-            environment_factory=lambda agent_id: _IsolatedEnvironment(agent_id),
+            environment_factory=lambda agent_id, _profile: _IsolatedEnvironment(agent_id),
             context=context,
             max_agents=2,
         )
@@ -167,7 +227,7 @@ class MiniOrchestratorTests(unittest.IsolatedAsyncioTestCase):
 
         orchestrator = Orchestrator(
             agent_builder=builder,
-            environment_factory=lambda agent_id: _IsolatedEnvironment(agent_id),
+            environment_factory=lambda agent_id, _profile: _IsolatedEnvironment(agent_id),
             context=context,
             max_agents=2,
         )
@@ -200,13 +260,44 @@ class MiniOrchestratorTests(unittest.IsolatedAsyncioTestCase):
 
         orchestrator = Orchestrator(
             agent_builder=builder,
-            environment_factory=lambda agent_id: _IsolatedEnvironment(agent_id),
+            environment_factory=lambda agent_id, _profile: _IsolatedEnvironment(agent_id),
             context=context,
             max_agents=2,
         )
         with self.assertRaisesRegex(BudgetExceeded, "model-call budget"):
             await orchestrator.run("lead")
         self.assertEqual(context.ledger.calls, 1)
+
+    async def test_per_agent_budget_stops_root_before_global_budget(self) -> None:
+        root = ScriptedModel(
+            [
+                _call("identity", "identity", {}),
+                ModelResponse(text="never"),
+            ]
+        )
+        context = RunContext(BudgetLimits(max_model_calls=8, max_tool_calls=8))
+
+        def builder(
+            agent_id: str, env: Any, shared: RunContext, profile: str | None
+        ) -> MiniAgent:
+            del profile
+            return MiniAgent(
+                model=root,
+                environment=env,
+                context=shared,
+                agent_id=agent_id,
+            )
+
+        orchestrator = Orchestrator(
+            agent_builder=builder,
+            environment_factory=lambda agent_id, _profile: _IsolatedEnvironment(agent_id),
+            context=context,
+            per_agent_limits=BudgetLimits(max_model_calls=1, max_tool_calls=4),
+        )
+        with self.assertRaisesRegex(BudgetExceeded, "agent model-call budget"):
+            await orchestrator.run("lead")
+        self.assertEqual(context.ledger.calls, 1)
+        self.assertEqual(context.ledger.agent_snapshot("/root")["model_calls"], 1)
 
     async def test_root_completion_cancels_and_closes_unfinished_children(self) -> None:
         class BlockingModel:
@@ -226,7 +317,9 @@ class MiniOrchestratorTests(unittest.IsolatedAsyncioTestCase):
         environments: dict[str, _IsolatedEnvironment] = {}
         context = RunContext(BudgetLimits(max_model_calls=4, max_tool_calls=4))
 
-        def environment_factory(agent_id: str) -> _IsolatedEnvironment:
+        def environment_factory(
+            agent_id: str, _profile: str | None
+        ) -> _IsolatedEnvironment:
             environment = _IsolatedEnvironment(agent_id)
             environments[agent_id] = environment
             return environment

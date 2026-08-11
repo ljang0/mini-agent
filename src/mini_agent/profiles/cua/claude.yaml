@@ -1,0 +1,36 @@
+application: cua
+model: claude-sonnet-4-6
+provider: anthropic-messages
+system_prompt: claude.md
+tools: [computer]
+limits:
+  max_steps: 100
+  max_model_calls: 100
+  max_tool_calls: 100
+  max_tool_output_bytes: 33554432
+  wall_time_seconds: 900
+generation:
+  max_output_tokens: 16384
+observation:
+  screenshot_max_width: 1280
+  screenshot_max_height: 720
+  coordinate_mode: scaled_pixels
+history:
+  mode: linear
+  images_to_keep: 7
+  image_removal_chunk: 5
+response_parser: provider_tool_calls
+benchmark:
+  name: cua_speed_run
+  template: claude
+  tool_protocol: anthropic
+fidelity: profile
+source:
+  repository: https://github.com/Pranjal2041/cua-speed-run
+  revision: 7230223cbc57df68331cad32889adf01f3601651
+  implementation: templates/claude/agent.py
+fidelity_gaps:
+  - Native action translation, scaled coordinates, screenshot resizing, zoom actions, and bounded old-image compaction are implemented; prompt caching remains outside this compact profile.
+  - Upstream complete/infeasible tools, init dependency setup, API retry ladder, and shared cost snapshots remain reference-only.
+  - Compact downstream prompt; no proprietary Claude runtime claim.
+  - Guaranteed done is provided by CUAEnvironment.close rather than copied template code.

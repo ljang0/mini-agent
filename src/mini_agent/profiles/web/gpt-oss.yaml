@@ -1,0 +1,37 @@
+application: web
+model: openai/gpt-oss-20b
+provider: openai-responses
+system_prompt: ""
+tools: [search]
+limits:
+  max_steps: 100
+  max_model_calls: 100
+  max_output_tokens: 10000
+  max_tool_calls: 1000
+  max_tool_output_bytes: 8388608
+  wall_time_seconds: 900
+generation:
+  max_output_tokens: 10000
+  truncation: auto
+  reasoning:
+    effort: high
+    summary: detailed
+observation:
+  snippet_tokens: 512
+history:
+  mode: linear
+response_parser: oss_retrieval_tool_calls
+benchmark:
+  name: browsecomp_plus
+  retrieval: bm25
+  top_k: 5
+fidelity: profile
+source:
+  repository: https://github.com/texttron/BrowseComp-Plus
+  revision: 046949032b0328319cc9a02663a759ec601d9402
+  implementation: search_agent/oss_client.py
+  task_template: search_agent/prompts.py:QUERY_TEMPLATE_NO_GET_DOCUMENT
+  snippet_tokenizer: Qwen/Qwen3-0.6B
+fidelity_gaps:
+  - The adapter maps upstream local_knowledge_base_retrieval(user_query) calls onto MiniAgent search(query), but does not reproduce the upstream retry loop or reasoning-only retry behavior.
+  - The vLLM image, model weights, reasoning parser, tokenizer, and runtime require caller-controlled pins.
