@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+from copy import deepcopy
+from dataclasses import replace
 
 from mini_agent.catalog import (
     APPLICATIONS,
@@ -68,10 +70,17 @@ class MiniCatalogTests(unittest.TestCase):
         self.assertEqual(len(IMPLEMENTATIONS), 18)
         self.assertEqual(
             [value.legacy for value in IMPLEMENTATIONS],
-            [value for value in LEGACY_PROFILES if value.catalog_kind == "implementation"],
+            [
+                value
+                for value in LEGACY_PROFILES
+                if value.catalog_kind == "implementation"
+            ],
         )
         self.assertEqual(
-            {application: len(values) for application, values in IMPLEMENTATIONS_BY_APPLICATION.items()},
+            {
+                application: len(values)
+                for application, values in IMPLEMENTATIONS_BY_APPLICATION.items()
+            },
             {"web": 7, "cua": 3, "swe": 8},
         )
         for value in IMPLEMENTATIONS:
@@ -83,7 +92,9 @@ class MiniCatalogTests(unittest.TestCase):
                 self.assertEqual(value.providers, value.legacy.providers)
                 self.assertEqual(value.as_dict()["id"], value.profile_id)
 
-    def test_profile_kind_filters_and_lookups_do_not_promote_studies_or_gaps(self) -> None:
+    def test_profile_kind_filters_and_lookups_do_not_promote_studies_or_gaps(
+        self,
+    ) -> None:
         self.assertEqual(len(list_profiles()), 55)
         self.assertEqual(len(list_implementations()), 18)
         self.assertEqual(len(list_studies()), 28)
@@ -134,6 +145,12 @@ class MiniCatalogTests(unittest.TestCase):
         )
         for source in FRONTIER_SOURCES:
             with self.subTest(lab=source.lab):
+                expected_source = deepcopy(source.legacy.as_dict())
+                expected_source["applications"] = list(source.applications)
+                expected_source["application_statuses"] = [
+                    status.as_dict() for status in source.application_statuses
+                ]
+                self.assertEqual(source.as_dict(), expected_source)
                 self.assertEqual(set(source.applications), set(APPLICATIONS))
                 self.assertEqual(source.flagship_exact, source.legacy.flagship_exact)
                 self.assertEqual(source.limitation, source.legacy.limitation)
@@ -143,7 +160,9 @@ class MiniCatalogTests(unittest.TestCase):
                     strict=True,
                 ):
                     self.assertEqual(status.status, legacy.status)
-                    self.assertEqual(status.implementation_ids, legacy.implementation_ids)
+                    self.assertEqual(
+                        status.implementation_ids, legacy.implementation_ids
+                    )
                     self.assertEqual(status.boundary, legacy.boundary)
                     expected = legacy.as_dict()
                     expected.update(
@@ -154,6 +173,12 @@ class MiniCatalogTests(unittest.TestCase):
                         }
                     )
                     self.assertEqual(status.as_dict(), expected)
+
+    def test_frontier_source_cannot_be_constructed_with_conflicting_evidence(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(ValueError, "differs from legacy evidence"):
+            replace(FRONTIER_SOURCES[0], lab="Not the audited lab")
 
     def test_frontier_links_resolve_to_exact_implementations(self) -> None:
         for source in FRONTIER_SOURCES:
@@ -168,7 +193,9 @@ class MiniCatalogTests(unittest.TestCase):
         anthropic = get_frontier_source("Anthropic")
         self.assertIsNotNone(anthropic.distribution_identity)
         self.assertIn("distribution_identity", anthropic.as_dict())
-        self.assertNotIn("distribution_identity", get_frontier_source("OpenAI").as_dict())
+        self.assertNotIn(
+            "distribution_identity", get_frontier_source("OpenAI").as_dict()
+        )
 
 
 if __name__ == "__main__":

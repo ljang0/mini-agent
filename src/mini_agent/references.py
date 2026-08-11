@@ -1,16 +1,17 @@
-"""Thin access to exact runtimes retained in :mod:`scaffoldlab`.
+"""Thin access to preserved runtimes retained in :mod:`scaffoldlab`.
 
-References are deliberately not translated into ``MiniAgent`` profiles.  They run
-the legacy CLI in-process so its catalog checks, provider adapters, budget ledger,
-trace recorder, environment lifecycle, and evaluation artifacts stay authoritative.
+References and studies are deliberately not translated into ``MiniAgent`` loops.
+They run the preserved evaluator in-process so its catalog checks, provider
+adapters, budget ledger, trace recorder, lifecycle, and artifacts stay authoritative.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, ClassVar, Mapping, Sequence
 
 from scaffoldlab.applications import (
     ImplementationProfile,
@@ -18,13 +19,23 @@ from scaffoldlab.applications import (
 )
 
 from .catalog import (
+    LEGACY_TO_APPLICATION,
     get_implementation as get_catalog_implementation,
+    get_study as get_catalog_study,
     list_implementations as list_catalog_implementations,
+    list_studies as list_catalog_studies,
 )
 
 
 _RESERVED_ARGUMENTS = frozenset(
-    {"--tasks", "--config", "--provider", "--output"}
+    {
+        "--tasks",
+        "--config",
+        "--provider",
+        "--output",
+        "--expected-application-key",
+        "--expected-config-sha256",
+    }
 )
 
 
@@ -39,6 +50,25 @@ class ReferenceRuntime:
 
     application: str
     profile: ImplementationProfile
+    catalog_kind: ClassVar[str] = "implementation"
+    execution_mode: ClassVar[str] = "reference"
+    runtime_label: ClassVar[str] = "reference"
+
+    def __post_init__(self) -> None:
+        expected_application = LEGACY_TO_APPLICATION.get(self.profile.application)
+        if expected_application != self.application:
+            raise ValueError(
+                f"reference profile {self.profile.key!r} belongs to "
+                f"{expected_application!r}, not {self.application!r}"
+            )
+        if (
+            self.profile.catalog_kind != self.catalog_kind
+            or self.profile.status != "runnable"
+        ):
+            raise ValueError(
+                f"profile {self.profile.key!r} is a {self.profile.catalog_kind}, "
+                f"not a runnable {self.runtime_label}"
+            )
 
     @property
     def name(self) -> str:
@@ -57,6 +87,8 @@ class ReferenceRuntime:
         payload["application"] = self.application
         payload["key"] = self.key
         payload["legacy_application"] = self.profile.application
+        payload["legacy_key"] = self.profile.key
+        payload["execution_mode"] = self.execution_mode
         payload["delegate"] = "scaffoldlab.cli"
         return payload
 
@@ -69,7 +101,7 @@ class ReferenceRuntime:
     ) -> int:
         """Run the legacy config/task validation boundary in-process."""
 
-        selected_provider = self._prepare(config, provider)
+        selected_provider, config_sha256 = self._prepare(config, provider)
         return _legacy_main(
             (
                 "validate",
@@ -79,6 +111,10 @@ class ReferenceRuntime:
                 str(config),
                 "--provider",
                 selected_provider,
+                "--expected-application-key",
+                self.profile.key,
+                "--expected-config-sha256",
+                config_sha256,
             )
         )
 
@@ -91,14 +127,14 @@ class ReferenceRuntime:
         provider: str | None = None,
         arguments: Sequence[str] = (),
     ) -> int:
-        """Run the reference through the complete legacy evaluation pipeline.
+        """Run the preserved target through the complete evaluation pipeline.
 
         ``arguments`` holds provider-specific options such as ``--model`` or a
         pinned checkout.  They are argv tokens, never shell text.  Identity-bearing
         paths and the provider are appended by this adapter and cannot be replaced.
         """
 
-        selected_provider = self._prepare(config, provider)
+        selected_provider, config_sha256 = self._prepare(config, provider)
         extra = _safe_arguments(arguments)
         return _legacy_main(
             (
@@ -110,15 +146,48 @@ class ReferenceRuntime:
                 str(config),
                 "--provider",
                 selected_provider,
+                "--expected-application-key",
+                self.profile.key,
+                "--expected-config-sha256",
+                config_sha256,
                 "--output",
                 str(output),
             )
         )
 
-    def _prepare(self, config: Path, provider: str | None) -> str:
+    def _prepare(self, config: Path, provider: str | None) -> tuple[str, str]:
         selected_provider = _select_provider(self.profile, provider)
-        _require_selected_reference(config, self.profile, selected_provider)
-        return selected_provider
+        config_sha256 = _require_selected_profile(
+            config,
+            self.profile,
+            selected_provider,
+            expected_kind=self.catalog_kind,
+        )
+        return selected_provider, config_sha256
+
+
+class StudyRuntime(ReferenceRuntime):
+    """A preserved non-exact study, never promoted to an exact reference."""
+
+    catalog_kind = "study"
+    execution_mode = "study"
+    runtime_label = "study"
+
+    def __post_init__(self) -> None:
+        expected_application = LEGACY_TO_APPLICATION.get(self.profile.application)
+        if expected_application != self.application:
+            raise ValueError(
+                f"study profile {self.profile.key!r} belongs to "
+                f"{expected_application!r}, not {self.application!r}"
+            )
+        if self.profile.catalog_kind != "study" or self.profile.status not in {
+            "runnable",
+            "simulation",
+        }:
+            raise ValueError(
+                f"profile {self.profile.key!r} is a {self.profile.catalog_kind}, "
+                "not a runnable study"
+            )
 
 
 def list_references(application: str | None = None) -> tuple[ReferenceRuntime, ...]:
@@ -131,8 +200,7 @@ def list_references(application: str | None = None) -> tuple[ReferenceRuntime, .
             raise ValueError("application must be swe, web, or cua")
         profiles = list_catalog_implementations(application)
     return tuple(
-        ReferenceRuntime(profile.application, profile.legacy)
-        for profile in profiles
+        ReferenceRuntime(profile.application, profile.legacy) for profile in profiles
     )
 
 
@@ -143,50 +211,79 @@ def get_reference(application: str, name: str) -> ReferenceRuntime:
     return ReferenceRuntime(profile.application, profile.legacy)
 
 
-def _select_provider(
-    profile: ImplementationProfile, provider: str | None
-) -> str:
+def list_study_runtimes(application: str | None = None) -> tuple[StudyRuntime, ...]:
+    """List preserved studies without weakening their non-exact fidelity labels."""
+
+    if application is None:
+        profiles = list_catalog_studies()
+    else:
+        if application not in {"swe", "web", "cua"}:
+            raise ValueError("application must be swe, web, or cua")
+        profiles = list_catalog_studies(application)
+    return tuple(
+        StudyRuntime(profile.application, profile.legacy) for profile in profiles
+    )
+
+
+def get_study_runtime(application: str, name: str) -> StudyRuntime:
+    profile = get_catalog_study(application, name)
+    return StudyRuntime(profile.application, profile.legacy)
+
+
+def _select_provider(profile: ImplementationProfile, provider: str | None) -> str:
+    label = "reference" if profile.catalog_kind == "implementation" else "study"
     if provider is None:
         if len(profile.providers) != 1:
             raise ValueError(
-                f"reference {profile.key!r} requires an explicit provider from "
+                f"{label} {profile.key!r} requires an explicit provider from "
                 f"{list(profile.providers)!r}"
             )
         return profile.providers[0]
     if provider not in profile.providers:
         raise ValueError(
-            f"reference {profile.key!r} does not support provider {provider!r}; "
+            f"{label} {profile.key!r} does not support provider {provider!r}; "
             f"choose from {', '.join(profile.providers)}"
         )
     return provider
 
 
-def _require_selected_reference(
-    path: Path, expected: ImplementationProfile, provider: str
-) -> Mapping[str, Any]:
+def _require_selected_profile(
+    path: Path,
+    expected: ImplementationProfile,
+    provider: str,
+    *,
+    expected_kind: str,
+) -> str:
+    encoded = path.read_bytes()
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = json.loads(encoded.decode("utf-8"))
     except json.JSONDecodeError as exc:
         raise ValueError(f"invalid reference config {path}: {exc}") from exc
     if not isinstance(raw, Mapping):
         raise ValueError("reference config must be a JSON object")
-    resolved, selection, _ = resolve_application_config(raw, provider=provider)
-    if selection is None or selection.selection_kind != "implementation":
-        raise ValueError("reference config must select application.implementation")
+    _, selection, _ = resolve_application_config(raw, provider=provider)
+    if selection is None or selection.selection_kind != expected_kind:
+        raise ValueError(
+            f"{expected_kind} config must select application.{expected_kind}"
+        )
     if selection.profile.key != expected.key:
         raise ValueError(
-            f"config selects {selection.profile.key!r}, not reference {expected.key!r}"
+            f"config selects {selection.profile.key!r}, not {expected_kind} "
+            f"profile {expected.key!r}"
         )
-    return resolved
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _safe_arguments(arguments: Sequence[str]) -> tuple[str, ...]:
     result: list[str] = []
     for argument in arguments:
-        if not isinstance(argument, str) or not argument or "\x00" in argument:
-            raise ValueError("reference arguments must be non-empty argv strings")
-        option = argument.split("=", 1)[0]
-        if option in _RESERVED_ARGUMENTS:
+        if not isinstance(argument, str) or "\x00" in argument:
+            raise ValueError("delegated arguments must be strings without NUL bytes")
+        option = argument.split("=", 1)[0] if argument.startswith("--") else ""
+        if argument == "--" or (
+            option
+            and any(reserved.startswith(option) for reserved in _RESERVED_ARGUMENTS)
+        ):
             raise ValueError(f"reference argument {option!r} is owned by the adapter")
         result.append(argument)
     return tuple(result)
@@ -200,4 +297,11 @@ def _legacy_main(arguments: Sequence[str]) -> int:
     return main(tuple(arguments))
 
 
-__all__ = ["ReferenceRuntime", "get_reference", "list_references"]
+__all__ = [
+    "ReferenceRuntime",
+    "StudyRuntime",
+    "get_reference",
+    "get_study_runtime",
+    "list_references",
+    "list_study_runtimes",
+]

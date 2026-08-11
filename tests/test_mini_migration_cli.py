@@ -4,12 +4,13 @@ import io
 import json
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 from mini_agent.cli import main
 from mini_agent.references import get_reference
+from scaffoldlab.cli import main as legacy_main
 
 
 class MigrationCLITests(unittest.TestCase):
@@ -32,6 +33,27 @@ class MigrationCLITests(unittest.TestCase):
         self.assertEqual(
             sum(len(source["application_statuses"]) for source in frontiers), 54
         )
+
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(main(("applications", "--json")), 0)
+        self.assertEqual(
+            json.loads(output.getvalue()),
+            [
+                {"application": "web", "profile_count": 19},
+                {"application": "cua", "profile_count": 8},
+                {"application": "swe", "profile_count": 28},
+            ],
+        )
+
+    def test_harness_listing_is_the_preserved_listing(self) -> None:
+        mini_output = io.StringIO()
+        legacy_output = io.StringIO()
+        with redirect_stdout(mini_output):
+            self.assertEqual(main(("harnesses",)), 0)
+        with redirect_stdout(legacy_output):
+            self.assertEqual(legacy_main(("list-harnesses",)), 0)
+        self.assertEqual(mini_output.getvalue(), legacy_output.getvalue())
 
     def test_every_domain_has_an_inspectable_exact_reference(self) -> None:
         selections = (
@@ -57,7 +79,9 @@ class MigrationCLITests(unittest.TestCase):
                 self.assertEqual(payload["execution_mode"], "reference")
                 self.assertEqual(payload["application"], application)
 
-    def test_validate_reference_reaches_preserved_evaluator_in_each_domain(self) -> None:
+    def test_validate_reference_reaches_preserved_evaluator_in_each_domain(
+        self,
+    ) -> None:
         selections = (
             ("web", "openai-hosted-web-search"),
             ("cua", "openai-ga-computer-single"),
@@ -88,7 +112,7 @@ class MigrationCLITests(unittest.TestCase):
                         json.dumps(
                             {
                                 "application": {
-                                    "name": reference.profile.application,
+                                    "name": application,
                                     "implementation": name,
                                 },
                                 "environment": environment,
@@ -145,6 +169,37 @@ class MigrationCLITests(unittest.TestCase):
             provider=None,
             arguments=("--model", "example-model"),
         )
+
+    def test_identity_sensitive_clis_reject_abbreviated_options(self) -> None:
+        mini_arguments = (
+            "validate-reference",
+            "--app",
+            "web",
+            "--implementation",
+            "openai-hosted-web-search",
+            "--tasks",
+            "tasks.jsonl",
+            "--config",
+            "config.json",
+        )
+        legacy_arguments = (
+            "validate",
+            "--tas",
+            "tasks.jsonl",
+            "--config",
+            "config.json",
+            "--provider",
+            "openai-responses",
+        )
+        for command in (
+            lambda: main(mini_arguments),
+            lambda: legacy_main(legacy_arguments),
+        ):
+            with self.subTest(command=command):
+                with redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit) as stopped:
+                        command()
+                self.assertEqual(stopped.exception.code, 2)
 
 
 if __name__ == "__main__":

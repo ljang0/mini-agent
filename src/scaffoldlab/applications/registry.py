@@ -227,6 +227,11 @@ def _parse_selection(
 
     if not isinstance(application, str) or not application:
         raise ValueError("config application name must be a non-empty string")
+    # mini-agent's public domain names are accepted at the preserved evaluator
+    # boundary; the resolved selection retains its original legacy identity.
+    application = {"web": "browser", "cua": "computer-use"}.get(
+        application, application
+    )
 
     selections: list[tuple[str, Any]] = []
     for kind in ("implementation", "study"):

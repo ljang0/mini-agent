@@ -157,7 +157,10 @@ def _write_run(output: Path, payload: Mapping[str, Any], trace: Sequence[Any]) -
         encoding="utf-8",
     )
     (output / "trace.jsonl").write_text(
-        "".join(json.dumps(asdict(event), sort_keys=True, default=str) + "\n" for event in trace),
+        "".join(
+            json.dumps(asdict(event), sort_keys=True, default=str) + "\n"
+            for event in trace
+        ),
         encoding="utf-8",
     )
 
@@ -309,7 +312,7 @@ def _run_reference(args: argparse.Namespace) -> int:
     from .references import get_reference
 
     reference = get_reference(args.application, args.implementation)
-    extra = tuple(args.reference_arguments)
+    extra = tuple(args.runtime_arguments)
     if extra and extra[0] == "--":
         extra = extra[1:]
     return reference.run(
@@ -319,6 +322,81 @@ def _run_reference(args: argparse.Namespace) -> int:
         provider=args.provider,
         arguments=extra,
     )
+
+
+def _validate_study(args: argparse.Namespace) -> int:
+    from .references import get_study_runtime
+
+    study = get_study_runtime(args.application, args.study)
+    return study.validate(
+        tasks=args.tasks,
+        config=args.config,
+        provider=args.provider,
+    )
+
+
+def _run_study(args: argparse.Namespace) -> int:
+    from .references import get_study_runtime
+
+    study = get_study_runtime(args.application, args.study)
+    extra = tuple(args.runtime_arguments)
+    if extra and extra[0] == "--":
+        extra = extra[1:]
+    return study.run(
+        tasks=args.tasks,
+        config=args.config,
+        output=args.output,
+        provider=args.provider,
+        arguments=extra,
+    )
+
+
+def _list_harnesses() -> int:
+    from scaffoldlab.cli import main as legacy_main
+
+    return legacy_main(("list-harnesses",))
+
+
+def _list_applications(args: argparse.Namespace) -> int:
+    from .catalog import APPLICATIONS, list_profiles
+
+    if args.json:
+        print(
+            json.dumps(
+                [
+                    {
+                        "application": application,
+                        "profile_count": len(list_profiles(application)),
+                    }
+                    for application in APPLICATIONS
+                ],
+                indent=2,
+            )
+        )
+    else:
+        for application in APPLICATIONS:
+            print(application)
+    return 0
+
+
+def _add_preserved_runtime_arguments(
+    parser: argparse.ArgumentParser,
+    *,
+    selector: str,
+    output: bool,
+) -> None:
+    parser.add_argument("--application", required=True, choices=("swe", "web", "cua"))
+    parser.add_argument(f"--{selector}", required=True)
+    parser.add_argument("--tasks", type=Path, required=True)
+    parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--provider")
+    if output:
+        parser.add_argument("--output", type=Path, required=True)
+        parser.add_argument(
+            "runtime_arguments",
+            nargs=argparse.REMAINDER,
+            help="runtime-specific arguments after --",
+        )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -365,6 +443,12 @@ def build_parser() -> argparse.ArgumentParser:
     catalog.add_argument("--json", action="store_true")
     catalog.set_defaults(handler=_list_catalog)
 
+    applications = subparsers.add_parser(
+        "applications", help="list mini-agent application domains"
+    )
+    applications.add_argument("--json", action="store_true")
+    applications.set_defaults(handler=_list_applications)
+
     implementation = subparsers.add_parser(
         "implementation", help="inspect one migrated catalog entry"
     )
@@ -383,35 +467,41 @@ def build_parser() -> argparse.ArgumentParser:
     frontiers.set_defaults(handler=_list_frontiers)
 
     validate = subparsers.add_parser(
-        "validate-reference", help="validate a pinned reference evaluation"
+        "validate-reference",
+        help="validate a pinned reference evaluation",
+        allow_abbrev=False,
     )
-    validate.add_argument(
-        "--application", required=True, choices=("swe", "web", "cua")
-    )
-    validate.add_argument("--implementation", required=True)
-    validate.add_argument("--tasks", type=Path, required=True)
-    validate.add_argument("--config", type=Path, required=True)
-    validate.add_argument("--provider")
+    _add_preserved_runtime_arguments(validate, selector="implementation", output=False)
     validate.set_defaults(handler=_validate_reference)
 
     evaluate = subparsers.add_parser(
         "eval-reference",
         help="run a pinned reference through the preserved evaluator",
+        allow_abbrev=False,
     )
-    evaluate.add_argument(
-        "--application", required=True, choices=("swe", "web", "cua")
-    )
-    evaluate.add_argument("--implementation", required=True)
-    evaluate.add_argument("--tasks", type=Path, required=True)
-    evaluate.add_argument("--config", type=Path, required=True)
-    evaluate.add_argument("--provider")
-    evaluate.add_argument("--output", type=Path, required=True)
-    evaluate.add_argument(
-        "reference_arguments",
-        nargs=argparse.REMAINDER,
-        help="runtime-specific arguments after --",
-    )
+    _add_preserved_runtime_arguments(evaluate, selector="implementation", output=True)
     evaluate.set_defaults(handler=_run_reference)
+
+    validate_study = subparsers.add_parser(
+        "validate-study",
+        help="validate a preserved non-exact study",
+        allow_abbrev=False,
+    )
+    _add_preserved_runtime_arguments(validate_study, selector="study", output=False)
+    validate_study.set_defaults(handler=_validate_study)
+
+    evaluate_study = subparsers.add_parser(
+        "eval-study",
+        help="run a study through the preserved evaluator",
+        allow_abbrev=False,
+    )
+    _add_preserved_runtime_arguments(evaluate_study, selector="study", output=True)
+    evaluate_study.set_defaults(handler=_run_study)
+
+    harnesses = subparsers.add_parser(
+        "harnesses", help="list preserved evaluation harnesses"
+    )
+    harnesses.set_defaults(handler=lambda args: _list_harnesses())
     return parser
 
 

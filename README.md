@@ -101,6 +101,8 @@ limitations, and runtime ownership remain unchanged.
 # All migrated entries, or one fidelity partition.
 mini-agent catalog --json
 mini-agent catalog --application web --kind implementation
+mini-agent applications --json
+mini-agent harnesses
 
 # The complete 18-lab x 3-application coverage matrix.
 mini-agent frontiers --json
@@ -139,6 +141,31 @@ are checked before delegation and cannot be overridden. External dependencies,
 credentials, benchmark data, VMs, and pinned checkouts are still supplied by the
 caller. See the [frontier migration matrix](docs/frontier-migration.md).
 
+The 28 controlled studies use a separate command and retain their original
+non-exact fidelity labels:
+
+```bash
+mini-agent validate-study \
+  --application swe \
+  --study single-agent-control \
+  --tasks /path/to/tasks.jsonl \
+  --config /path/to/study-config.json \
+  --provider openai-responses
+
+mini-agent eval-study \
+  --application swe \
+  --study single-agent-control \
+  --tasks /path/to/tasks.jsonl \
+  --config /path/to/study-config.json \
+  --provider openai-responses \
+  --output runs/single-agent-study \
+  -- --model MODEL
+```
+
+All 46 runnable catalog rows are therefore reachable through `mini-agent`; the
+nine documented gaps fail closed. Delegated configurations are bound by SHA-256
+and expected catalog key between wrapper authorization and evaluator loading.
+
 ## Multi-agent is communication
 
 [`Orchestrator`](src/mini_agent/orchestrator.py) creates ordinary `MiniAgent` instances with separate environments and one shared budget/trace context. It adds four tools:
@@ -169,7 +196,9 @@ Deterministic tests cover history ordering, invalid actions, budgets, cancellati
 workspace isolation, retrieval, CUA translation, hidden-verifier separation,
 spawning, messaging, waiting, failure, root-only submission, all 55 catalog
 mappings, all 54 frontier coverage cells, and reference CLI reachability in SWE,
-web, and CUA. Smoke tests validate plumbing; they are not evidence that an agent
+web, and CUA. Every exact reference and every study also passes offline config,
+provider, harness, environment, and CLI resolution. Smoke tests validate plumbing;
+they are not evidence that an agent
 is a release winner.
 
 ## Repository transition

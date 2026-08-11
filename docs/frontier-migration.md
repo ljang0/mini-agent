@@ -45,7 +45,13 @@ The authoritative machine-readable view is:
 ```bash
 mini-agent catalog --json
 mini-agent frontiers --json
+mini-agent applications --json
+mini-agent harnesses
 ```
+
+All 18 exact references and all 28 studies are validateable and runnable through
+the `mini-agent` CLI. They remain separate execution modes; a study never acquires
+an exactness claim by being runnable. The nine gaps have no execution command.
 
 Exact reference execution requires the same credentials, checked-out source or
 installed distribution, environment, and task/evaluator configuration as the

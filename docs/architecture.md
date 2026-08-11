@@ -55,6 +55,12 @@ lifecycle. Provider, implementation, and config identity are checked before the
 delegation. This path still uses the existing shared budget ledger and trace
 recorder.
 
+The same module exposes studies through a distinct `StudyRuntime`. It uses the
+preserved evaluator but cannot serialize as a reference, and exact references
+cannot serialize as studies. Both paths bind the UTF-8 configuration bytes by
+SHA-256 and recheck the expected catalog key inside the evaluator before any
+backend is constructed.
+
 Reference runtimes are not `MiniAgent` workers. An upstream runtime that owns its
 loop cannot be embedded in `MiniAgent.run` or spawned by its orchestrator without
 changing the implementation being measured. Studies and gaps cannot resolve as

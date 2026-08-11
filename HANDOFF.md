@@ -27,7 +27,9 @@ New work should use:
 - Minimal multi-agent orchestration through `spawn_agent`, `send_message`, `read_messages`, and `wait`.
 - Complete 1:1 catalog view: 55 profiles, 18 labs, and all 54 lab/application status cells.
 - Exact delegation for all 18 runnable references through the preserved evaluator.
+- Distinct preserved execution for all 28 non-exact studies; nine gaps fail closed.
 - `mini-agent` commands for catalog/frontier inspection and reference validation/evaluation.
+- SHA-bound config and catalog-key checks across delegated validation/evaluation.
 - Deterministic offline tests for all new control-flow and environment boundaries.
 
 ## Fidelity boundaries

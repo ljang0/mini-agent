@@ -163,6 +163,54 @@ class FrontierSource:
     audited_at: str
     legacy: FrontierLabRecord
 
+    def __post_init__(self) -> None:
+        scalar_fields = (
+            "lab",
+            "model_families",
+            "runtime_kind",
+            "runtime_title",
+            "runtime_url",
+            "runtime_version",
+            "runtime_revision",
+            "runtime_entrypoint",
+            "evidence_title",
+            "evidence_url",
+            "flagship_exact",
+            "limitation",
+            "distribution_identity",
+            "audited_at",
+        )
+        for name in scalar_fields:
+            if getattr(self, name) != getattr(self.legacy, name):
+                raise ValueError(
+                    f"frontier source field {name!r} differs from legacy evidence"
+                )
+        if len(self.application_statuses) != len(self.legacy.application_statuses):
+            raise ValueError("frontier source has incomplete application statuses")
+        for status, legacy_status in zip(
+            self.application_statuses,
+            self.legacy.application_statuses,
+            strict=True,
+        ):
+            expected = (
+                _application(legacy_status.application),
+                legacy_status.application,
+                legacy_status.status,
+                legacy_status.implementation_ids,
+                legacy_status.boundary,
+            )
+            actual = (
+                status.application,
+                status.legacy_application,
+                status.status,
+                status.implementation_ids,
+                status.boundary,
+            )
+            if actual != expected:
+                raise ValueError(
+                    "frontier application status differs from legacy evidence"
+                )
+
     @property
     def applications(self) -> tuple[str, ...]:
         return tuple(value.application for value in self.application_statuses)
@@ -184,7 +232,9 @@ class FrontierSource:
             "runtime_entrypoint": self.runtime_entrypoint,
             "evidence_title": self.evidence_title,
             "evidence_url": self.evidence_url,
-            "application_statuses": [item.as_dict() for item in self.application_statuses],
+            "application_statuses": [
+                item.as_dict() for item in self.application_statuses
+            ],
             "applications": list(self.applications),
             "flagship_exact": self.flagship_exact,
             "limitation": self.limitation,
@@ -231,11 +281,15 @@ PROFILES_BY_KEY: Mapping[str, CatalogProfile] = MappingProxyType(
 )
 PROFILES_BY_APPLICATION: Mapping[str, tuple[CatalogProfile, ...]] = MappingProxyType(
     {
-        application: tuple(value for value in PROFILES if value.application == application)
+        application: tuple(
+            value for value in PROFILES if value.application == application
+        )
         for application in APPLICATIONS
     }
 )
-IMPLEMENTATIONS = tuple(value for value in PROFILES if value.catalog_kind == "implementation")
+IMPLEMENTATIONS = tuple(
+    value for value in PROFILES if value.catalog_kind == "implementation"
+)
 STUDIES = tuple(value for value in PROFILES if value.catalog_kind == "study")
 GAPS = tuple(value for value in PROFILES if value.catalog_kind == "gap")
 IMPLEMENTATIONS_BY_KEY: Mapping[str, CatalogProfile] = MappingProxyType(
@@ -259,7 +313,9 @@ IMPLEMENTATIONS_BY_APPLICATION: Mapping[str, tuple[CatalogProfile, ...]] = (
 )
 STUDIES_BY_APPLICATION: Mapping[str, tuple[CatalogProfile, ...]] = MappingProxyType(
     {
-        application: tuple(value for value in STUDIES if value.application == application)
+        application: tuple(
+            value for value in STUDIES if value.application == application
+        )
         for application in APPLICATIONS
     }
 )
@@ -343,9 +399,7 @@ def _get_kind(application: str, profile_id: str, kind: str) -> CatalogProfile:
     return value
 
 
-def get_implementation(
-    application: str, profile_id: str
-) -> CatalogProfile:
+def get_implementation(application: str, profile_id: str) -> CatalogProfile:
     return _get_kind(application, profile_id, "implementation")
 
 
@@ -371,12 +425,16 @@ def get_frontier_source(lab: str) -> FrontierSource:
 def _validate_catalog_links() -> None:
     for source in FRONTIER_SOURCES:
         if set(source.applications) != set(APPLICATIONS):
-            raise RuntimeError(f"frontier source {source.lab!r} has incomplete coverage")
+            raise RuntimeError(
+                f"frontier source {source.lab!r} has incomplete coverage"
+            )
         for status in source.application_statuses:
             for profile_id in status.implementation_ids:
                 implementation = get_implementation(status.application, profile_id)
                 if implementation.status != "runnable":
-                    raise RuntimeError(f"frontier link {implementation.key!r} is not runnable")
+                    raise RuntimeError(
+                        f"frontier link {implementation.key!r} is not runnable"
+                    )
 
 
 _validate_catalog_links()

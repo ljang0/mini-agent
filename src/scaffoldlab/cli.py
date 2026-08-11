@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -195,6 +196,20 @@ def _matches_model_prefix(model: str, prefix: str) -> bool:
     return model == prefix or model.startswith(prefix + "-")
 
 
+def _enforce_expected_application_key(
+    expected: str | None, application: ApplicationSelection | None
+) -> None:
+    """Bind delegated runs to the catalog selection loaded by this process."""
+
+    if expected is None:
+        return
+    actual = None if application is None else application.profile.key
+    if actual != expected:
+        raise ValueError(
+            f"config selects application profile {actual!r}, not expected {expected!r}"
+        )
+
+
 def _enforce_exact_application_identity(
     args: argparse.Namespace, application: ApplicationSelection | None
 ) -> None:
@@ -298,8 +313,17 @@ def _paths_overlap(left: Path, right: Path) -> bool:
     )
 
 
-def _load_config(path: Path) -> dict[str, Any]:
-    raw = json.loads(path.read_text(encoding="utf-8"))
+def _load_config(
+    path: Path, *, expected_sha256: str | None = None
+) -> dict[str, Any]:
+    encoded = path.read_bytes()
+    observed_sha256 = hashlib.sha256(encoded).hexdigest()
+    if expected_sha256 is not None and observed_sha256 != expected_sha256:
+        raise ValueError(
+            f"config SHA-256 changed: expected {expected_sha256}, "
+            f"observed {observed_sha256}"
+        )
+    raw = json.loads(encoded.decode("utf-8"))
     if not isinstance(raw, dict):
         raise ValueError("experiment config must be a JSON object")
     return raw
@@ -1288,7 +1312,14 @@ def _validate_compatibility(
 
 async def _run(args: argparse.Namespace) -> int:
     config, application, application_warnings = resolve_application_config(
-        _load_config(args.config), provider=args.provider
+        _load_config(
+            args.config,
+            expected_sha256=getattr(args, "expected_config_sha256", None),
+        ),
+        provider=args.provider,
+    )
+    _enforce_expected_application_key(
+        getattr(args, "expected_application_key", None), application
     )
     _enforce_exact_application_identity(args, application)
     tasks = load_tasks(args.tasks)
@@ -1360,7 +1391,14 @@ async def _run(args: argparse.Namespace) -> int:
 
 def _validate(args: argparse.Namespace) -> int:
     config, application, application_warnings = resolve_application_config(
-        _load_config(args.config), provider=args.provider
+        _load_config(
+            args.config,
+            expected_sha256=getattr(args, "expected_config_sha256", None),
+        ),
+        provider=args.provider,
+    )
+    _enforce_expected_application_key(
+        getattr(args, "expected_application_key", None), application
     )
     tasks = load_tasks(args.tasks)
     harnesses = _build_harnesses(config)
@@ -1405,6 +1443,8 @@ def _validate(args: argparse.Namespace) -> int:
 def _add_common_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--tasks", type=Path, required=True)
     parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--expected-application-key", help=argparse.SUPPRESS)
+    parser.add_argument("--expected-config-sha256", help=argparse.SUPPRESS)
     parser.add_argument(
         "--provider",
         choices=(
@@ -1484,11 +1524,11 @@ def build_parser() -> argparse.ArgumentParser:
         )
     )
 
-    validate_parser = subparsers.add_parser("validate")
+    validate_parser = subparsers.add_parser("validate", allow_abbrev=False)
     _add_common_arguments(validate_parser)
     validate_parser.set_defaults(handler=_validate)
 
-    run_parser = subparsers.add_parser("run")
+    run_parser = subparsers.add_parser("run", allow_abbrev=False)
     _add_common_arguments(run_parser)
     run_parser.add_argument("--model")
     run_parser.add_argument("--api-key-env")
