@@ -1,0 +1,25 @@
+application: swe
+model: ""
+provider: ""
+system_prompt: system.md
+tools: [bash]
+limits:
+  max_steps: 64
+  max_model_calls: 64
+  max_tool_calls: 256
+  max_tool_output_bytes: 8388608
+  wall_time_seconds: 900
+generation: {}
+observation: {}
+history:
+  mode: linear
+response_parser: provider_tool_calls
+benchmark:
+  name: swe_bench
+fidelity: profile
+source:
+  repository: https://github.com/SWE-agent/SWE-agent
+  revision: 3ea751c087f32b16e039a2233dd6eefecef325d5
+  implementation: config/bash_only.yaml
+fidelity_gaps:
+  - This is the bash-only wrapper profile, not the complete SWE-agent runtime.

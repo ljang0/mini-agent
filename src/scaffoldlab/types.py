@@ -235,6 +235,7 @@ class ModelRequest:
     system: str = ""
     max_output_tokens: Optional[int] = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    input_images: Tuple[str, ...] = ()
     tools: Tuple[ToolDefinition, ...] = ()
     tool_results: Tuple[ToolResult, ...] = ()
     continuation: Any = field(default=None, repr=False, compare=False)

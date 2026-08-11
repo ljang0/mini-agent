@@ -1,0 +1,1 @@
+Operate the computer from screenshots using only the computer tool. Prefer a short ordered batch when multiple actions are clearly required. You cannot reset, snapshot, use a shell, or inspect the verifier. Give a final answer only when the task is complete.

@@ -1,0 +1,29 @@
+application: web
+model: ""
+provider: anthropic-messages
+system_prompt: system.md
+tools: [search]
+limits:
+  max_steps: 40
+  max_model_calls: 40
+  max_tool_calls: 120
+  max_tool_output_bytes: 8388608
+  wall_time_seconds: 900
+generation:
+  max_output_tokens: 16384
+observation:
+  snippet_chars: 4096
+history:
+  mode: linear
+response_parser: provider_tool_calls
+benchmark:
+  name: browsecomp_plus
+  retrieval: bm25
+  top_k: 5
+fidelity: profile
+source:
+  repository: https://github.com/texttron/BrowseComp-Plus
+  revision: 046949032b0328319cc9a02663a759ec601d9402
+  implementation: search_agent/anthropic_client.py
+fidelity_gaps:
+  - Upstream retry and client-specific run-file logic remains outside the wrapper.

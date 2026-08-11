@@ -438,7 +438,25 @@ class OpenAIResponsesBackend:
         else:
             if request.tool_results:
                 raise ProviderError("tool results require OpenAI continuation state")
-            input_items = request.prompt
+            if request.input_images:
+                input_items = [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": request.prompt},
+                            *(
+                                {
+                                    "type": "input_image",
+                                    "image_url": image,
+                                    "detail": "original",
+                                }
+                                for image in request.input_images
+                            ),
+                        ],
+                    }
+                ]
+            else:
+                input_items = request.prompt
         payload: dict[str, Any] = {
             "model": self.model,
             "input": input_items,
@@ -809,7 +827,24 @@ class OpenAICompatibleChatBackend:
             messages = []
             if request.system:
                 messages.append({"role": "system", "content": request.system})
-            messages.append({"role": "user", "content": request.prompt})
+            if request.input_images:
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": request.prompt},
+                            *(
+                                {
+                                    "type": "image_url",
+                                    "image_url": {"url": image, "detail": "high"},
+                                }
+                                for image in request.input_images
+                            ),
+                        ],
+                    }
+                )
+            else:
+                messages.append({"role": "user", "content": request.prompt})
         payload: dict[str, Any] = {
             **self.extra_body,
             "model": self.model,
@@ -1276,7 +1311,29 @@ class AnthropicMessagesBackend:
         else:
             if request.tool_results:
                 raise ProviderError("tool results require Anthropic continuation state")
-            messages = [{"role": "user", "content": request.prompt}]
+            if request.input_images:
+                content: list[Mapping[str, Any]] = [
+                    {"type": "text", "text": request.prompt}
+                ]
+                for image in request.input_images:
+                    prefix = "data:image/png;base64,"
+                    if not image.startswith(prefix):
+                        raise ProviderError(
+                            "Anthropic input image must be a PNG data URL"
+                        )
+                    content.append(
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": image[len(prefix) :],
+                            },
+                        }
+                    )
+                messages = [{"role": "user", "content": content}]
+            else:
+                messages = [{"role": "user", "content": request.prompt}]
         payload: dict[str, Any] = {
             "model": self.model,
             "max_tokens": request.max_output_tokens or self.default_max_output_tokens,

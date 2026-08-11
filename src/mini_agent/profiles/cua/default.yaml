@@ -1,0 +1,19 @@
+application: cua
+model: ""
+provider: ""
+system_prompt: system.md
+tools: [computer]
+limits:
+  max_steps: 100
+  max_model_calls: 100
+  max_tool_calls: 100
+  max_tool_output_bytes: 33554432
+  wall_time_seconds: 900
+benchmark:
+  name: cua_speed_run
+  coordinate_mode: pixels
+fidelity: baseline
+source:
+  repository: https://github.com/Pranjal2041/cua-speed-run
+  revision: 7230223cbc57df68331cad32889adf01f3601651
+  osworld_reference_revision: 091f5ef1d5544bc74953c77875d5feb5bed30108

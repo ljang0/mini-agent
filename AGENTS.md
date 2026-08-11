@@ -1,4 +1,4 @@
-# Scaffold Lab contributor guidance
+# mini-agent contributor guidance
 
 - Preserve the distinction between inference harnesses, training methods, and
   evaluation environments.
@@ -17,8 +17,8 @@ Verification:
 ```bash
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 PYTHONPATH=src python3 -m compileall -q src tests
-PYTHONPATH=src python3 -m scaffoldlab.cli validate \
-  --tasks benchmarks/smoke.jsonl \
-  --config configs/smoke.json \
-  --provider openai-responses
+python3 -m ruff check src tests
+python3 -m mypy src/mini_agent
+PYTHONPATH=src python3 -m mini_agent profile \
+  --application web --profile default --model openai/test-model
 ```

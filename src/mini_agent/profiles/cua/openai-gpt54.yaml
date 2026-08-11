@@ -1,0 +1,31 @@
+application: cua
+model: gpt-5.4
+provider: openai-responses
+system_prompt: openai-gpt54.md
+tools: [computer]
+limits:
+  max_steps: 100
+  max_model_calls: 100
+  max_tool_calls: 100
+  max_tool_output_bytes: 33554432
+  wall_time_seconds: 900
+generation:
+  max_output_tokens: 16384
+  reasoning:
+    effort: xhigh
+observation:
+  screenshot_detail: original
+  coordinate_mode: pixels
+history:
+  mode: linear
+response_parser: provider_tool_calls
+benchmark:
+  name: cua_speed_run
+fidelity: profile
+source:
+  repository: https://github.com/Pranjal2041/cua-speed-run
+  revision: 7230223cbc57df68331cad32889adf01f3601651
+  implementation: templates/gpt54/agent.py
+fidelity_gaps:
+  - Uses the wrapper's generic computer function rather than the provider-native computer tool.
+  - Upstream retry and cost-reservation policy remains external.

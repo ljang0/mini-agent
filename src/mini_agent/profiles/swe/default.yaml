@@ -1,0 +1,17 @@
+application: swe
+model: ""
+provider: ""
+system_prompt: system.md
+tools: [bash]
+limits:
+  max_steps: 64
+  max_model_calls: 64
+  max_tool_calls: 256
+  max_tool_output_bytes: 8388608
+  wall_time_seconds: 900
+benchmark:
+  name: swe_bench
+fidelity: baseline
+source:
+  mini_swe_agent_revision: a83fcae82d2a08f0ee0c688f9d137b3566c097f8
+  swe_agent_reference_revision: 3ea751c087f32b16e039a2233dd6eefecef325d5

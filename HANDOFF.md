@@ -1,159 +1,54 @@
-# Scaffold Lab handoff
+# mini-agent handoff
 
-Status date: 2026-08-11
+## Current direction
 
-Package version: `0.2.0`
+The repository is now centered on one domain-neutral agent loop for SWE, web, and CUA. The previous Scaffold Lab v0.2 handoff is preserved at tag `scaffoldlab-v0.2-handoff`; the `scaffoldlab` Python package remains as a compatibility layer for its existing adapters and regression suite.
 
-Working branch at handoff: `codex/scaffold-lab-v0.2`
+New work should use:
 
-## Executive summary
+- Package: `mini_agent`
+- CLI: `mini-agent`
+- Core loop: [`src/mini_agent/agent.py`](src/mini_agent/agent.py)
+- Communication wrapper: [`src/mini_agent/orchestrator.py`](src/mini_agent/orchestrator.py)
+- Profiles: [`src/mini_agent/profiles`](src/mini_agent/profiles)
 
-Scaffold Lab is an application-first research runtime for comparing agent
-scaffolds across browser, computer-use, and SWE tasks. The shared runtime,
-provider adapters, source/CLI adapters, application catalogs, budget ledger,
-trace recorder, local environments, and deterministic offline test suite are in
-place. The repository can run generic JSONL experiments through supported APIs
-and pinned external runtimes.
+## Implemented
 
-This is not yet a benchmark release. The canonical BrowserGym, OSWorld 2, and
-SWE-bench loaders, resets, assets, and evaluators are not implemented, and no
-paid controlled model comparison has been run. A passing smoke test establishes
-internal plumbing quality, not a winning scaffold.
+- A roughly 100-line `MiniAgent` loop with linear history and no domain logic.
+- Shared, concurrency-safe model/tool budgets and traces.
+- Existing OpenAI, Anthropic, and OpenAI-compatible provider codecs behind `BackendModel`.
+- First-turn image input plus screenshot tool-result continuation.
+- One-tool SWE environment with per-agent workspace copies and stateless bash actions.
+- BrowseComp-Plus Lucene adapter plus deterministic JSONL BM25 fixtures.
+- cua-speed-run `observe/step/done` client and an evaluator-free OSWorld environment bridge.
+- Resolved YAML profiles with prompts, tools, limits, generation/observation/history policy, source pins, fidelity labels, and gaps.
+- Minimal multi-agent orchestration through `spawn_agent`, `send_message`, `read_messages`, and `wait`.
+- Deterministic offline tests for all new control-flow and environment boundaries.
 
-Start with the [main README](README.md), the [documentation index](docs/README.md),
-and the [reference and benchmark runbook](docs/reference-and-benchmark-runbook.md).
+## Fidelity boundaries
 
-## What is implemented
+- `baseline` means a model in the wrapper.
+- `profile` means published details were applied where the wrapper supports them; inspect `fidelity_gaps`.
+- `reference` is reserved for executing a pinned upstream or hosted runtime.
+- The BrowseComp-Plus JSONL backend is a deterministic test backend, not an official-score replacement for its Lucene index.
+- The OSWorld bridge never invokes the evaluator; the outer benchmark runner retains termination and grading ownership.
+- Training methods, benchmark datasets, graders, and verifiers remain separate from the inference harness.
 
-| Layer | Handoff state |
-| --- | --- |
-| Shared runtime | Provider-neutral model and harness interfaces, budget ledger, trace recorder, stopping/cancellation, tools, environment isolation, and result artifacts. |
-| Harness families | Single-agent control, selector-backed best-of-N, distinct-task flat fan-out, blocking manager, fixed team, async subagents, MACU-like DAG, recursive inference, restricted RLM-like REPL, and pinned upstream wrappers. |
-| API boundaries | OpenAI Responses, Anthropic Messages, OpenAI-compatible Responses/Chat, OpenAI hosted multi-agent, xAI hosted multi-agent, and Anthropic Managed Agents. |
-| External runtimes | Browser-Use, MACU, RLM, Prime Agent, Grok Build, Kimi Code, OpenAI Codex, and the official Claude Code Agent Teams distribution. |
-| Application surfaces | Browser, screenshot/action computer use, isolated SWE workspaces, and SWE combined with computer tools. |
-| Generic evaluation | JSONL task loading, repeats, shuffled trials, local text/JSON evaluators, manifests, traces, Wilson intervals, cost fields, and bounded SWE patch export. |
-| Offline QA | Deterministic coverage of scheduling, messaging, stopping, invalid actions, continuations, isolation, and accounting. |
+## Next research work
 
-The exact claim for every profile is deliberately narrow. An implementation is
-either a published protocol boundary, a revision-pinned public source runtime,
-or an audited official distribution. Reconstructed mechanisms and system-card
-topologies remain studies. In particular:
+1. Run single-agent pilots in the order SWE, BrowseComp-Plus, cua-speed-run.
+2. Add benchmark-owned task loaders and graders without importing them into `MiniAgent`.
+3. Add model profiles only from pinned public sources and record unsupported behavior as gaps.
+4. Run multi-agent experiments only after the matching single-agent profile passes deterministic and benchmark-level validation.
+5. Compare communication policies without adding topology-specific agent classes unless results require them.
 
-- `flat_parallel` is distinct-task concurrency, not best-of-N;
-- `recursive_delegation` and Platoon-shaped inference are not faithful RAO
-  without the policy-training method and checkpoint;
-- `external_context_json_search` is an ablation, not an RLM or REPL;
-- Fable, Mythos, and Opus system-card profiles are topology simulations until
-  their exact tools, limits, compaction, message timing, and worktrees exist.
-
-The per-profile evidence, source pins, prerequisites, run modes, and limitations
-are recorded in the [runbook](docs/reference-and-benchmark-runbook.md). The
-[source audit](docs/source-audit.md) is the authority for fidelity caveats.
-
-## Repository map
-
-| Path | Purpose |
-| --- | --- |
-| [`browser/`](browser/) | Browser implementations, studies, gaps, and application notes. |
-| [`computer-use/`](computer-use/) | Computer-use implementations, studies, gaps, and application notes. |
-| [`swe/`](swe/) | SWE implementations, studies, gaps, and application notes. |
-| [`src/scaffoldlab/`](src/scaffoldlab/) | Shared runtime, harnesses, backends, tools, environments, catalog, runner, and CLI. |
-| [`benchmarks/`](benchmarks/) | Deterministic smoke task sets; these are not canonical frontier benchmarks. |
-| [`configs/`](configs/) | Backward-compatible controls and smoke configurations. Release-facing work should select an application profile instead. |
-| [`tests/`](tests/) | Offline unit and integration tests. |
-| [`docs/`](docs/) | Architecture, evidence, experiment protocol, coverage, and benchmark runbook. |
-| `runs/` | Ignored local outputs created by experiments. Do not commit credentials or sensitive traces. |
-
-## Reproduce the handoff
-
-Use Python 3.10 or newer. The baseline checks do not require paid model calls:
+## Verification
 
 ```bash
-python3 -m pip install -e '.[dev]'
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 PYTHONPATH=src python3 -m compileall -q src tests
-PYTHONPATH=src python3 -m scaffoldlab.cli validate \
-  --tasks benchmarks/smoke.jsonl \
-  --config configs/smoke.json \
-  --provider openai-responses
+python3 -m ruff check src tests
+python3 -m mypy src/mini_agent
+PYTHONPATH=src python3 -m mini_agent profile \
+  --application web --profile default --model openai/test-model
 ```
-
-Then inspect the catalog:
-
-```bash
-PYTHONPATH=src python3 -m scaffoldlab.cli list-applications
-PYTHONPATH=src python3 -m scaffoldlab.cli list-implementations --json
-PYTHONPATH=src python3 -m scaffoldlab.cli list-studies
-PYTHONPATH=src python3 -m scaffoldlab.cli list-gaps
-PYTHONPATH=src python3 -m scaffoldlab.cli list-frontier-sources --json
-```
-
-The runbook contains the provider-specific credentials, pinned source checkouts,
-runtime flags, and sandboxing requirements. External-runtime adapters intentionally
-do not install arbitrary upstream dependencies during a trial.
-
-## Known gaps and risks
-
-1. **Canonical benchmark bridges:** BrowserGym, OSWorld 2, and SWE-bench need
-   pinned task loaders, clean resets, official evaluators, exact assets/images,
-   and contamination tests.
-2. **Release evidence:** no paid, repeated, counterbalanced comparison has been
-   run with pinned model snapshots and prices.
-3. **Closed internals:** hosted OpenAI, Anthropic, xAI, and system-card systems
-   expose only documented boundaries. Their private schedulers cannot be
-   reconstructed 1:1 from public evidence.
-4. **Whole-tree accounting:** several upstream and hosted systems expose only
-   aggregate or lower-bound usage. Those runs must not be treated as
-   equal-compute release evidence until accounting is complete or the comparison
-   protocol explicitly accommodates the limitation.
-5. **Sandbox strength:** in-process Python restrictions, command allowlists, and
-   Playwright isolation are not security boundaries. Paid or adversarial runs
-   need disposable workspaces or VMs, scoped credentials, and network controls.
-6. **Dependency identity:** some caller-built runtimes validate source and lock
-   evidence without proving every generated dependency or binary byte. Keep the
-   published fidelity label and artifact manifest attached to every result.
-
-## Recommended next milestone
-
-Implement benchmark parity before adding more topology names:
-
-1. add a benchmark adapter interface that keeps task loading, reset, and scoring
-   separate from inference;
-2. land one bridge each for BrowserGym, OSWorld 2, and SWE-bench with pinned
-   revisions and deterministic failure/reset tests;
-3. add CI for the full offline suite and catalog validation;
-4. run small credentialed canaries for every direct API and external runtime;
-5. freeze model IDs, prices, environment images, task order, seeds, and budgets;
-6. run the controlled matrix defined in the
-   [experiment protocol](docs/experiment-protocol.md), publish complete artifacts,
-   and only then nominate a release candidate.
-
-## Release acceptance checklist
-
-- [ ] Every candidate resolves through the application registry and uses the
-      shared budget ledger and trace recorder.
-- [ ] Every exact claim has a source/protocol pin and a documented unavailable-
-      internals boundary.
-- [ ] All required offline checks pass from a clean checkout.
-- [ ] The named benchmark's official reset and evaluator pass contamination and
-      failure-path tests.
-- [ ] Credentials, raw sensitive content, workspaces, and run outputs are absent
-      from Git history.
-- [ ] Live runs use pinned models, prices, code revision, dependencies, seeds,
-      budgets, and task order.
-- [ ] Whole-tree token/cost accounting is complete or explicitly excluded from
-      equal-compute conclusions.
-- [ ] Repeated scores, uncertainty intervals, failures, and full manifests are
-      published; smoke results are not presented as a winner.
-
-## Maintainer notes
-
-- Keep the application-first top level: `browser/`, `computer-use/`, and `swe/`.
-- Put new exact profiles under `implementations/`, reconstructions and ablations
-  under `studies/`, and unavailable targets under `gaps/`.
-- Do not silently widen a fidelity label when implementation details are missing.
-- Add deterministic scheduling, messaging, stopping, accounting, and invalid-
-  action tests before any paid experiment.
-- Update the application README, catalog, runbook, source audit, and tests together
-  when adding or reclassifying a profile.
