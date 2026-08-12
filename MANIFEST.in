@@ -1,0 +1,13 @@
+include README.md
+include CONTRIBUTING.md
+include SECURITY.md
+include CHANGELOG.md
+include CODE_OF_CONDUCT.md
+include CITATION.cff
+include LICENSE
+include AGENTS.md
+include src/mini_agent/py.typed
+recursive-include docs *.md *.json
+recursive-include tests *.py
+global-exclude __pycache__ *.py[cod]
+recursive-include examples *.py *.jsonl

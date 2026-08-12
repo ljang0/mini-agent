@@ -1,0 +1,10 @@
+{"docid": "solar-1", "text": "The solar array on the roof produces 4.2 kW at noon and feeds the microgrid battery bank."}
+{"docid": "solar-2", "text": "Battery maintenance requires checking electrolyte levels monthly and torquing terminals to 12 Nm."}
+{"docid": "wind-1", "text": "The backup wind turbine cuts in at 3.5 m/s wind speed and furls automatically above 25 m/s."}
+{"docid": "hydro-1", "text": "The micro-hydro intake screen must be cleared of leaves after storms to keep 2.1 kW output."}
+{"docid": "grid-1", "text": "Grid tie inverters synchronize phase within 2 degrees before closing the transfer relay."}
+{"docid": "grid-2", "text": "The transfer switch isolates the house from the utility grid during islanding events."}
+{"docid": "meter-1", "text": "Net metering credits accumulate in summer and offset winter consumption at retail rates."}
+{"docid": "safety-1", "text": "Arc-flash rated gloves are required for any work on the combiner box bus bars."}
+{"docid": "load-1", "text": "The well pump is the largest single load at 1.8 kW and runs on a soft starter."}
+{"docid": "plan-1", "text": "Expansion plans add 6 kW of panels and a second battery string in the coming year."}

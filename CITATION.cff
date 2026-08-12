@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: "If you use mini-agent in your research, please cite it as below."
+title: "mini-agent: one minimal agent loop for SWE, web research, computer use, and delegation"
+type: software
+authors:
+  - family-names: "Jang"
+    given-names: "Lawrence"
+    email: "ljang@andrew.cmu.edu"
+repository-code: "https://github.com/ljang0/mini-agent"
+license: Apache-2.0
+version: 0.5.0
+date-released: 2026-08-12
+keywords:
+  - agents
+  - evaluation
+  - SWE-bench
+  - OSWorld
+  - BrowseComp
+  - computer use
+  - large language models

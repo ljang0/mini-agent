@@ -1,0 +1,249 @@
+{
+  "schema": "mini-agent-validation-record-v1",
+  "attestation": {
+    "kind": "self-attested",
+    "created_on": "2026-08-12",
+    "scope": "source gates for the v0.5.0 public release (audit/cleanup plus OSS hardening passes), harness plumbing canaries, and machine-input provenance; not benchmark quality"
+  },
+  "source": {
+    "state": "single squashed v0.5.0 public release snapshot bound by frozen_harness_identity; developed atop a private iteration history",
+    "frozen_harness_identity": {
+      "schema": "mini-agent-harness-v1",
+      "source_file_count": 32,
+      "source_sha256": "a5506cfbaced8bfcb834c86a08794a1e03bbd5eaab670cbff3534f4e2ee08c66"
+    },
+    "audit_pass": {
+      "date": "2026-08-12",
+      "summary": "spec binding enforced on all CLI run/eval agent construction, codec translation losses declared and reported, E501 lint activated, dead code removed, grading/doctor/probe extracted from the CLI, shared checkout/hash/lifecycle helpers deduplicated, cua-speed-run step-budget exhaustion now runs the hidden checker, SWE-bench grader inventory count and byte totals asserted; the OSS pass added provider retry/backoff, bounded screenshot replay, credential preflight, the swe workspace guard, eval progress output, the quickstart/examples/library documentation, and the multi-mini-agent companion distribution",
+      "prior_frozen_identity": {
+        "source_file_count": 27,
+        "source_sha256": "9b0d0ceb6e640fb195e767523eeb39c2a46b2b1f0d2a999da8f58ac2d819665a"
+      }
+    },
+    "canary_source_identity": "reference canaries predate the frozen source; exact computer identities are recorded per saved manifest"
+  },
+  "deterministic_gates": [
+    {
+      "command": "PYTHONPATH=src python3 -m unittest discover -s tests -v",
+      "interpreters": [
+        "CPython 3.10.20",
+        "CPython 3.12.5"
+      ],
+      "tests_per_interpreter": 360,
+      "status": "passed",
+      "note": "CPython 3.11 and 3.13 were not installed on the audit node; the four-interpreter matrix remains enforced in CI"
+    },
+    {
+      "command": "PYTHONPATH=src python3 -m compileall -q src tests",
+      "status": "passed"
+    },
+    {
+      "command": "python3 -m ruff check src tests",
+      "ruff_version": "0.15.20",
+      "lint_scope": "default rules plus E501 at 88 columns, with per-file ignores only for byte-exact upstream prompt literals and embedded runtime-script literals",
+      "status": "passed"
+    },
+    {
+      "command": "python3 -m mypy src/mini_agent",
+      "status": "passed"
+    },
+    {
+      "command": "PYTHONPATH=src python3 -m mini_agent profile --application web --profile default --model openai/test-model",
+      "status": "passed"
+    },
+    {
+      "command": "umask 0022 && python3 -m build && python3 -m twine check --strict dist/*",
+      "status": "passed",
+      "artifacts": {
+        "mini_agent_cmu_wheel_sha256": "884340e5d9119debfdc282120424477fd47662aa1c71aac7b940d31d651e1048",
+        "mini_agent_cmu_sdist_sha256": "9f90294c243b83aa65eb0096e82e63fcbc39a22847d0040a4df38e5be7e9eae2",
+        "multi_mini_agent_wheel_sha256": "7bb2af1cf4a4d706b8f7eda61cfa15032e8d8f5415701da596a018b1141bde7c",
+        "multi_mini_agent_sdist_sha256": "7e0d813f519574aaedc60105d1eec9144d5b0e605b459c2afed7f95d220cdc0c",
+        "note": "checked locally then removed; sdist hashes vary with archive timestamps; the distribution is named mini-agent-cmu"
+      },
+      "fresh_install_checks": "both 0.5.0 wheels installed into a clean CPython 3.12 venv; versions, console scripts, and the multi-agent spec surface verified"
+    }
+  ],
+  "reference_pass_canaries": {
+    "model_mode": "deterministic scripted responder; no paid model calls",
+    "final_source_match": false,
+    "source_scope": "run before the pre-audit source freeze; the audit/cleanup pass widened the source gap further, and all subsequent hardening is covered by deterministic gates, not a repeated environment pass",
+    "swebench_apptainer_generation": {
+      "status": "passed",
+      "instance_id": "astropy__astropy-12907",
+      "runtime": "Apptainer 1.4.0",
+      "model_calls": 3,
+      "tool_calls": 2,
+      "image": {
+        "size_bytes": 1047486464,
+        "sha256": "3c2e9eb1023786cc8928e178fe2a3f2215691b4cd79154825b4f68489a37278f"
+      },
+      "patch": {
+        "size_bytes": 566,
+        "sha256": "4d1ded2eae9043ae590b6251caac41b248a6c0db668899f578a5b4fca29290c7",
+        "survived_agent_git_commit": true
+      },
+      "official_grade_run": false,
+      "scope": "real official task image, testbed Conda activation, bash execution and binary patch export; generation only"
+    },
+    "browsecomp_plus_fixed_single": {
+      "status": "passed",
+      "model_calls": 2,
+      "tool_calls": 1,
+      "retrieved_documents": 5,
+      "snippet_tokens": 512,
+      "trace_sha256": "b517ef8dd0400e93de754007b7cf7ccabd1610c02c25e1e8970d894a491c4bb6",
+      "official_run_sha256": "dd26f8edd081f1a1e3f559c3b3b9bf26f74b314ef94d8f3a4d64eace88e021c0",
+      "official_judge_run": false,
+      "scope": "real pinned Lucene index, Anserini and tokenizer; search-only official generation schema"
+    },
+    "browsecomp_plus_fixed_two_agent": {
+      "status": "passed",
+      "agents_spawned": 2,
+      "agents_completed": 2,
+      "messages_sent": 1,
+      "model_calls": 6,
+      "tool_calls": 4,
+      "trace_sha256": "696cde450b137a3f9cf20d3920f93daab83aa4a6053d283390de080d183e7c5d",
+      "official_run_sha256": "6ce36ba4e91f5b47383d94543b09001aee85711d7019663d69295ce3acaf2e25",
+      "official_judge_run": false,
+      "scope": "two MiniAgents, messaging/wait and real pinned Lucene retrieval"
+    },
+    "chromium_page_reader": {
+      "status": "passed",
+      "scope": "real Chromium navigation to https://example.com, response/final-URL validation, bounded extraction and cleanup; transport smoke only"
+    },
+    "cua_speed_run_single": {
+      "status": "passed",
+      "elapsed_seconds": 24.26,
+      "model_calls": 2,
+      "tool_calls": 1,
+      "score": 0.0,
+      "score_interpretation": "deliberate wait action; plumbing only",
+      "manifest_sha256": "0f919dc5df947dc37bf737a97c993afc6b750199e587caae8c31b2c32e2d9374",
+      "harness_source_sha256": "28c22d6124e6922acc4a60c43280c5d131dafa3d677c6602b452a5162e302512",
+      "scope": "real QEMU/KVM boot, 1600x900 observation, action, hidden checker, artifacts, cleanup"
+    },
+    "osworld_v1_single": {
+      "status": "passed",
+      "elapsed_seconds": 151.15,
+      "model_calls": 2,
+      "tool_calls": 1,
+      "score": 0.0,
+      "score_interpretation": "deliberate wait action; plumbing only",
+      "manifest_sha256": "eb1240ebfa494685e09bb4b6063bf063ac13bad5b93bc6b0f236680daef1b7a5",
+      "harness_source_sha256": "69a9393cc92a014afa4259d1ae5ae1f95df7389be0d8459ba216efc9fe5ae3e0",
+      "scope": "official guest reset, setup, 60-second settle, fresh observation, action, 20-second pre-evaluation settle, evaluate, artifacts, and cleanup through Apptainer compatibility client"
+    },
+    "cua_speed_run_two_agent": {
+      "status": "passed",
+      "elapsed_seconds": 25.23,
+      "model_calls": 7,
+      "tool_calls": 5,
+      "trace_event_counts": {
+        "agent_spawned": 2,
+        "agent_completed": 2,
+        "message_sent": 2,
+        "agent_state_adopted": 1
+      },
+      "manifest_sha256": "3d422efa00ae1dead4b234809eda7916a71865a0e01e90ffccf46fcddffbdf17",
+      "harness_source_sha256": "42039442746eebdab9257097a64194eadf0619b4c0587a2465291168a63de3ff",
+      "scope": "two real QEMU/KVM guests, message, wait, live-session adoption, action, hidden checker, cleanup"
+    },
+    "osworld_v2_boot": {
+      "status": "passed",
+      "guest_platform": "Linux",
+      "screen_size": [
+        1920,
+        1080
+      ],
+      "scope": "machine and controller only",
+      "task_or_score_claimed": false,
+      "task_data_acquisition": "HTTP 401; gated"
+    }
+  },
+  "machine_inputs": {
+    "details": "docs/machine-images.md",
+    "osworld_v1": {
+      "checkout_revision": "091f5ef1d5544bc74953c77875d5feb5bed30108",
+      "archive": {
+        "size_bytes": 12273896463,
+        "sha256": "b795b6cd4c69b252c1b4f10150a347795555032501b60fd031751ed09b896712"
+      },
+      "vm_image": {
+        "size_bytes": 24460197888,
+        "virtual_size_bytes": 53687091200,
+        "sha256": "6bf667a852b3c307f61d9f09c42559351f45e0607e428b4997becf534cf4d313",
+        "qemu_img_check": "passed"
+      },
+      "runtime_sif": {
+        "size_bytes": 80822272,
+        "sha256": "8a9ee8e99bae986e3b7633419bce2043906c9892bd555f4765b7fa6b2adebccd",
+        "source_oci_manifest": "sha256:0e6497a9295647cf05bf2b2af522fdd79bdeba2737595259cab310a3bcf6baa9"
+      }
+    },
+    "osworld_v2": {
+      "checkout_tag": "v2026.06.24",
+      "checkout_revision": "2b9b7b4eb73243d557bdbf2998fe18d8e18e19c6",
+      "archive": {
+        "size_bytes": 14189763267,
+        "sha256": "eb737ae70b49849e24af407de6a518439a23de05a8497096a948334ce0a909aa"
+      },
+      "vm_image": {
+        "size_bytes": 27402633216,
+        "virtual_size_bytes": 53687091200,
+        "sha256": "3d632f031459583cf936e0c4c5bb939122df0fec85aecb0d044ef2d3e5863335",
+        "qemu_img_check": "passed"
+      }
+    },
+    "cua_speed_run": {
+      "checkout_revision": "7230223cbc57df68331cad32889adf01f3601651",
+      "gym_anything_revision": "70d9e51d2517049d995cc820a319a355c3c6e979",
+      "vm_image": {
+        "size_bytes": 6701187072,
+        "virtual_size_bytes": 53687091200,
+        "sha256": "a9d802e021ac883fc4877bf334aaef48505502d23ac51b097e39ed7b3bb8d85f",
+        "identity_scope": "observed node build; upstream builder network inputs are not universally immutable"
+      }
+    }
+  },
+  "historical_operator_evidence": [
+    {
+      "boundary": "credentialed OpenAI-compatible provider",
+      "observation": "direct SWE, fixture web, and recursive SWE plumbing completed before the final source pass",
+      "current_release_score": false
+    },
+    {
+      "boundary": "SWE-bench Verified",
+      "observation": "one single-agent and one multi-agent patch passed the instance FAIL_TO_PASS test inside its image",
+      "official_grader_run": false,
+      "current_release_score": false
+    },
+    {
+      "boundary": "BrowseComp-Plus",
+      "observation": "one single-agent query completed generation; a multi-agent query exercised messaging and browser-state adoption but timed out",
+      "official_judge_run": false,
+      "current_release_score": false
+    }
+  ],
+  "limitations": [
+    "no model credential available for a fresh paid-provider run",
+    "no SERPAPI_API_KEY; BrowseComp live search not run",
+    "no Docker; official SWE-bench grader not run",
+    "no suitable GPU/vLLM Qwen3-32B judge; official BrowseComp-Plus scoring not run",
+    "OSWorld v2 task data is gated and returned HTTP 401; boot-only evidence",
+    "OSWorld v2 multi-phase and ASK_USER/user-simulator task lifecycles are unsupported and fail closed",
+    "the in-process cua-speed-run adapter does not reproduce the official executor's separate-process 90-second environment and 300-second verifier watchdogs",
+    "the default Gym-Anything QEMU runtime OCI reference is mutable; comparable runs should pin a SIF or digest-qualified image",
+    "no full benchmark suite or statistically meaningful model comparison",
+    "CPython 3.11 and 3.13 were absent from the audit node; this record covers a local 3.10/3.12 pass while CI enforces the full matrix",
+    "real environment canaries predate the frozen source; the audit/cleanup hardening was validated by deterministic gates rather than a repeated VM, index, or paid-provider pass",
+    "smoke and plumbing passes are not release-winner evidence"
+  ],
+  "sensitive_data": {
+    "credential_values_recorded": false,
+    "private_provider_endpoints_recorded": false,
+    "private_deployment_model_names_recorded": false,
+    "session_header_values_recorded": false
+  }
+}

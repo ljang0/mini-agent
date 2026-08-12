@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools==84.0.0", "wheel==0.48.0", "packaging==26.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "multi-mini-agent"
+version = "0.5.0"
+description = "Multi-agent front door for mini-agent: the same minimal loop with delegation defaults on"
+readme = "README.md"
+license = "Apache-2.0"
+authors = [{ name = "Lawrence Jang", email = "ljang@andrew.cmu.edu" }]
+requires-python = ">=3.10"
+dependencies = ["mini-agent-cmu==0.5.0"]
+keywords = ["agents", "multi-agent", "llm", "evaluation", "delegation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: POSIX :: Linux",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+
+[project.urls]
+Source = "https://github.com/ljang0/mini-agent"
+Issues = "https://github.com/ljang0/mini-agent/issues"
+
+[project.scripts]
+multi-mini-agent = "multi_mini_agent:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

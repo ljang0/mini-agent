@@ -1,0 +1,110 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -e '.[dev]'
+      - run: PYTHONPATH=src python -m unittest discover -s tests -v
+      - run: PYTHONPATH=src python -m compileall -q src tests
+      - run: python -m ruff check src tests
+      - run: python -m mypy src/mini_agent
+      - run: >-
+          PYTHONPATH=src python -m mini_agent profile
+          --application web --profile default --model openai/test-model
+
+  package:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13"
+      - run: python -m pip install -e '.[dev]'
+      - name: Build public-readable artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 0022
+          python -m build
+      - run: python -m twine check --strict dist/*
+      - name: Install clean wheel and sdist
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_version="$(PYTHONPATH=src python -c 'import mini_agent; print(mini_agent.__version__)')"
+          package_tmp="$(mktemp -d)"
+          python -m venv "$package_tmp/wheel"
+          "$package_tmp/wheel/bin/pip" install dist/*.whl
+          (
+            cd "$package_tmp"
+            "$package_tmp/wheel/bin/python" -c "import mini_agent; assert mini_agent.__version__ == '$source_version', mini_agent.__version__"
+            "$package_tmp/wheel/bin/mini-agent" profile --application web --profile default --model openai/test-model
+            "$package_tmp/wheel/bin/mini-agent" doctor --target storage --home "$package_tmp/home-wheel" --scratch "$package_tmp/scratch-wheel" --min-durable-free-gib 0 --min-scratch-free-gib 0
+          )
+          python -m venv "$package_tmp/sdist"
+          "$package_tmp/sdist/bin/pip" install dist/*.tar.gz
+          (
+            cd "$package_tmp"
+            "$package_tmp/sdist/bin/python" -c "import mini_agent; assert mini_agent.__version__ == '$source_version', mini_agent.__version__"
+            "$package_tmp/sdist/bin/mini-agent" profile --application computer --profile default --model anthropic/test-model
+          )
+      - name: Build and verify multi-mini-agent companion
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 0022
+          source_version="$(PYTHONPATH=src python -c 'import mini_agent; print(mini_agent.__version__)')"
+          (cd packaging/multi-mini-agent && python -m build && python -m twine check --strict dist/*)
+          companion_version="$(python -c 'import tomllib, pathlib; print(tomllib.loads(pathlib.Path("packaging/multi-mini-agent/pyproject.toml").read_text())["project"]["version"])')"
+          test "$source_version" = "$companion_version" || {
+            echo "companion version $companion_version does not match mini-agent $source_version" >&2
+            exit 1
+          }
+          companion_tmp="$(mktemp -d)"
+          python -m venv "$companion_tmp/venv"
+          "$companion_tmp/venv/bin/pip" install dist/*.whl
+          "$companion_tmp/venv/bin/pip" install --no-deps packaging/multi-mini-agent/dist/*.whl
+          "$companion_tmp/venv/bin/multi-mini-agent" profile --application web --model openai/test-model --format agent-spec | grep -q '"agent"'
+
+  web-fixed:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install build==1.5.0
+      - name: Build public-readable wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 0022
+          python -m build --wheel
+      - name: Install lean fixed-web wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_tmp="$(mktemp -d)"
+          python -m venv "$package_tmp/web-fixed"
+          for wheel_path in dist/*.whl; do break; done
+          "$package_tmp/web-fixed/bin/pip" install "${wheel_path}[web-fixed]"
+          "$package_tmp/web-fixed/bin/python" -c "import importlib.metadata as m, importlib.util as u; assert m.version('huggingface-hub') == '0.33.4'; assert m.version('pyjnius') == '1.6.1'; assert m.version('tokenizers') == '0.21.2'; assert u.find_spec('jnius'); assert u.find_spec('tokenizers'); assert u.find_spec('transformers') is None; assert u.find_spec('numpy') is None; assert u.find_spec('pyserini') is None; assert u.find_spec('torch') is None; assert u.find_spec('fastapi') is None"
