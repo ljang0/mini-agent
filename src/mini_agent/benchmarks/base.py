@@ -4,27 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import importlib.metadata
 import inspect
 import json
 import math
-import os
-import platform
 import shutil
-import uuid
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping, Sequence
 
+from .._hash import canonical_bytes, harness_identity
 from ..environments.base import complete_in_thread
-from ..runtime import (
-    BudgetLedger,
-    RunContext,
-    TraceRecorder,
-    _sync_directory,
-    redact_artifact,
-)
+from ..runtime import BudgetLedger, RunContext, TraceRecorder, redact_artifact
 from ..specs import AgentSpecV1
+from ..storage import atomic_json, read_committed_result, read_json_object
 
 if TYPE_CHECKING:
     from ..agent import MiniAgent
@@ -85,148 +77,6 @@ class EvaluationOutcome:
 
 
 TaskWorker = Callable[[BenchmarkTask, RunContext, Path], Awaitable[EvaluationOutcome]]
-
-
-def harness_identity() -> Mapping[str, Any]:
-    """Return a location-independent identity for the executing agent harness."""
-
-    package = Path(__file__).resolve().parents[1]
-    files: list[Mapping[str, Any]] = []
-    candidates = sorted(
-        (
-            path
-            for path in package.rglob("*")
-            if path.is_file() and (path.suffix == ".py" or path.name == "py.typed")
-        ),
-        key=lambda path: path.relative_to(package).as_posix(),
-    )
-    for path in candidates:
-        identity = immutable_file_identity(path, label="harness source")
-        files.append(_identity_entry(identity, path.relative_to(package).as_posix()))
-    encoded = _canonical_bytes(files)
-    packages: dict[str, str | None] = {}
-    for name in (
-        "mini-agent",
-        "httpx",
-        "playwright",
-        "huggingface-hub",
-        "pyjnius",
-        "tokenizers",
-        "swebench",
-    ):
-        try:
-            packages[name] = importlib.metadata.version(name)
-        except importlib.metadata.PackageNotFoundError:
-            packages[name] = None
-    return {
-        "schema": "mini-agent-harness-v1",
-        "python": {
-            "implementation": platform.python_implementation(),
-            "version": platform.python_version(),
-        },
-        "packages": packages,
-        "source_file_count": len(files),
-        "source_sha256": hashlib.sha256(encoded).hexdigest(),
-    }
-
-
-def immutable_file_identity(path: Path, *, label: str = "asset") -> Mapping[str, Any]:
-    """Hash one regular file while proving it did not change underneath us."""
-
-    if not isinstance(path, Path):
-        raise ValueError(f"{label} path must be a Path")
-    expanded = path.expanduser()
-    if expanded.is_symlink():
-        raise ValueError(f"{label} must not be a symlink: {expanded}")
-    resolved = expanded.resolve()
-    if not resolved.is_file():
-        raise ValueError(f"{label} must be a regular file: {resolved}")
-    before = resolved.stat()
-    digest = hashlib.sha256()
-    with resolved.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b""):
-            digest.update(chunk)
-    after = resolved.stat()
-    if _stat_key(before) != _stat_key(after):
-        raise RuntimeError(f"{label} changed while hashing: {resolved}")
-    return {
-        "path": str(resolved),
-        "size_bytes": after.st_size,
-        "sha256": digest.hexdigest(),
-    }
-
-
-def immutable_tree_identity(
-    path: Path, *, label: str = "asset tree"
-) -> Mapping[str, Any]:
-    """Hash a directory tree without following or accepting symbolic links."""
-
-    if not isinstance(path, Path):
-        raise ValueError(f"{label} path must be a Path")
-    expanded = path.expanduser()
-    if expanded.is_symlink():
-        raise ValueError(f"{label} must not be a symlink: {expanded}")
-    root = expanded.resolve()
-    if not root.is_dir():
-        raise ValueError(f"{label} must be a directory: {root}")
-    before = root.stat()
-    entries = sorted(
-        root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()
-    )
-    observed_paths = tuple(item.relative_to(root).as_posix() for item in entries)
-    files: list[Mapping[str, Any]] = []
-    total = 0
-    for candidate in entries:
-        if candidate.is_symlink():
-            raise ValueError(f"{label} contains a symlink: {candidate}")
-        if candidate.is_dir():
-            continue
-        if not candidate.is_file():
-            raise ValueError(f"{label} contains a non-regular file: {candidate}")
-        identity = immutable_file_identity(candidate, label=label)
-        total += int(identity["size_bytes"])
-        files.append(_identity_entry(identity, candidate.relative_to(root).as_posix()))
-    after_paths = tuple(
-        sorted(item.relative_to(root).as_posix() for item in root.rglob("*"))
-    )
-    after = root.stat()
-    if (
-        _stat_key(before, size=False) != _stat_key(after, size=False)
-        or observed_paths != after_paths
-    ):
-        raise RuntimeError(f"{label} changed while hashing: {root}")
-    encoded = _canonical_bytes(files)
-    return {
-        "path": str(root),
-        "file_count": len(files),
-        "size_bytes": total,
-        "sha256": hashlib.sha256(encoded).hexdigest(),
-    }
-
-
-def machine_image_identity(path: Path, *, label: str) -> Mapping[str, Any]:
-    """Hash a machine image and validate its optional adjacent provenance."""
-
-    identity = dict(immutable_file_identity(path, label=label))
-    sidecar = Path(identity["path"] + ".provenance.json")
-    if not sidecar.exists() and not sidecar.is_symlink():
-        return identity
-    sidecar_identity = dict(
-        immutable_file_identity(sidecar, label=f"{label} provenance")
-    )
-    content = sidecar.read_bytes()
-    if hashlib.sha256(content).hexdigest() != sidecar_identity["sha256"]:
-        raise RuntimeError(f"{label} provenance changed while reading: {sidecar}")
-    try:
-        provenance = strict_json_loads(content)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"invalid {label} provenance JSON: {sidecar}") from exc
-    _require_mapping(provenance, f"{label} provenance")
-    if provenance.get("final_image_sha256") != identity["sha256"]:
-        raise ValueError(f"{label} provenance does not match the image: {sidecar}")
-    identity["provenance"] = sidecar_identity
-    identity["provenance_schema"] = provenance.get("schema")
-    return identity
 
 
 class EvaluationRunner:
@@ -411,7 +261,7 @@ class EvaluationRunner:
                     "id": task.task_id,
                     "prompt_sha256": hashlib.sha256(task.prompt.encode()).hexdigest(),
                     "data_sha256": hashlib.sha256(
-                        _canonical_bytes(task.data)
+                        canonical_bytes(task.data)
                     ).hexdigest(),
                 }
                 for task in self.tasks
@@ -425,7 +275,7 @@ class EvaluationRunner:
         if self.output.exists() and any(self.output.iterdir()):
             if not resume:
                 raise ValueError(f"evaluation output is not empty: {self.output}")
-            if not path.is_file() or _read_json(path) != manifest:
+            if not path.is_file() or read_json_object(path) != manifest:
                 raise ValueError("resume manifest does not match this evaluation")
             self._instances_root()
             return
@@ -533,7 +383,7 @@ class EvaluationRunner:
     def _resume_timing(self) -> tuple[float, float]:
         summary_path = self.output / "summary.json"
         if summary_path.is_file():
-            summary = _read_json(summary_path)
+            summary = read_json_object(summary_path)
             return (
                 _nonnegative_number(summary.get("elapsed_seconds", 0.0)),
                 _nonnegative_number(summary.get("backend_active_union_seconds", 0.0)),
@@ -698,61 +548,6 @@ def owned_instance_artifacts(
     return root, instances, artifacts
 
 
-def atomic_json(path: Path, value: Any) -> None:
-    content = json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n"
-    atomic_bytes(path, content.encode())
-
-
-def read_committed_result(directory: Path, task_id: str) -> Mapping[str, Any]:
-    """Read one result only when its terminal commit marker matches its bytes."""
-
-    result_path = directory / "result.json"
-    completion_path = directory / "completed.json"
-    if result_path.is_symlink() or completion_path.is_symlink():
-        raise ValueError(f"result artifacts must not be symlinks: {directory}")
-    if not result_path.is_file() or not completion_path.is_file():
-        raise ValueError(f"incomplete result artifact for {task_id!r}")
-    result_bytes = result_path.read_bytes()
-    value = _json_object_load(result_bytes, result_path)
-    completion = _json_object_load(completion_path.read_bytes(), completion_path)
-    if (
-        value.get("task_id") != task_id
-        or value.get("status") not in {"completed", "failed", "blocked"}
-        or completion.get("task_id") != task_id
-        or completion.get("result_sha256")
-        != hashlib.sha256(result_bytes).hexdigest()
-    ):
-        raise ValueError(f"invalid committed result artifact for {task_id!r}")
-    return value
-
-
-def atomic_bytes(path: Path, content: bytes) -> None:
-    missing: list[Path] = []
-    ancestor = path.parent
-    while not ancestor.exists():
-        missing.append(ancestor)
-        if ancestor == ancestor.parent:
-            break
-        ancestor = ancestor.parent
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    for created in reversed(missing):
-        created.chmod(0o700)
-    temporary = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
-    try:
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-        path.chmod(0o600)
-        _sync_directory(path.parent)
-        for created in missing:
-            _sync_directory(created.parent)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
 def raise_after_cleanup(
     label: str,
     operation_error: BaseException | None,
@@ -783,6 +578,39 @@ def raise_after_cleanup(
         ) from cleanup_error
 
 
+async def shielded_create(
+    creation: "asyncio.Future[Any]",
+    *,
+    label: str,
+    close: Callable[[Any], Awaitable[Any]],
+) -> Any:
+    """Await a resource's creation, closing it if this task is cancelled first.
+
+    ``asyncio.shield`` lets an in-flight creation finish even when the awaiting
+    task is cancelled, which means the resource it eventually produces still
+    has to be closed. Both the original failure and any cleanup failure stay
+    observable; on failure this never returns.
+    """
+
+    try:
+        return await asyncio.shield(creation)
+    except BaseException as operation_error:
+        resource: Any = None
+        cleanup_error: BaseException | None = None
+        try:
+            resource = await creation
+        except BaseException as exc:
+            if exc is not operation_error:
+                cleanup_error = exc
+        if resource is not None:
+            try:
+                await close(resource)
+            except BaseException as exc:
+                cleanup_error = combine_errors(cleanup_error, exc)
+        raise_after_cleanup(label, operation_error, cleanup_error)
+        raise AssertionError("raise_after_cleanup must raise")
+
+
 def combine_errors(first: BaseException | None, second: BaseException) -> BaseException:
     """Combine secondary lifecycle failures without discarding either one."""
 
@@ -793,31 +621,6 @@ def combine_errors(first: BaseException | None, second: BaseException) -> BaseEx
 
 def _error_text(error: BaseException) -> str:
     return f"{type(error).__name__}: {error}"
-
-
-def _canonical_bytes(value: Any) -> bytes:
-    """Encode one artifact-identity value as deterministic UTF-8 JSON bytes."""
-
-    return json.dumps(
-        value, sort_keys=True, separators=(",", ":"), allow_nan=False
-    ).encode("utf-8")
-
-
-def _identity_entry(identity: Mapping[str, Any], relative: str) -> Mapping[str, Any]:
-    """Describe one hashed file by its path relative to the hashed root."""
-
-    return {
-        "path": relative,
-        "size_bytes": identity["size_bytes"],
-        "sha256": identity["sha256"],
-    }
-
-
-def _stat_key(info: os.stat_result, *, size: bool = True) -> tuple[int, ...]:
-    """Return the inode identity fields that must not move while hashing."""
-
-    key = (info.st_dev, info.st_ino, info.st_mtime_ns)
-    return key + (info.st_size,) if size else key
 
 
 def _nonnegative_number(value: Any) -> float:
@@ -834,27 +637,14 @@ def _interval_union(intervals: Sequence[tuple[float, float]]) -> float:
     return sum(finish - start for start, finish in merged)
 
 
-def _read_json(path: Path) -> Mapping[str, Any]:
-    return _json_object_load(path.read_bytes(), path)
-
-
-def _json_object_load(raw: bytes, path: Path) -> Mapping[str, Any]:
-    value = strict_json_loads(raw.decode("utf-8"))
-    if not isinstance(value, Mapping):
-        raise ValueError(f"JSON artifact must be an object: {path}")
-    return value
-
-
 __all__ = [
     "BenchmarkTask",
     "EvaluationOutcome",
     "EvaluationRunner",
     "TaskWorker",
-    "atomic_bytes",
-    "atomic_json",
     "combine_errors",
-    "read_committed_result",
     "raise_after_cleanup",
+    "shielded_create",
     "task_agent_prefix",
     "task_agent_root",
 ]

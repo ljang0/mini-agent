@@ -20,8 +20,8 @@ from unittest.mock import AsyncMock, patch
 os.environ.setdefault("OPENAI_API_KEY", "fixture-key")
 os.environ.setdefault("ANTHROPIC_API_KEY", "fixture-key")
 
+from mini_agent.environments.web import SnippetTokenizerAdapter
 from mini_agent.cli import (
-    _TokenizersSnippetAdapter,
     _execution_config,
     _evaluation_config,
     _grader_model_factory,
@@ -1149,7 +1149,7 @@ class CLITests(unittest.TestCase):
             with (
                 patch("mini_agent.grading.subprocess.run", side_effect=run_probe),
                 patch(
-                    "mini_agent.cli.importlib.metadata.version",
+                    "importlib.metadata.version",
                     return_value="parent-shadow-version",
                 ),
             ):
@@ -1194,7 +1194,7 @@ class CLITests(unittest.TestCase):
             with (
                 patch("mini_agent.grading.subprocess.run", side_effect=run_probe),
                 patch(
-                    "mini_agent.cli.importlib.metadata.version",
+                    "importlib.metadata.version",
                     return_value="1.26.4",
                 ),
                 self.assertRaisesRegex(ValueError, "numpy==1.26.4, found 2.0.0"),
@@ -2030,7 +2030,7 @@ class CLITests(unittest.TestCase):
                 sys.modules,
                 {"huggingface_hub": hub, "tokenizers": tokens},
             ), patch(
-                "mini_agent.cli.importlib.metadata.version",
+                "mini_agent.environments.web.importlib.metadata.version",
                 side_effect=lambda name: {
                     "huggingface-hub": "0.33.4",
                     "tokenizers": "0.21.2",
@@ -2038,7 +2038,7 @@ class CLITests(unittest.TestCase):
             ):
                 tokenizer = _load_tokenizer(args, require_revision=True)
 
-        self.assertIsInstance(tokenizer, _TokenizersSnippetAdapter)
+        self.assertIsInstance(tokenizer, SnippetTokenizerAdapter)
         self.assertEqual(tokenizer.encode("text", add_special_tokens=False), [1, 2, 3])
         self.assertEqual(tokenizer.decode([1, 2], skip_special_tokens=True), "decoded")
         self.assertEqual(args._resolved_snippet_tokenizer_revision, revision)
@@ -2053,7 +2053,8 @@ class CLITests(unittest.TestCase):
             snippet_tokenizer_revision="a" * 40,
         )
         with patch(
-            "mini_agent.cli.importlib.metadata.version", return_value="unexpected"
+            "mini_agent.environments.web.importlib.metadata.version",
+            return_value="unexpected",
         ):
             with self.assertRaisesRegex(RuntimeError, "huggingface-hub==0.33.4"):
                 _load_tokenizer(args, require_revision=True)
@@ -2492,7 +2493,8 @@ class CLIEvalEndToEndTests(unittest.TestCase):
         )
 
         def scripted(spec: str, **kwargs: Any) -> ScriptedModel:
-            if kwargs.get("agent_id", "").endswith("/grader"):
+            del kwargs
+            if spec == "openai/judge":
                 return ScriptedModel(
                     [
                         ModelResponse(

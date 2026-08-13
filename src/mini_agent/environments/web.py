@@ -21,7 +21,7 @@ from urllib.parse import urljoin, urlsplit
 
 import httpx
 
-from .._hash import stable_file_sha256
+from .._hash import stable_file_sha256, stat_key
 from .._http import ResponseBodyTooLarge, read_bounded_body
 from ..types import (
     InfrastructureError,
@@ -93,6 +93,123 @@ class SnippetTokenizer(Protocol):
     ) -> Sequence[Any]: ...
 
     def decode(self, tokens: Sequence[Any], *, skip_special_tokens: bool) -> str: ...
+
+
+class SnippetTokenizerAdapter:
+    """Expose the two upstream snippet operations without a model framework.
+
+    ``name_or_path`` and ``init_kwargs`` deliberately mirror the Transformers
+    tokenizer attributes upstream would expose, so :meth:`WebEnvironment.
+    provenance` records the same identity for either object.
+    """
+
+    def __init__(
+        self,
+        backend: Any,
+        *,
+        name: str,
+        revision: str | None,
+        tokenizer_json_sha256: str,
+    ) -> None:
+        self._backend = backend
+        self.name_or_path = name
+        self.init_kwargs = {"_commit_hash": revision}
+        self.tokenizer_json_sha256 = tokenizer_json_sha256
+
+    def encode(self, text: str, *, add_special_tokens: bool) -> Sequence[int]:
+        return list(
+            self._backend.encode(text, add_special_tokens=add_special_tokens).ids
+        )
+
+    def decode(self, tokens: Sequence[Any], *, skip_special_tokens: bool) -> str:
+        return self._backend.decode(
+            list(tokens), skip_special_tokens=skip_special_tokens
+        )
+
+
+def commit_hash(value: Any) -> str | None:
+    """Return the casefolded value when it names a full 40-character commit."""
+
+    if isinstance(value, str) and re.fullmatch(r"[0-9a-fA-F]{40}", value):
+        return value.casefold()
+    return None
+
+
+def load_snippet_tokenizer(
+    repo_id: str, revision: Any, *, require_revision: bool = False
+) -> tuple[SnippetTokenizerAdapter, str | None, str]:
+    """Download, version-pin, and hash the tokenizer the fixed adapter needs.
+
+    Returns the adapter, the resolved 40-character revision, and the SHA-256 of
+    the exact ``tokenizer.json`` bytes that were parsed.
+    """
+
+    if require_revision and commit_hash(revision) is None:
+        raise ValueError(
+            "BrowseComp-Plus evaluation requires "
+            "--snippet-tokenizer-revision as a full 40-character commit"
+        )
+    if require_revision:
+        for name, expected in (
+            ("huggingface-hub", HUGGINGFACE_HUB_VERSION),
+            ("tokenizers", TOKENIZERS_VERSION),
+        ):
+            try:
+                observed = importlib.metadata.version(name)
+            except importlib.metadata.PackageNotFoundError as exc:
+                raise RuntimeError(
+                    f"BrowseComp-Plus evaluation requires {name}=={expected}"
+                ) from exc
+            if observed != expected:
+                raise RuntimeError(
+                    f"BrowseComp-Plus evaluation requires {name}=={expected}, "
+                    f"found {observed}"
+                )
+    try:
+        from huggingface_hub import (  # type: ignore[import-not-found, import-untyped, unused-ignore]
+            hf_hub_download,
+        )
+        from tokenizers import (  # type: ignore[import-not-found, import-untyped, unused-ignore]
+            Tokenizer,
+        )
+    except ImportError as exc:
+        raise RuntimeError(
+            "token-bounded fixed retrieval requires mini-agent[web-fixed]"
+        ) from exc
+    tokenizer_path = Path(
+        hf_hub_download(
+            repo_id=repo_id,
+            filename="tokenizer.json",
+            revision=revision,
+        )
+    )
+    snapshot = tokenizer_path.parent
+    snapshot_revision = (
+        commit_hash(snapshot.name) if snapshot.parent.name == "snapshots" else None
+    )
+    exact_requested = commit_hash(revision)
+    if (
+        exact_requested is not None
+        and snapshot_revision is not None
+        and snapshot_revision != exact_requested
+    ):
+        raise RuntimeError("downloaded tokenizer revision does not match the request")
+    resolved = snapshot_revision or exact_requested
+    tokenizer_bytes = tokenizer_path.read_bytes()
+    tokenizer_sha256 = hashlib.sha256(tokenizer_bytes).hexdigest()
+    try:
+        tokenizer_json = tokenizer_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise RuntimeError("downloaded tokenizer.json is not UTF-8") from exc
+    tokenizer = SnippetTokenizerAdapter(
+        # Parse the same immutable bytes that were hashed. Reloading this path
+        # would leave a hash/load race in a shared Hugging Face cache.
+        Tokenizer.from_str(tokenizer_json),
+        name=repo_id,
+        revision=resolved,
+        tokenizer_json_sha256=tokenizer_sha256,
+    )
+    return tokenizer, resolved, tokenizer_sha256
 
 
 class PageReader(Protocol):
@@ -625,8 +742,6 @@ class PlaywrightPageReader:
         return {
             "reader": "playwright",
             "browser": "chromium",
-            "isolated_context": True,
-            "untrusted_content_security_boundary": False,
             "max_page_chars": self.max_page_chars,
         }
 
@@ -1066,32 +1181,29 @@ def directory_sha256(path: Path) -> str:
     files = [item for item in entries if item.is_file()]
     if not files:
         raise ValueError(f"Lucene index contains no files: {path}")
-    identities: dict[Path, tuple[int, int, int, int]] = {}
+    identities: dict[Path, tuple[int, ...]] = {}
     for item in files:
         relative = item.relative_to(path).as_posix().encode("utf-8")
         digest.update(len(relative).to_bytes(8, "big"))
         digest.update(relative)
         with item.open("rb") as stream:
-            before = _file_identity(os.fstat(stream.fileno()))
-            digest.update(before[2].to_bytes(8, "big"))
+            opened = os.fstat(stream.fileno())
+            before = stat_key(opened)
+            # Recorded operators hold --index-sha256 values over exactly these
+            # bytes: name length, name, file size, then contents.
+            digest.update(opened.st_size.to_bytes(8, "big"))
             while chunk := stream.read(1024 * 1024):
                 digest.update(chunk)
-            after = _file_identity(os.fstat(stream.fileno()))
+            after = stat_key(os.fstat(stream.fileno()))
         if before != after:
             raise RuntimeError(f"Lucene index changed while hashing: {item}")
         identities[item] = after
     if sorted(path.rglob("*")) != entries:
         raise RuntimeError("Lucene index changed while hashing")
     for item, identity in identities.items():
-        if identity != _file_identity(item.stat()):
+        if identity != stat_key(item.stat()):
             raise RuntimeError(f"Lucene index changed while hashing: {item}")
     return digest.hexdigest()
-
-
-def _file_identity(status: os.stat_result) -> tuple[int, int, int, int]:
-    """Return the device, inode, size, and mtime that must not move mid-hash."""
-
-    return (status.st_dev, status.st_ino, status.st_size, status.st_mtime_ns)
 
 
 def _file_sha256(path: Path) -> str:
@@ -1119,6 +1231,9 @@ __all__ = [
     "SearchBackendStateTransfer",
     "SerpAPIBackend",
     "SnippetTokenizer",
+    "SnippetTokenizerAdapter",
+    "commit_hash",
+    "load_snippet_tokenizer",
     "directory_sha256",
     "validate_anserini_jar",
 ]

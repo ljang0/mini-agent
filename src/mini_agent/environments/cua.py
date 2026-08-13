@@ -123,9 +123,13 @@ def _optional_identity(value: Any) -> None:
 class ComputerObservation:
     png: bytes
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    # Derived once here: ``png`` is immutable ``bytes`` on a frozen dataclass,
+    # so every later reader shares this result instead of walking the chunk
+    # stream again on a multi-megabyte screenshot.
+    dimensions: tuple[int, int] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        validate_png(self.png)
+        object.__setattr__(self, "dimensions", validate_png(self.png))
         object.__setattr__(
             self,
             "metadata",
@@ -764,7 +768,6 @@ class CUASpeedRunAdapterClient:
         return {
             "client": "cua_speed_run_adapter",
             "revision": CUA_SPEED_RUN_REVISION,
-            "verifier_exposed": False,
         }
 
 
@@ -902,7 +905,7 @@ class OSWorldClient:
         return self._identity
 
     def provenance(self) -> Mapping[str, Any]:
-        return {"client": "osworld", "verifier_exposed": False}
+        return {"client": "osworld"}
 
 
 def encode_osworld_action(action: Mapping[str, Any]) -> str:
@@ -1094,7 +1097,7 @@ class CUAEnvironment(BaseEnvironment):
             raise InvalidAction(f"unsupported computer tool {call.name!r}")
         if self._observation is None:
             raise ProtocolError("computer must be observed before acting")
-        dimensions = validate_png(self._observation.png)
+        dimensions = self._observation.dimensions
         actions = validate_computer_actions(
             call.arguments.get("actions"),
             dimensions,
@@ -1118,7 +1121,7 @@ class CUAEnvironment(BaseEnvironment):
     def _render(
         self, observation: ComputerObservation, *, executed: int, episode_done: bool
     ) -> ToolExecution:
-        width, height = validate_png(observation.png)
+        width, height = observation.dimensions
         image = "data:image/png;base64," + base64.b64encode(observation.png).decode()
         size = {"width": width, "height": height}
         return ToolExecution(
@@ -1201,7 +1204,6 @@ class CUAEnvironment(BaseEnvironment):
             "benchmark": self.benchmark,
             "tool": "computer",
             "coordinates": "native_pixels",
-            "verifier_exposed": False,
             "client": dict(client),
         }
 

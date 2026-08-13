@@ -20,24 +20,17 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from .benchmarks.base import (
-    atomic_json,
+from ._hash import (
+    canonical_bytes,
     harness_identity,
     immutable_file_identity,
     immutable_tree_identity,
 )
+from .storage import atomic_json
 from .types import _require_finite_number, _require_mapping, strict_json_loads
 
 _FILE_IDENTITY_FIELDS = ("size_bytes", "sha256")
 _TREE_IDENTITY_FIELDS = ("file_count", "size_bytes", "sha256")
-
-
-def _canonical_json(value: Any) -> bytes:
-    """Encode ``value`` as the canonical JSON bytes every fingerprint covers."""
-
-    return json.dumps(
-        value, sort_keys=True, separators=(",", ":"), allow_nan=False
-    ).encode("utf-8")
 
 
 def _required_path(value: Path | None, option: str) -> Path:
@@ -396,13 +389,8 @@ def _grade(args: argparse.Namespace) -> int:
         "grader": grader,
         "runtime": runtime,
         "argv": list(argv),
-        "privacy": {
-            "grade_directory_mode": "0700",
-            "artifact_file_mode": "0600",
-            "publish": False,
-        },
     }
-    manifest_encoded = _canonical_json(manifest_value)
+    manifest_encoded = canonical_bytes(manifest_value)
     manifest = {
         **manifest_value,
         "fingerprint": hashlib.sha256(manifest_encoded).hexdigest(),
@@ -582,7 +570,7 @@ def _grader_runtime_identity(
                     "-c",
                     _GRADER_RUNTIME_PROBE_SOURCE,
                     str(output),
-                    _canonical_json(required).decode("utf-8"),
+                    canonical_bytes(required).decode("utf-8"),
                 ),
                 cwd=probe_root,
                 check=False,
@@ -766,7 +754,7 @@ def _verify_evaluation_manifest(manifest: Mapping[str, Any], benchmark: str) -> 
         raise ValueError("evaluation manifest fingerprint is malformed")
     unsigned = dict(manifest)
     del unsigned["fingerprint"]
-    if hashlib.sha256(_canonical_json(unsigned)).hexdigest() != fingerprint:
+    if hashlib.sha256(canonical_bytes(unsigned)).hexdigest() != fingerprint:
         raise ValueError("evaluation manifest fingerprint does not match its content")
     raw_tasks = manifest.get("tasks")
     if not isinstance(raw_tasks, list) or not raw_tasks:
@@ -991,7 +979,7 @@ def _grade_artifact_inventory(output: Path) -> Mapping[str, Any]:
             )
     files.sort(key=lambda value: str(value["path"]))
     links.sort(key=lambda value: str(value["path"]))
-    encoded = _canonical_json({"files": files, "links": links})
+    encoded = canonical_bytes({"files": files, "links": links})
     return {
         "file_count": len(files),
         "symlink_count": len(links),

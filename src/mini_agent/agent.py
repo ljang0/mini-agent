@@ -20,6 +20,8 @@ from .types import (
     ToolDefinition,
     ToolExecution,
     ToolResult,
+    _require_positive_int,
+    _require_str,
 )
 
 
@@ -35,22 +37,14 @@ class MiniAgent:
         agent_id: str = "/root",
         role: str = "solver",
     ) -> None:
-        if (
-            not isinstance(max_steps, int)
-            or isinstance(max_steps, bool)
-            or max_steps < 1
-        ):
-            raise ValueError("max_steps must be a positive integer")
+        _require_positive_int(max_steps, "max_steps")
+        _require_str(system_prompt, "system_prompt", non_empty=False)
+        _require_str(agent_id, "agent_id")
+        _require_str(role, "role")
         if not callable(getattr(model, "query", None)):
             raise ValueError("model must expose an async query method")
         if not callable(getattr(environment, "tools", None)):
             raise ValueError("environment must expose tools")
-        if not isinstance(system_prompt, str):
-            raise ValueError("system_prompt must be a string")
-        if not isinstance(agent_id, str) or not agent_id.strip():
-            raise ValueError("agent_id must be a non-empty string")
-        if not isinstance(role, str) or not role.strip():
-            raise ValueError("role must be a non-empty string")
         if context is not None and not isinstance(context, RunContext):
             raise ValueError("context must be RunContext or None")
         self.model = model
@@ -63,8 +57,7 @@ class MiniAgent:
         self.messages: list[Message] = []
 
     async def run(self, task: str) -> AgentResult:
-        if not isinstance(task, str) or not task.strip():
-            raise ValueError("task must be a non-empty string")
+        _require_str(task, "task")
         self.messages = []
         if self.system_prompt:
             self.messages.append(Message(role="system", content=self.system_prompt))

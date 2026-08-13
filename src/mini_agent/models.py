@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 from collections import deque
 from typing import TYPE_CHECKING, Any, Mapping, Protocol, Sequence
 
@@ -10,7 +9,6 @@ from .types import (
     ModelResponse,
     ToolDefinition,
     ToolResult,
-    _json_mapping,
     _require_positive_int,
     _require_str,
 )
@@ -32,16 +30,11 @@ class BackendModel:
         self,
         backend: Any,
         *,
-        agent_id: str = "/root",
-        role: str = "solver",
         max_output_tokens: int | None = None,
-        metadata: Mapping[str, Any] | None = None,
         expected_resolved_model: str | None = None,
     ) -> None:
         if max_output_tokens is not None:
             _require_positive_int(max_output_tokens, "max_output_tokens")
-        _require_str(agent_id, "agent_id")
-        _require_str(role, "role")
         if expected_resolved_model is not None:
             _require_str(
                 expected_resolved_model, "expected_resolved_model", stripped=True
@@ -51,10 +44,7 @@ class BackendModel:
         if not callable(getattr(backend, "complete", None)):
             raise ValueError("backend must expose an async complete method")
         self.backend = backend
-        self.agent_id = agent_id
-        self.role = role
         self.max_output_tokens = max_output_tokens
-        self.metadata = _json_mapping(metadata or {}, "model metadata")
         self.expected_resolved_model = expected_resolved_model
         self._continuation: Any = None
         self._resolved_model: str | None = None
@@ -100,12 +90,9 @@ class BackendModel:
                 raise ValueError("continued provider query requires tool results")
         response = await self.backend.complete(
             ModelRequest(
-                agent_id=self.agent_id,
-                role=self.role,
                 prompt=prompt,
                 system=system,
                 max_output_tokens=self.max_output_tokens,
-                metadata=self.metadata,
                 input_images=images,
                 tools=tuple(tools),
                 tool_results=tool_results,
@@ -136,19 +123,6 @@ class BackendModel:
                 )
         self._continuation = response.continuation
         return response
-
-    def provenance(self) -> Mapping[str, Any]:
-        provenance = getattr(self.backend, "provenance", None)
-        value = provenance() if callable(provenance) else {}
-        copied = _json_mapping(value, "model provenance")
-        if self._resolved_model is not None:
-            copied["resolved_model_sha256"] = hashlib.sha256(
-                self._resolved_model.encode("utf-8")
-            ).hexdigest()
-        if self.expected_resolved_model is not None:
-            copied["expected_resolved_model"] = self.expected_resolved_model
-        return copied
-
 
 class ScriptedModel:
     """Small deterministic model for offline tests and examples."""
@@ -235,7 +209,6 @@ def build_model(
     default_headers: Mapping[str, str] | None = None,
     pricing: TokenPricing | None = None,
     protocol: str | None = None,
-    agent_id: str = "/root",
     expected_resolved_model: str | None = None,
     max_retries: int | None = None,
     timeout_seconds: float | None = None,
@@ -308,7 +281,6 @@ def build_model(
         )
     return BackendModel(
         resolved_backend,
-        agent_id=agent_id,
         max_output_tokens=max_output_tokens,
         expected_resolved_model=expected_resolved_model,
     )

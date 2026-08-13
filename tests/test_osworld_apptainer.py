@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from mini_agent.environments.osworld_apptainer import (
+from mini_agent.runtimes.osworld_apptainer import (
     OSWorldApptainerDockerClient,
     _materialize_uefi_firmware,
     _remove_private_tree,
@@ -54,18 +54,18 @@ class OSWorldApptainerTests(unittest.TestCase):
             process = _FakeProcess()
             with (
                 patch(
-                    "mini_agent.environments.osworld_apptainer.subprocess.Popen",
+                    "mini_agent.runtimes.osworld_apptainer.subprocess.Popen",
                     return_value=process,
                 ),
                 patch(
-                    "mini_agent.environments.osworld_apptainer."
+                    "mini_agent.runtimes.osworld_apptainer."
                     "_materialize_uefi_firmware"
                 ),
                 patch(
-                    "mini_agent.environments.osworld_apptainer."
+                    "mini_agent.runtimes.osworld_apptainer."
                     "_await_apptainer_launch"
                 ),
-                patch("mini_agent.environments.osworld_apptainer.os.killpg"),
+                patch("mini_agent.runtimes.osworld_apptainer.os.killpg"),
             ):
                 container = first.containers.run(
                     "happysixd/osworld-docker",
@@ -96,19 +96,19 @@ class OSWorldApptainerTests(unittest.TestCase):
             )
             with (
                 patch(
-                    "mini_agent.environments.osworld_apptainer.shutil.which",
+                    "mini_agent.runtimes.osworld_apptainer.shutil.which",
                     return_value="/usr/bin/apptainer",
                 ),
                 patch(
-                    "mini_agent.environments.osworld_apptainer.Path.exists",
+                    "mini_agent.runtimes.osworld_apptainer.Path.exists",
                     return_value=True,
                 ),
                 patch(
-                    "mini_agent.environments.osworld_apptainer.os.access",
+                    "mini_agent.runtimes.osworld_apptainer.os.access",
                     return_value=True,
                 ),
                 patch(
-                    "mini_agent.environments.osworld_apptainer.subprocess.run",
+                    "mini_agent.runtimes.osworld_apptainer.subprocess.run",
                     return_value=completed,
                 ) as run,
             ):
@@ -142,18 +142,18 @@ class OSWorldApptainerTests(unittest.TestCase):
 
             with (
                 patch(
-                    "mini_agent.environments.osworld_apptainer.subprocess.Popen",
+                    "mini_agent.runtimes.osworld_apptainer.subprocess.Popen",
                     return_value=process,
                 ) as popen,
                 patch(
-                    "mini_agent.environments.osworld_apptainer."
+                    "mini_agent.runtimes.osworld_apptainer."
                     "_materialize_uefi_firmware"
                 ),
                 patch(
-                    "mini_agent.environments.osworld_apptainer."
+                    "mini_agent.runtimes.osworld_apptainer."
                     "_await_apptainer_launch"
                 ),
-                patch("mini_agent.environments.osworld_apptainer.os.killpg") as killpg,
+                patch("mini_agent.runtimes.osworld_apptainer.os.killpg") as killpg,
             ):
                 container = client.containers.run(
                     "happysixd/osworld-docker",
@@ -219,11 +219,11 @@ class OSWorldApptainerTests(unittest.TestCase):
             }
             with (
                 patch(
-                    "mini_agent.environments.osworld_apptainer."
+                    "mini_agent.runtimes.osworld_apptainer."
                     "_materialize_uefi_firmware"
                 ),
                 patch(
-                    "mini_agent.environments.osworld_apptainer.subprocess.Popen",
+                    "mini_agent.runtimes.osworld_apptainer.subprocess.Popen",
                     side_effect=OSError("launch failed"),
                 ),
                 self.assertRaisesRegex(OSError, "launch failed"),
@@ -235,11 +235,11 @@ class OSWorldApptainerTests(unittest.TestCase):
             process.returncode = 2
             with (
                 patch(
-                    "mini_agent.environments.osworld_apptainer."
+                    "mini_agent.runtimes.osworld_apptainer."
                     "_materialize_uefi_firmware"
                 ),
                 patch(
-                    "mini_agent.environments.osworld_apptainer.subprocess.Popen",
+                    "mini_agent.runtimes.osworld_apptainer.subprocess.Popen",
                     return_value=process,
                 ),
                 self.assertRaisesRegex(RuntimeError, "exited early"),
@@ -261,7 +261,7 @@ class OSWorldApptainerTests(unittest.TestCase):
                 return subprocess.CompletedProcess(argv, 0, b"", b"")
 
             with patch(
-                "mini_agent.environments.osworld_apptainer.subprocess.run",
+                "mini_agent.runtimes.osworld_apptainer.subprocess.run",
                 side_effect=extract,
             ) as run:
                 _materialize_uefi_firmware(
@@ -290,10 +290,10 @@ class OSWorldApptainerTests(unittest.TestCase):
 
             with (
                 patch(
-                    "mini_agent.environments.osworld_apptainer.shutil.rmtree",
+                    "mini_agent.runtimes.osworld_apptainer.shutil.rmtree",
                     side_effect=remove,
                 ),
-                patch("mini_agent.environments.osworld_apptainer.time.sleep") as sleep,
+                patch("mini_agent.runtimes.osworld_apptainer.time.sleep") as sleep,
             ):
                 _remove_private_tree(target, attempts=2)
             sleep.assert_called_once_with(0.1)
@@ -314,7 +314,7 @@ class OSWorldApptainerTests(unittest.TestCase):
             )
             with (
                 patch(
-                    "mini_agent.environments.osworld_apptainer.subprocess.Popen"
+                    "mini_agent.runtimes.osworld_apptainer.subprocess.Popen"
                 ) as popen,
                 self.assertRaisesRegex(ValueError, "port contract"),
             ):

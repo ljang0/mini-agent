@@ -185,69 +185,18 @@ class TokenPricing:
         return total / 1_000_000
 
 
-@dataclass(frozen=True)
-class _BackendConfig:
-    model: str
-    api_key: str | None
-    api_key_env: str
-    base_url: str
-    timeout_seconds: float
-    pricing: TokenPricing | None
-    default_body: Mapping[str, Any]
-    default_headers: Mapping[str, str]
-    max_retries: int
-
-
-def _validated_backend_config(
-    *,
-    model: str,
-    api_key: str | None,
-    api_key_env: str,
-    base_url: str,
-    timeout_seconds: float,
-    pricing: TokenPricing | None,
-    default_body: Mapping[str, Any] | None,
-    default_headers: Mapping[str, str] | None,
-    allowed_headers: set[str],
-    reserved_body_fields: set[str],
-    protocol_label: str,
-    max_retries: int,
-) -> _BackendConfig:
-    """Validate the constructor surface shared by every backend codec."""
-
-    _require_str(model, "model", stripped=True)
-    _validate_api_key_env(api_key_env)
-    if api_key is not None and (not isinstance(api_key, str) or not api_key.strip()):
-        raise ValueError("api_key must be a non-empty string or None")
-    if not isinstance(base_url, str) or not base_url:
-        raise ValueError("model and base_url must be non-empty")
-    _validate_endpoint(base_url, timeout_seconds)
-    if pricing is not None and not isinstance(pricing, TokenPricing):
-        raise ValueError("pricing must be TokenPricing or None")
-    if default_body is not None and not isinstance(default_body, Mapping):
-        raise ValueError("default_body must be an object or None")
-    _require_int(max_retries, "max_retries", minimum=0, maximum=10)
-    body = _json_mapping(default_body or {}, "provider default_body")
-    headers = _validate_headers(default_headers, allowed_headers)
-    _reject_reserved_body_fields(body, reserved_body_fields)
-    _require_non_streaming(body, protocol_label)
-    return _BackendConfig(
-        model=model,
-        api_key=api_key,
-        api_key_env=api_key_env,
-        base_url=base_url.rstrip("/"),
-        timeout_seconds=timeout_seconds,
-        pricing=pricing,
-        default_body=body,
-        default_headers=headers,
-        max_retries=max_retries,
-    )
-
-
 class _Backend:
-    """Attribute plumbing shared by the three backend codecs."""
+    """Attribute plumbing shared by the three backend codecs.
+
+    Each codec declares only what makes its wire protocol different — the
+    headers it accepts, the body fields the harness owns, and the label its
+    errors use — and inherits one validated constructor surface.
+    """
 
     provider: str
+    allowed_headers: ClassVar[frozenset[str]]
+    reserved_body_fields: ClassVar[frozenset[str]]
+    protocol_label: ClassVar[str]
 
     def _provenance(self, protocol: str, **extra: Any) -> Mapping[str, Any]:
         """Provenance keys every codec reports, in wire order."""
@@ -263,16 +212,70 @@ class _Backend:
             "max_retries": self.max_retries,
         }
 
-    def _configure(self, config: _BackendConfig) -> None:
-        self.model = config.model
-        self.api_key = config.api_key
-        self.api_key_env = config.api_key_env
-        self.base_url = config.base_url
-        self.timeout_seconds = config.timeout_seconds
-        self.pricing = config.pricing
-        self.default_body = config.default_body
-        self.default_headers = config.default_headers
-        self.max_retries = config.max_retries
+    def _auth_headers(self) -> dict[str, str]:
+        """Return this codec's request headers, including its credential."""
+
+        return {
+            **self.default_headers,
+            "Authorization": f"Bearer {_credential(self.api_key, self.api_key_env)}",
+        }
+
+    async def _post(
+        self, path: str, payload: Mapping[str, Any], attempt_counter: list[int]
+    ) -> Mapping[str, Any]:
+        """POST one payload to this codec's endpoint under its own transport."""
+
+        return await _post_json(
+            f"{self.base_url}{path}",
+            headers=self._auth_headers(),
+            payload=payload,
+            timeout_seconds=self.timeout_seconds,
+            max_retries=self.max_retries,
+            attempt_counter=attempt_counter,
+        )
+
+    def _configure(
+        self,
+        *,
+        model: str,
+        api_key: str | None,
+        api_key_env: str,
+        base_url: str,
+        timeout_seconds: float,
+        pricing: TokenPricing | None,
+        default_body: Mapping[str, Any] | None,
+        default_headers: Mapping[str, str] | None,
+        max_retries: int,
+    ) -> None:
+        """Validate and bind the constructor surface shared by every codec."""
+
+        _require_str(model, "model", stripped=True)
+        _validate_api_key_env(api_key_env)
+        if api_key is not None and (
+            not isinstance(api_key, str) or not api_key.strip()
+        ):
+            raise ValueError("api_key must be a non-empty string or None")
+        if not isinstance(base_url, str) or not base_url:
+            raise ValueError("model and base_url must be non-empty")
+        _validate_endpoint(base_url, timeout_seconds)
+        if pricing is not None and not isinstance(pricing, TokenPricing):
+            raise ValueError("pricing must be TokenPricing or None")
+        if default_body is not None and not isinstance(default_body, Mapping):
+            raise ValueError("default_body must be an object or None")
+        _require_int(max_retries, "max_retries", minimum=0, maximum=10)
+        body = _json_mapping(default_body or {}, "provider default_body")
+        headers = _validate_headers(default_headers, set(self.allowed_headers))
+        _reject_reserved_body_fields(body, set(self.reserved_body_fields))
+        _require_non_streaming(body, self.protocol_label)
+        self.model = model
+        self.api_key = api_key
+        self.api_key_env = api_key_env
+        self.base_url = base_url.rstrip("/")
+        self.timeout_seconds = timeout_seconds
+        self.pricing = pricing
+        self.default_body = body
+        self.default_headers = headers
+        self.max_retries = max_retries
 
 
 def _credential(api_key: str | None, api_key_env: str) -> str:
@@ -289,6 +292,22 @@ class OpenAIResponsesBackend(_Backend):
     Meta deployment exposing this protocol is selected by ``build_model`` with
     ``provider="meta"`` and an explicit ``base_url``.
     """
+
+    allowed_headers: ClassVar[frozenset[str]] = frozenset(
+        {"authorization", "content-type"}
+    )
+    reserved_body_fields: ClassVar[frozenset[str]] = frozenset(
+        {
+            "conversation",
+            "input",
+            "instructions",
+            "max_output_tokens",
+            "model",
+            "previous_response_id",
+            "tools",
+        }
+    )
+    protocol_label: ClassVar[str] = "Responses"
 
     translation_losses: ClassVar[tuple[TranslationLoss, ...]] = (
         TranslationLoss(
@@ -332,7 +351,7 @@ class OpenAIResponsesBackend(_Backend):
         default_headers: Mapping[str, str] | None = None,
     ) -> None:
         self.provider = _require_str(provider, "provider")
-        config = _validated_backend_config(
+        self._configure(
             model=model,
             api_key=api_key,
             api_key_env=api_key_env,
@@ -341,20 +360,8 @@ class OpenAIResponsesBackend(_Backend):
             pricing=pricing,
             default_body=default_body,
             default_headers=default_headers,
-            allowed_headers={"authorization", "content-type"},
-            reserved_body_fields={
-                "conversation",
-                "input",
-                "instructions",
-                "max_output_tokens",
-                "model",
-                "previous_response_id",
-                "tools",
-            },
-            protocol_label="Responses",
             max_retries=max_retries,
         )
-        self._configure(config)
         store = self.default_body.get("store")
         if "store" in self.default_body and not isinstance(store, bool):
             raise ValueError("provider body store must be boolean")
@@ -381,19 +388,7 @@ class OpenAIResponsesBackend(_Backend):
                 raise ProviderError("OpenAI continuation must be a response id")
             payload["previous_response_id"] = request.continuation
         attempt_counter: list[int] = []
-        data = await _post_json(
-            f"{self.base_url}/responses",
-            headers={
-                **self.default_headers,
-                "Authorization": (
-                    f"Bearer {_credential(self.api_key, self.api_key_env)}"
-                ),
-            },
-            payload=payload,
-            timeout_seconds=self.timeout_seconds,
-            max_retries=self.max_retries,
-            attempt_counter=attempt_counter,
-        )
+        data = await self._post("/responses", payload, attempt_counter)
         usage = _openai_usage(data.get("usage"), self.pricing)
         decode = _Decoder(self.provider, usage)
         decode.require(
@@ -468,6 +463,14 @@ class ChatCompletionsBackend(_Backend):
     parameters are never set so the server's defaults always apply.
     """
 
+    allowed_headers: ClassVar[frozenset[str]] = frozenset(
+        {"authorization", "content-type"}
+    )
+    reserved_body_fields: ClassVar[frozenset[str]] = frozenset(
+        {"max_completion_tokens", "messages", "model", "tools"}
+    )
+    protocol_label: ClassVar[str] = "Chat Completions"
+
     translation_losses: ClassVar[tuple[TranslationLoss, ...]] = (
         TranslationLoss(
             field="tool_result_is_error",
@@ -520,7 +523,7 @@ class ChatCompletionsBackend(_Backend):
         default_headers: Mapping[str, str] | None = None,
     ) -> None:
         self.provider = _require_str(provider, "provider")
-        config = _validated_backend_config(
+        self._configure(
             model=model,
             api_key=api_key,
             api_key_env=api_key_env,
@@ -529,17 +532,8 @@ class ChatCompletionsBackend(_Backend):
             pricing=pricing,
             default_body=default_body,
             default_headers=default_headers,
-            allowed_headers={"authorization", "content-type"},
-            reserved_body_fields={
-                "max_completion_tokens",
-                "messages",
-                "model",
-                "tools",
-            },
-            protocol_label="Chat Completions",
             max_retries=max_retries,
         )
-        self._configure(config)
         self.max_history_images = _validated_history_images(max_history_images)
         choices = self.default_body.get("n", 1)
         if not isinstance(choices, int) or isinstance(choices, bool) or choices != 1:
@@ -563,19 +557,7 @@ class ChatCompletionsBackend(_Backend):
         if request.max_output_tokens is not None:
             payload["max_completion_tokens"] = request.max_output_tokens
         attempt_counter: list[int] = []
-        data = await _post_json(
-            f"{self.base_url}/chat/completions",
-            headers={
-                **self.default_headers,
-                "Authorization": (
-                    f"Bearer {_credential(self.api_key, self.api_key_env)}"
-                ),
-            },
-            payload=payload,
-            timeout_seconds=self.timeout_seconds,
-            max_retries=self.max_retries,
-            attempt_counter=attempt_counter,
-        )
+        data = await self._post("/chat/completions", payload, attempt_counter)
         usage = _chat_usage(data.get("usage"), self.pricing)
         decode = _Decoder(self.provider, usage)
         choices: Any = data.get("choices")
@@ -661,6 +643,14 @@ class AnthropicMessagesBackend(_Backend):
 
     provider = "anthropic"
 
+    allowed_headers: ClassVar[frozenset[str]] = frozenset(
+        {"x-api-key", "anthropic-version", "content-type"}
+    )
+    reserved_body_fields: ClassVar[frozenset[str]] = frozenset(
+        {"max_tokens", "messages", "model", "system", "tools"}
+    )
+    protocol_label: ClassVar[str] = "Anthropic Messages"
+
     translation_losses: ClassVar[tuple[TranslationLoss, ...]] = (
         TranslationLoss(
             field="tool_kind",
@@ -697,7 +687,7 @@ class AnthropicMessagesBackend(_Backend):
         default_headers: Mapping[str, str] | None = None,
     ) -> None:
         self.api_version = _require_str(api_version, "api_version")
-        config = _validated_backend_config(
+        self._configure(
             model=model,
             api_key=api_key,
             api_key_env=api_key_env,
@@ -706,19 +696,18 @@ class AnthropicMessagesBackend(_Backend):
             pricing=pricing,
             default_body=default_body,
             default_headers=default_headers,
-            allowed_headers={"x-api-key", "anthropic-version", "content-type"},
-            reserved_body_fields={
-                "max_tokens",
-                "messages",
-                "model",
-                "system",
-                "tools",
-            },
-            protocol_label="Anthropic Messages",
             max_retries=max_retries,
         )
-        self._configure(config)
         self.max_history_images = _validated_history_images(max_history_images)
+
+    def _auth_headers(self) -> dict[str, str]:
+        """Anthropic authenticates with x-api-key and a pinned API version."""
+
+        return {
+            **self.default_headers,
+            "x-api-key": _credential(self.api_key, self.api_key_env),
+            "anthropic-version": self.api_version,
+        }
 
     async def complete(self, request: ModelRequest) -> ModelResponse:
         messages = _anthropic_messages(request, self.max_history_images)
@@ -733,18 +722,7 @@ class AnthropicMessagesBackend(_Backend):
         if request.tools:
             payload["tools"] = [_anthropic_tool(tool) for tool in request.tools]
         attempt_counter: list[int] = []
-        data = await _post_json(
-            f"{self.base_url}/messages",
-            headers={
-                **self.default_headers,
-                "x-api-key": _credential(self.api_key, self.api_key_env),
-                "anthropic-version": self.api_version,
-            },
-            payload=payload,
-            timeout_seconds=self.timeout_seconds,
-            max_retries=self.max_retries,
-            attempt_counter=attempt_counter,
-        )
+        data = await self._post("/messages", payload, attempt_counter)
         usage = _anthropic_usage(data.get("usage"), self.pricing)
         decode = _Decoder("Anthropic", usage)
         decode.require(

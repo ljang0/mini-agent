@@ -32,15 +32,19 @@ from ..types import (
     _require_str,
 )
 from .checkout import git as _git, reject_untracked_execution_files
+from .._hash import (
+    immutable_file_identity,
+    immutable_tree_identity,
+)
+from ..storage import (
+    atomic_bytes,
+    atomic_json,
+    read_committed_result,
+)
 from .base import (
     task_agent_builder,
     BenchmarkTask,
     EvaluationOutcome,
-    atomic_json,
-    atomic_bytes,
-    immutable_file_identity,
-    immutable_tree_identity,
-    read_committed_result,
     raise_after_cleanup,
     task_agent_prefix,
     task_agent_root,
@@ -68,7 +72,7 @@ Your response should be in the following format:
 Explanation: {{your explanation for your final answer. For this explanation section only, you should cite your evidence documents inline by enclosing their docids in square brackets [] at the end of sentences. For example, [20].}}
 Exact Answer: {{your succinct, final answer}}
 Confidence: {{your confidence score between 0% and 100% for your answer}}
-""".strip()
+""".strip()  # noqa: E501 (byte-exact upstream literal)
 
 BROWSECOMP_GRADER = r"""
 Judge whether the following [response] to [question] is correct or not based on the precise and unambiguous [correct_answer] below.
@@ -89,7 +93,7 @@ correct: Answer 'yes' if extracted_final_answer matches the [correct_answer] giv
 
 
 confidence: The extracted confidence score between 0|\%| and 100|\%| from [response]. Put 100 if there is no confidence score available.
-""".strip()
+""".strip()  # noqa: E501 (byte-exact upstream literal)
 
 
 ModelFactory = Callable[[str], Model | Awaitable[Model]]
@@ -646,7 +650,8 @@ def official_browsecomp_plus_grader_argv(
     revision = _git(root, "rev-parse", "HEAD")
     if revision != BROWSECOMP_PLUS_REVISION:
         raise ValueError(
-            f"BrowseComp-Plus checkout must be {BROWSECOMP_PLUS_REVISION}, found {revision}"
+            f"BrowseComp-Plus checkout must be {BROWSECOMP_PLUS_REVISION}, "
+            f"found {revision}"
         )
     if _git(root, "status", "--porcelain", "--untracked-files=no"):
         raise ValueError("BrowseComp-Plus checkout has tracked modifications")

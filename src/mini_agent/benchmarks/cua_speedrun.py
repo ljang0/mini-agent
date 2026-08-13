@@ -41,15 +41,18 @@ from ..types import (
     _require_positive_int,
     _require_str,
 )
+from .._hash import ImageStatKey, image_stat_key, machine_image_identity
+from ..storage import (
+    atomic_bytes,
+    atomic_json,
+)
 from .base import (
     task_agent_builder,
     BenchmarkTask,
     EvaluationOutcome,
-    atomic_bytes,
-    atomic_json,
     combine_errors,
-    machine_image_identity,
     raise_after_cleanup,
+    shielded_create,
     task_agent_root,
 )
 from .checkout import (
@@ -63,9 +66,8 @@ ModelFactory = Callable[[str], Model | Awaitable[Model]]
 
 
 GYM_ANYTHING_REVISION = "70d9e51d2517049d995cc820a319a355c3c6e979"
-_ImageStat = tuple[int, int, int, int, int, int]
 _MACHINE_IMAGE_IDENTITIES: dict[
-    tuple[str, _ImageStat, _ImageStat | None], Mapping[str, Any]
+    tuple[str, ImageStatKey, ImageStatKey | None], Mapping[str, Any]
 ] = {}
 
 
@@ -280,26 +282,11 @@ class _AdapterPool:
                 backend.prepare, upstream_task.env, seed, prepared_directory
             )
         )
-        prepared: Any = None
-        try:
-            prepared = await asyncio.shield(prepare)
-        except BaseException as operation_error:
-            creation_cleanup_error: BaseException | None = None
-            try:
-                prepared = await prepare
-            except BaseException as exc:
-                if exc is not operation_error:
-                    creation_cleanup_error = exc
-            if prepared is not None:
-                try:
-                    await complete_in_thread(prepared.adapter.close)
-                except BaseException as exc:
-                    creation_cleanup_error = combine_errors(creation_cleanup_error, exc)
-            raise_after_cleanup(
-                "cua-speed-run environment creation",
-                operation_error,
-                creation_cleanup_error,
-            )
+        prepared = await shielded_create(
+            prepare,
+            label="cua-speed-run environment creation",
+            close=lambda resource: complete_in_thread(resource.adapter.close),
+        )
         try:
             generator = upstream_task.load_generator()
             resolved_description = prepared.description
@@ -901,21 +888,8 @@ def _cached_machine_image_identity(path: Path) -> Mapping[str, Any]:
     return identity
 
 
-def _stat_identity(observed: os.stat_result) -> _ImageStat:
-    """Detect a file being replaced, rewritten, or re-permissioned underneath us."""
-
-    return (
-        observed.st_dev,
-        observed.st_ino,
-        observed.st_mode,
-        observed.st_size,
-        observed.st_mtime_ns,
-        observed.st_ctime_ns,
-    )
-
-
-def _image_stat(path: Path, *, follow_symlinks: bool = True) -> _ImageStat:
-    return _stat_identity(path.stat(follow_symlinks=follow_symlinks))
+def _image_stat(path: Path, *, follow_symlinks: bool = True) -> ImageStatKey:
+    return image_stat_key(path.stat(follow_symlinks=follow_symlinks))
 
 
 _UNEXPANDED_VARIABLE = re.compile(r"\$(?:\{[^}]+\}|[A-Za-z_][A-Za-z0-9_]*)")
@@ -1073,7 +1047,7 @@ def _source_roots_sha256(roots: Sequence[tuple[str, Path]]) -> tuple[str, int]:
     """Hash the exact files copied or mounted by one gym-anything task."""
 
     digest = hashlib.sha256()
-    identities: dict[Path, _ImageStat] = {}
+    identities: dict[Path, ImageStatKey] = {}
     listings: dict[Path, tuple[Path, ...]] = {}
     file_count = 0
     for label, untrusted_root in roots:
@@ -1127,8 +1101,8 @@ def _source_roots_sha256(roots: Sequence[tuple[str, Path]]) -> tuple[str, int]:
                 with path.open("rb") as stream:
                     for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b""):
                         digest.update(chunk)
-            identity = _stat_identity(path.stat())
-            if identity != _stat_identity(before):
+            identity = image_stat_key(path.stat())
+            if identity != image_stat_key(before):
                 raise RuntimeError(f"gym-anything source changed while hashing: {path}")
             identities[path] = identity
     for root, expected_entries in listings.items():
@@ -1140,7 +1114,7 @@ def _source_roots_sha256(roots: Sequence[tuple[str, Path]]) -> tuple[str, int]:
                 f"gym-anything source tree changed while hashing: {root}"
             )
     for path, identity in identities.items():
-        if identity != _stat_identity(path.stat()):
+        if identity != image_stat_key(path.stat()):
             raise RuntimeError(f"gym-anything source changed while hashing: {path}")
     return digest.hexdigest(), file_count
 
@@ -1259,14 +1233,14 @@ def _task_source_sha256(task: Any) -> str:
     if not paths:
         raise ValueError("cua-speed-run task source directory is empty")
     digest = hashlib.sha256()
-    identities: dict[Path, _ImageStat] = {}
+    identities: dict[Path, ImageStatKey] = {}
     for path in sorted(paths):
         if not path.is_file():
             raise FileNotFoundError(f"missing cua-speed-run task source: {path}")
         relative = path.relative_to(task_dir).as_posix().encode("utf-8")
-        before = _stat_identity(path.stat())
+        before = image_stat_key(path.stat())
         content = path.read_bytes()
-        after = _stat_identity(path.stat())
+        after = image_stat_key(path.stat())
         if before != after:
             raise RuntimeError("cua-speed-run task source changed while hashing")
         digest.update(len(relative).to_bytes(8, "big"))
@@ -1279,7 +1253,7 @@ def _task_source_sha256(task: Any) -> str:
     if observed_entries != entries:
         raise RuntimeError("cua-speed-run task sources changed while hashing")
     for path, identity in identities.items():
-        if identity != _stat_identity(path.stat()):
+        if identity != image_stat_key(path.stat()):
             raise RuntimeError("cua-speed-run task source changed while hashing")
     return digest.hexdigest()
 

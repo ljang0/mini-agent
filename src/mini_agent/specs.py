@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import json
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Mapping, Tuple
 
+from ._hash import canonical_text
 from .types import (
     BudgetLimits,
     ToolDefinition,
@@ -83,16 +83,6 @@ def _budget_dict(limits: BudgetLimits) -> dict[str, Any]:
     }
 
 
-def _canonical_json(value: Mapping[str, Any]) -> str:
-    return json.dumps(
-        value,
-        allow_nan=False,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    )
-
-
 @dataclass(frozen=True)
 class AgentSpecV1:
     """The small, stable configuration surface shared by agent adapters."""
@@ -156,7 +146,7 @@ class AgentSpecV1:
     def canonical_json(self) -> str:
         """Serialize with the deterministic UTF-8 JSON rules used for identity."""
 
-        return _canonical_json(self.as_dict())
+        return canonical_text(self.as_dict())
 
     def identity_dict(self) -> dict[str, Any]:
         """Return manifest-safe identity without persisting the prompt contents."""
@@ -406,7 +396,7 @@ class TranslationReport:
         }
 
     def canonical_json(self) -> str:
-        return _canonical_json(self.as_dict())
+        return canonical_text(self.as_dict())
 
     @property
     def fingerprint(self) -> str:

@@ -18,13 +18,15 @@ from typing import Any, Mapping, Sequence
 from unittest.mock import AsyncMock, patch
 
 from mini_agent.agent import MiniAgent
+from mini_agent._hash import (
+    harness_identity,
+    machine_image_identity,
+)
+from mini_agent.storage import atomic_json
 from mini_agent.benchmarks.base import (
     BenchmarkTask,
     EvaluationOutcome,
     EvaluationRunner,
-    atomic_json,
-    harness_identity,
-    machine_image_identity,
     raise_after_cleanup,
     task_agent_root,
 )
@@ -151,9 +153,7 @@ class EvaluationRunnerTests(unittest.IsolatedAsyncioTestCase):
                 observed.append("directory" if stat.S_ISDIR(mode) else "file")
                 real_fsync(descriptor)
 
-            with patch(
-                "mini_agent.benchmarks.base.os.fsync", side_effect=record_fsync
-            ):
+            with patch("mini_agent.storage.os.fsync", side_effect=record_fsync):
                 atomic_json(parent / "artifact.json", {"ok": True})
 
             self.assertEqual(observed, ["file", "directory"])
@@ -2026,7 +2026,7 @@ class OSWorldBenchmarkTests(unittest.IsolatedAsyncioTestCase):
                     return_value=desktop,
                 ),
                 patch(
-                    "mini_agent.environments.osworld_apptainer."
+                    "mini_agent.runtimes.osworld_apptainer."
                     "OSWorldApptainerDockerClient",
                     return_value=routed_client,
                 ),

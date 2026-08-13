@@ -18,6 +18,8 @@ if TYPE_CHECKING:
     from .environments.base import AgentEnvironment
     from .models import Model
 
+from ._hash import canonical_digest
+from .storage import sync_directory
 from .types import (
     BudgetExceeded,
     BudgetLimits,
@@ -425,18 +427,6 @@ def _sync_trace_file(path: Path) -> None:
         os.close(descriptor)
 
 
-def _sync_directory(path: Path) -> None:
-    """Persist a directory entry before it becomes crash-recovery evidence."""
-
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-    flags |= getattr(os, "O_DIRECTORY", 0)
-    descriptor = os.open(path, flags)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
 class TraceRecorder:
     """Concurrency-safe trace sink with optional streamed JSONL output."""
 
@@ -478,9 +468,9 @@ class TraceRecorder:
             for created in reversed(missing):
                 created.chmod(0o700)
             _sync_trace_file(self.path)
-            _sync_directory(self.path.parent)
+            sync_directory(self.path.parent)
             for created in missing:
-                _sync_directory(created.parent)
+                sync_directory(created.parent)
 
     async def emit(
         self,
@@ -661,17 +651,19 @@ class RunContext:
         agent_id: str,
         role: str,
     ) -> ModelResponse:
-        tool_values = [_tool_definition_value(tool) for tool in tools]
+        # ``asdict`` on these frozen dataclasses is provider-neutral by
+        # construction: ``continuation`` (the only raw/native SDK field) lives
+        # on ModelResponse/ModelRequest, never on the history or tool types.
+        tool_values = [asdict(tool) for tool in tools]
+        message_values = [asdict(message) for message in messages]
         data: dict[str, Any] = {
             "message_count": len(messages),
             "tool_count": len(tools),
-            "history_sha256": _canonical_digest(
-                [_message_value(message) for message in messages]
-            ),
-            "tools_sha256": _canonical_digest(tool_values),
+            "history_sha256": canonical_digest(message_values),
+            "tools_sha256": canonical_digest(tool_values),
         }
         if self.capture_content:
-            data["messages"] = [_message_value(message) for message in messages]
+            data["messages"] = message_values
             data["tools"] = tool_values
         await self.trace.emit(
             "model_call_queued", agent_id=agent_id, role=role, data=data
@@ -766,7 +758,7 @@ class RunContext:
     ) -> ToolResult:
         self._remaining_time(agent_id)
         await self.ledger.reserve_tool_call(agent_id)
-        arguments_sha256 = _canonical_digest(dict(action.arguments))
+        arguments_sha256 = canonical_digest(dict(action.arguments))
         await self.trace.emit(
             "tool_call_started",
             agent_id=agent_id,
@@ -911,13 +903,6 @@ class RunContext:
         return remaining
 
 
-def _canonical_digest(value: Any) -> str:
-    """Hash the canonical JSON rendering used by every trace fingerprint."""
-
-    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
-    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-
-
 def _tool_execution_bytes(execution: ToolExecution) -> int:
     total = len(execution.output.encode("utf-8"))
     if execution.image_data_url is not None:
@@ -989,48 +974,6 @@ def _validate_arguments(
             if bounded and len(value) < minimum:
                 return f"argument {name!r} requires at least {minimum} items"
     return None
-
-
-def _tool_call_value(call: ToolCall) -> Mapping[str, Any]:
-    return {
-        "call_id": call.call_id,
-        "name": call.name,
-        "arguments": dict(call.arguments),
-        "kind": call.kind,
-    }
-
-
-def _tool_result_value(result: ToolResult) -> Mapping[str, Any]:
-    return {
-        "call_id": result.call_id,
-        "name": result.name,
-        "output": result.output,
-        "kind": result.kind,
-        "is_error": result.is_error,
-        "image_data_url": result.image_data_url,
-    }
-
-
-def _message_value(message: Message) -> Mapping[str, Any]:
-    """Serialize only provider-neutral history, never raw/native SDK objects."""
-
-    return {
-        "role": message.role,
-        "content": message.content,
-        "tool_calls": [_tool_call_value(call) for call in message.tool_calls],
-        "tool_results": [_tool_result_value(item) for item in message.tool_results],
-        "image_data_url": message.image_data_url,
-        "metadata": dict(message.metadata),
-    }
-
-
-def _tool_definition_value(tool: ToolDefinition) -> Mapping[str, Any]:
-    return {
-        "name": tool.name,
-        "description": tool.description,
-        "input_schema": dict(tool.input_schema),
-        "kind": tool.kind,
-    }
 
 
 __all__ = ["BudgetLedger", "RunContext", "TraceRecorder"]

@@ -499,39 +499,23 @@ class ModelResponse:
 class ModelRequest:
     """Provider-neutral request passed from :class:`BackendModel` to a codec."""
 
-    agent_id: str
-    role: str
     prompt: str
     system: str = ""
     max_output_tokens: Optional[int] = None
-    metadata: Mapping[str, Any] = field(default_factory=dict)
     input_images: Tuple[str, ...] = ()
     tools: Tuple[ToolDefinition, ...] = ()
     tool_results: Tuple[ToolResult, ...] = ()
     continuation: Any = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        for name in ("agent_id", "role"):
-            value = getattr(self, name)
-            if not isinstance(value, str) or not value.strip():
-                raise ValueError(f"model request {name} must be non-empty")
-        if not isinstance(self.prompt, str) or not isinstance(self.system, str):
-            raise ValueError("model request prompt and system must be strings")
-        _require_utf8(self.agent_id, "model request agent_id")
-        _require_utf8(self.role, "model request role")
-        _require_utf8(self.prompt, "model request prompt")
-        _require_utf8(self.system, "model request system")
+        _require_text(self.prompt, "model request prompt", non_empty=False)
+        _require_text(self.system, "model request system", non_empty=False)
         if self.max_output_tokens is not None and (
             not isinstance(self.max_output_tokens, int)
             or isinstance(self.max_output_tokens, bool)
             or self.max_output_tokens < 1
         ):
             raise ValueError("model request max_output_tokens must be positive or None")
-        object.__setattr__(
-            self,
-            "metadata",
-            _json_mapping(self.metadata, "model request metadata"),
-        )
         if not isinstance(self.input_images, tuple) or not all(
             isinstance(value, str) and value.startswith("data:image/")
             for value in self.input_images
@@ -556,10 +540,8 @@ class TraceEvent:
     def __post_init__(self) -> None:
         _require_text(self.event, "trace event")
         _require_finite_number(self.elapsed_seconds, "trace elapsed_seconds", minimum=0)
-        if not isinstance(self.agent_id, str) or not isinstance(self.role, str):
-            raise ValueError("trace agent_id and role must be strings")
-        _require_utf8(self.agent_id, "trace agent_id")
-        _require_utf8(self.role, "trace role")
+        _require_text(self.agent_id, "trace agent_id", non_empty=False)
+        _require_text(self.role, "trace role", non_empty=False)
         object.__setattr__(
             self, "data", _json_mapping(self.data, "trace event data")
         )

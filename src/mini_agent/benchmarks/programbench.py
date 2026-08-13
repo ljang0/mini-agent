@@ -35,15 +35,19 @@ from ..types import (
     _require_str,
     strict_json_loads,
 )
+from .._hash import (
+    immutable_file_identity,
+    immutable_tree_identity,
+)
+from ..storage import (
+    atomic_bytes,
+    read_committed_result,
+)
 from .base import (
     BenchmarkTask,
     owned_instance_artifacts,
     EvaluationOutcome,
-    atomic_bytes,
-    immutable_file_identity,
-    immutable_tree_identity,
     raise_after_cleanup,
-    read_committed_result,
     task_agent_builder,
     task_agent_root,
 )

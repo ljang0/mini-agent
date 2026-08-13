@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
-import importlib.metadata
 import json
 import os
 import re
@@ -20,17 +19,20 @@ from typing import Any, Callable, Iterator, Mapping, Sequence, TypeVar
 from . import __version__
 from ._hash import stable_file_sha256
 from .agent import MiniAgent
-from .benchmarks.base import (
-    EvaluationRunner,
+from ._hash import harness_identity
+from .storage import (
     atomic_bytes,
     atomic_json,
-    harness_identity,
+)
+from .benchmarks.base import (
+    EvaluationRunner,
     raise_after_cleanup,
     spec_bound_agent,
     task_agent_prefix,
 )
 from .doctor import _doctor
 from .environments.base import AgentEnvironment
+from .runtimes.qemu import configure_qemu_runtime
 from .grading import _grade, _required_path
 from .models import BackendModel, Model, build_model
 from .orchestrator import AgentBuilder, Orchestrator
@@ -43,7 +45,6 @@ from .types import (
     AgentResult,
     BudgetLimits,
     _require_mapping,
-    _require_no_symlink,
     _require_str,
     strict_json_loads,
 )
@@ -865,7 +866,7 @@ async def _evaluate(args: argparse.Namespace) -> int:
             run_cua_speedrun_task,
         )
 
-        _configure_cua_runtime(args.qemu_cache, work)
+        configure_qemu_runtime(args.qemu_cache, work)
         checkout = _required_path(args.checkout, "--checkout")
         benchmark_path = _required_path(args.benchmark_path, "--benchmark-path")
         tasks = load_cua_speedrun(
@@ -1000,112 +1001,15 @@ def _fixed_browser(args: argparse.Namespace, tokenizer: Any) -> Any:
     )
 
 
-class _TokenizersSnippetAdapter:
-    """Expose the two upstream snippet operations without a model framework."""
-
-    def __init__(
-        self,
-        backend: Any,
-        *,
-        name: str,
-        revision: str | None,
-        tokenizer_json_sha256: str,
-    ) -> None:
-        self._backend = backend
-        self.name_or_path = name
-        self.init_kwargs = {"_commit_hash": revision}
-        self.tokenizer_json_sha256 = tokenizer_json_sha256
-
-    def encode(self, text: str, *, add_special_tokens: bool) -> Sequence[int]:
-        return list(
-            self._backend.encode(text, add_special_tokens=add_special_tokens).ids
-        )
-
-    def decode(self, tokens: Sequence[Any], *, skip_special_tokens: bool) -> str:
-        return self._backend.decode(
-            list(tokens), skip_special_tokens=skip_special_tokens
-        )
-
-
-def _commit_hash(value: Any) -> str | None:
-    """Return the casefolded value when it names a full 40-character commit."""
-
-    if isinstance(value, str) and re.fullmatch(r"[0-9a-fA-F]{40}", value):
-        return value.casefold()
-    return None
-
-
 def _load_tokenizer(args: argparse.Namespace, *, require_revision: bool = False) -> Any:
-    requested = args.snippet_tokenizer_revision
-    if require_revision and _commit_hash(requested) is None:
-        raise ValueError(
-            "BrowseComp-Plus evaluation requires "
-            "--snippet-tokenizer-revision as a full 40-character commit"
-        )
-    if require_revision:
-        from .environments.web import (
-            HUGGINGFACE_HUB_VERSION,
-            TOKENIZERS_VERSION,
-        )
+    """Resolve the pinned snippet tokenizer and record it on ``args``."""
 
-        for name, expected in (
-            ("huggingface-hub", HUGGINGFACE_HUB_VERSION),
-            ("tokenizers", TOKENIZERS_VERSION),
-        ):
-            try:
-                observed = importlib.metadata.version(name)
-            except importlib.metadata.PackageNotFoundError as exc:
-                raise RuntimeError(
-                    f"BrowseComp-Plus evaluation requires {name}=={expected}"
-                ) from exc
-            if observed != expected:
-                raise RuntimeError(
-                    f"BrowseComp-Plus evaluation requires {name}=={expected}, "
-                    f"found {observed}"
-                )
-    try:
-        from huggingface_hub import (  # type: ignore[import-not-found, import-untyped, unused-ignore]
-            hf_hub_download,
-        )
-        from tokenizers import (  # type: ignore[import-not-found, import-untyped, unused-ignore]
-            Tokenizer,
-        )
-    except ImportError as exc:
-        raise RuntimeError(
-            "token-bounded fixed retrieval requires mini-agent[web-fixed]"
-        ) from exc
-    tokenizer_path = Path(
-        hf_hub_download(
-            repo_id=args.snippet_tokenizer,
-            filename="tokenizer.json",
-            revision=requested,
-        )
-    )
-    snapshot = tokenizer_path.parent
-    snapshot_revision = (
-        _commit_hash(snapshot.name) if snapshot.parent.name == "snapshots" else None
-    )
-    exact_requested = _commit_hash(requested)
-    if (
-        exact_requested is not None
-        and snapshot_revision is not None
-        and snapshot_revision != exact_requested
-    ):
-        raise RuntimeError("downloaded tokenizer revision does not match the request")
-    resolved = snapshot_revision or exact_requested
-    tokenizer_bytes = tokenizer_path.read_bytes()
-    tokenizer_sha256 = hashlib.sha256(tokenizer_bytes).hexdigest()
-    try:
-        tokenizer_json = tokenizer_bytes.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise RuntimeError("downloaded tokenizer.json is not UTF-8") from exc
-    tokenizer = _TokenizersSnippetAdapter(
-        # Parse the same immutable bytes that were hashed. Reloading this path
-        # would leave a hash/load race in a shared Hugging Face cache.
-        Tokenizer.from_str(tokenizer_json),
-        name=args.snippet_tokenizer,
-        revision=resolved,
-        tokenizer_json_sha256=tokenizer_sha256,
+    from .environments.web import load_snippet_tokenizer
+
+    tokenizer, resolved, tokenizer_sha256 = load_snippet_tokenizer(
+        args.snippet_tokenizer,
+        args.snippet_tokenizer_revision,
+        require_revision=require_revision,
     )
     setattr(args, "_resolved_snippet_tokenizer_revision", resolved)
     setattr(args, "_snippet_tokenizer_json_sha256", tokenizer_sha256)
@@ -1172,6 +1076,9 @@ def _model_factory(
         transport["max_history_images"] = None if history == "unlimited" else history
 
     def create(agent_id: str) -> BackendModel:
+        # ``agent_id`` is the model-factory contract's argument; provider
+        # requests are agent-neutral, so it is not threaded into the backend.
+        del agent_id
         return build_model(
             model,
             base_url=_provider_option(args, prefix, "base_url"),
@@ -1181,7 +1088,6 @@ def _model_factory(
             default_headers=headers,
             pricing=pricing,
             protocol=_provider_option(args, prefix, "protocol"),
-            agent_id=agent_id,
             expected_resolved_model=_provider_option(
                 args, prefix, "expected_provider_model"
             ),
@@ -1305,19 +1211,6 @@ def _output_paths(
         if path.exists() and not path.is_dir():
             raise ValueError(f"{label} is not a directory: {path}")
     return output, work, layout
-
-
-def _configure_cua_runtime(qemu_cache: Path | None, work: Path) -> None:
-    if qemu_cache is not None:
-        expanded = _require_no_symlink(qemu_cache.expanduser(), "--qemu-cache")
-        resolved_cache = expanded.resolve()
-        if resolved_cache.exists() and not resolved_cache.is_dir():
-            raise ValueError("--qemu-cache must be a directory")
-        os.environ["GYM_ANYTHING_QEMU_CACHE"] = str(resolved_cache)
-    qemu_work = _require_no_symlink(
-        work / "cua-speed-run-qemu", "cua-speed-run QEMU work directory"
-    )
-    os.environ["GYM_ANYTHING_QEMU_WORK_DIR"] = str(qemu_work.resolve())
 
 
 def _progress_worker(

@@ -12,6 +12,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Mapping
 
+from .runtimes.qemu import configure_qemu_runtime
 from .storage import StorageLayout
 
 
@@ -308,7 +309,7 @@ async def _computer_doctor(args: argparse.Namespace) -> Mapping[str, Any]:
             )
             runtime: Mapping[str, Any]
             if args.runtime == "apptainer":
-                from .environments.osworld_apptainer import (
+                from .runtimes.osworld_apptainer import (
                     osworld_apptainer_preflight,
                 )
 
@@ -343,11 +344,7 @@ async def _computer_doctor(args: argparse.Namespace) -> Mapping[str, Any]:
             }
         from .benchmarks.cua_speedrun import preflight_cua_speedrun
 
-        if args.qemu_cache is not None:
-            expanded_cache = args.qemu_cache.expanduser()
-            if expanded_cache.is_symlink():
-                raise ValueError("--qemu-cache must not be a symlink")
-            os.environ["GYM_ANYTHING_QEMU_CACHE"] = str(expanded_cache.resolve())
+        configure_qemu_runtime(args.qemu_cache)
         report = dict(
             preflight_cua_speedrun(
                 args.checkout,

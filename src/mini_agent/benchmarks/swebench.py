@@ -59,15 +59,17 @@ from ..types import (
     _require_str,
     strict_json_loads,
 )
+from .._hash import canonical_bytes, immutable_file_identity
+from ..storage import (
+    atomic_bytes,
+    atomic_json,
+    read_committed_result,
+)
 from .base import (
     task_agent_builder,
     owned_instance_artifacts,
     BenchmarkTask,
     EvaluationOutcome,
-    atomic_bytes,
-    atomic_json,
-    immutable_file_identity,
-    read_committed_result,
     raise_after_cleanup,
     task_agent_root,
 )
@@ -115,14 +117,6 @@ def _plain_string(value: Any) -> bool:
     """Return whether ``value`` is a non-empty string free of NUL bytes."""
 
     return isinstance(value, str) and bool(value) and "\x00" not in value
-
-
-def _canonical_bytes(value: Any) -> bytes:
-    """Encode ``value`` as the deterministic JSON bytes used for identities."""
-
-    return json.dumps(
-        value, sort_keys=True, separators=(",", ":"), allow_nan=False
-    ).encode("utf-8")
 
 
 def _sha256(value: bytes) -> str:
@@ -849,7 +843,7 @@ def verify_swebench_grader_images(
             "origin": origin,
             "package_root": package_root,
         },
-        "environment_sha256": _sha256(_canonical_bytes(environment)),
+        "environment_sha256": _sha256(canonical_bytes(environment)),
         "generation_container_runtime": recorded_runtime,
         "images": verified,
     }
@@ -937,7 +931,7 @@ def swebench_grader_source_identity(source_root: Path) -> Mapping[str, Any]:
         )
     # The digest covers every path, size, and content hash, so a separate file
     # count and total-size assertion could only ever fail with it.
-    source_sha256 = _sha256(_canonical_bytes(files))
+    source_sha256 = _sha256(canonical_bytes(files))
     if source_sha256 != SWEBENCH_SOURCE_SHA256:
         raise RuntimeError(
             "installed SWE-bench package does not match pinned v4.1.0 source"
@@ -1041,7 +1035,7 @@ def inspect_swebench_grade_inputs(
     task_data: dict[str, str] = {}
     for task in tasks:
         task_prompts[task.task_id] = _sha256(task.prompt.encode("utf-8"))
-        task_data[task.task_id] = _sha256(_canonical_bytes(task.data))
+        task_data[task.task_id] = _sha256(canonical_bytes(task.data))
     prediction_ids: set[str] = set()
     lines = prediction_path.read_text(encoding="utf-8").splitlines()
     for number, line in enumerate(lines, 1):

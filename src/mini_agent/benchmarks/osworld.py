@@ -40,15 +40,18 @@ from ..types import (
     _require_str,
     strict_json_loads,
 )
+from .._hash import machine_image_identity, stat_key
+from ..storage import (
+    atomic_bytes,
+    atomic_json,
+)
 from .base import (
     task_agent_builder,
     BenchmarkTask,
     EvaluationOutcome,
-    atomic_bytes,
-    atomic_json,
     combine_errors,
-    machine_image_identity,
     raise_after_cleanup,
+    shielded_create,
     task_agent_root,
 )
 from .checkout import (
@@ -271,7 +274,7 @@ class UpstreamDesktopFactory:
             return await asyncio.to_thread(desktop, **keywords)
         if self.vm_image is None:
             raise AssertionError("OSWorld Apptainer launch has no VM image")
-        from ..environments.osworld_apptainer import OSWorldApptainerDockerClient
+        from ..runtimes.osworld_apptainer import OSWorldApptainerDockerClient
 
         client = OSWorldApptainerDockerClient(
             apptainer_image=Path(self.apptainer_image["path"]),
@@ -319,7 +322,6 @@ class UpstreamDesktopFactory:
             "screen_size": list(self.screen_size),
             "headless": self.headless,
             "enable_proxy": self.enable_proxy,
-            "path_to_vm_configured": self.path_to_vm is not None,
             "vm_image": dict(self.vm_image) if self.vm_image is not None else None,
             "container_runtime": (
                 "apptainer" if apptainer is not None else "docker"
@@ -338,8 +340,6 @@ class UpstreamDesktopFactory:
                     "firmware": (
                         "exact-container-bytes-materialized-0600-for-fakeroot-qemu"
                     ),
-                    "official_container_entrypoint": True,
-                    "official_guest_and_evaluator": True,
                 }
                 if apptainer is not None
                 else None
@@ -435,25 +435,11 @@ class _DesktopPool:
         branch.mkdir(parents=True, exist_ok=True)
         created = self.desktop_factory(agent_id, branch / "cache")
         if inspect.isawaitable(created):
-            creation = asyncio.ensure_future(created)
-            desktop: Any = None
-            try:
-                desktop = await asyncio.shield(creation)
-            except BaseException as operation_error:
-                creation_cleanup: BaseException | None = None
-                try:
-                    desktop = await creation
-                except BaseException as exc:
-                    if exc is not operation_error:
-                        creation_cleanup = exc
-                if desktop is not None:
-                    try:
-                        await _close_desktop(desktop)
-                    except BaseException as exc:
-                        creation_cleanup = combine_errors(creation_cleanup, exc)
-                raise_after_cleanup(
-                    "OSWorld environment creation", operation_error, creation_cleanup
-                )
+            desktop: Any = await shielded_create(
+                asyncio.ensure_future(created),
+                label="OSWorld environment creation",
+                close=_close_desktop,
+            )
         else:
             desktop = created
         self.desktops.append(desktop)
@@ -782,9 +768,9 @@ def _task_class_sha256(info: OSWorldCheckout, domain: str, task_id: str) -> str 
     _require_contained(path, base)
     if path.is_symlink() or not path.is_file():
         raise ValueError("OSWorld v2 task class must be a regular non-symlink file")
-    before = _file_identity(path)
+    before = stat_key(path.stat())
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    if _file_identity(path) != before:
+    if stat_key(path.stat()) != before:
         raise RuntimeError("OSWorld task class changed while hashing")
     return digest
 
@@ -803,11 +789,6 @@ def _v2_loader(
         "domain": domain,
         "eval_version": "v2",
     }
-
-
-def _file_identity(path: Path) -> tuple[int, int, int, int]:
-    status = path.stat()
-    return (status.st_dev, status.st_ino, status.st_size, status.st_mtime_ns)
 
 
 def _load_task_config(info: OSWorldCheckout, domain: str, task_id: str) -> Any:

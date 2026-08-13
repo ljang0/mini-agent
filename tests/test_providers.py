@@ -223,7 +223,7 @@ class OpenAIProviderTests(unittest.IsolatedAsyncioTestCase):
                 await backend.complete(
                     __import__(
                         "mini_agent.types", fromlist=["ModelRequest"]
-                    ).ModelRequest("/root", "solver", "task", tools=(TOOL,))
+                    ).ModelRequest("task", tools=(TOOL,))
                 )
         self.assertEqual(raised.exception.usage.input_tokens, 2)
 
@@ -246,7 +246,7 @@ class OpenAIProviderTests(unittest.IsolatedAsyncioTestCase):
             model="test", api_key="key", pricing=TokenPricing(1, 1)
         )
         with patch("mini_agent.providers._post_json", post):
-            response = await backend.complete(ModelRequest("/root", "solver", "task"))
+            response = await backend.complete(ModelRequest("task"))
         self.assertFalse(response.usage.complete)
         self.assertFalse(response.usage.cost_known)
 
@@ -267,7 +267,7 @@ class OpenAIProviderTests(unittest.IsolatedAsyncioTestCase):
         backend = OpenAIResponsesBackend(model="test", api_key="key")
         with patch("mini_agent.providers._post_json", post):
             with self.assertRaises(ProviderError) as raised:
-                await backend.complete(ModelRequest("/root", "solver", "task"))
+                await backend.complete(ModelRequest("task"))
         self.assertEqual(raised.exception.usage.input_tokens, 2)
 
     async def test_refusal_is_terminal_and_preserves_usage(self) -> None:
@@ -289,7 +289,7 @@ class OpenAIProviderTests(unittest.IsolatedAsyncioTestCase):
         backend = OpenAIResponsesBackend(model="test", api_key="key")
         with patch("mini_agent.providers._post_json", post):
             with self.assertRaisesRegex(ProviderError, "refused") as raised:
-                await backend.complete(ModelRequest("/root", "solver", "task"))
+                await backend.complete(ModelRequest("task"))
         self.assertEqual(raised.exception.usage.input_tokens, 2)
         self.assertNotIn("provider detail", str(raised.exception))
 
@@ -303,7 +303,7 @@ class OpenAIProviderTests(unittest.IsolatedAsyncioTestCase):
         backend = OpenAIResponsesBackend(model="test", api_key="key")
         with patch("mini_agent.providers._post_json", post):
             with self.assertRaisesRegex(ProviderError, "status") as raised:
-                await backend.complete(ModelRequest("/root", "solver", "task"))
+                await backend.complete(ModelRequest("task"))
         self.assertEqual(raised.exception.usage.input_tokens, 1)
 
     async def test_output_message_role_is_validated(self) -> None:
@@ -324,7 +324,7 @@ class OpenAIProviderTests(unittest.IsolatedAsyncioTestCase):
             "mini_agent.providers._post_json", AsyncMock(return_value=response)
         ):
             with self.assertRaisesRegex(ProviderError, "role") as raised:
-                await backend.complete(ModelRequest("/root", "solver", "task"))
+                await backend.complete(ModelRequest("task"))
         self.assertEqual(raised.exception.usage.input_tokens, 2)
 
     async def test_response_model_is_required_and_stable_within_a_run(self) -> None:
@@ -338,7 +338,7 @@ class OpenAIProviderTests(unittest.IsolatedAsyncioTestCase):
             "mini_agent.providers._post_json", AsyncMock(return_value=missing)
         ):
             with self.assertRaisesRegex(ProviderError, "response model"):
-                await backend.complete(ModelRequest("/root", "solver", "task"))
+                await backend.complete(ModelRequest("task"))
 
         first = {
             "id": "response-1",
@@ -497,7 +497,7 @@ class AnthropicProviderTests(unittest.IsolatedAsyncioTestCase):
                 await backend.complete(
                     __import__(
                         "mini_agent.types", fromlist=["ModelRequest"]
-                    ).ModelRequest("/root", "solver", "task")
+                    ).ModelRequest("task")
                 )
 
     async def test_terminal_stop_reasons_fail_closed_with_usage(self) -> None:
@@ -522,7 +522,7 @@ class AnthropicProviderTests(unittest.IsolatedAsyncioTestCase):
                 ),
             ):
                 with self.assertRaisesRegex(ProviderError, message) as raised:
-                    await backend.complete(ModelRequest("/root", "solver", "task"))
+                    await backend.complete(ModelRequest("task"))
                 self.assertEqual(raised.exception.usage.input_tokens, 2)
 
     async def test_tool_use_stop_reason_must_match_tool_blocks(self) -> None:
@@ -538,7 +538,7 @@ class AnthropicProviderTests(unittest.IsolatedAsyncioTestCase):
             "mini_agent.providers._post_json", AsyncMock(return_value=response)
         ):
             with self.assertRaisesRegex(ProviderError, "without client tool calls"):
-                await backend.complete(ModelRequest("/root", "solver", "task"))
+                await backend.complete(ModelRequest("task"))
 
     async def test_response_role_is_validated(self) -> None:
         response = {
@@ -553,7 +553,7 @@ class AnthropicProviderTests(unittest.IsolatedAsyncioTestCase):
             "mini_agent.providers._post_json", AsyncMock(return_value=response)
         ):
             with self.assertRaisesRegex(ProviderError, "assistant") as raised:
-                await backend.complete(ModelRequest("/root", "solver", "task"))
+                await backend.complete(ModelRequest("task"))
         self.assertEqual(raised.exception.usage.input_tokens, 2)
 
 
@@ -568,10 +568,7 @@ class ProviderConfigurationTests(unittest.TestCase):
         model = build_model(
             "openai/alias", expected_resolved_model="snapshot-2026-08-01"
         )
-        self.assertEqual(
-            model.provenance()["expected_resolved_model"],
-            "snapshot-2026-08-01",
-        )
+        self.assertEqual(model.expected_resolved_model, "snapshot-2026-08-01")
 
     def test_model_configuration_does_not_silently_replace_explicit_empty_values(
         self,
@@ -787,14 +784,14 @@ class ChatCompletionsProviderTests(unittest.IsolatedAsyncioTestCase):
         }
         backend = ChatCompletionsBackend(model="test", api_key="key")
         with patch("mini_agent.providers._post_json", AsyncMock(return_value=response)):
-            result = await backend.complete(ModelRequest("/root", "solver", "task"))
+            result = await backend.complete(ModelRequest("task"))
         self.assertTrue(result.usage.complete)
         self.assertEqual(result.usage.cache_read_input_tokens, 0)
 
         partial = dict(response)
         partial["usage"] = {"prompt_tokens": 5}
         with patch("mini_agent.providers._post_json", AsyncMock(return_value=partial)):
-            result = await backend.complete(ModelRequest("/root", "solver", "task"))
+            result = await backend.complete(ModelRequest("task"))
         self.assertFalse(result.usage.complete)
 
     async def test_multiple_response_choices_fail_closed(self) -> None:
@@ -811,7 +808,7 @@ class ChatCompletionsProviderTests(unittest.IsolatedAsyncioTestCase):
             "mini_agent.providers._post_json", AsyncMock(return_value=response)
         ):
             with self.assertRaisesRegex(ProviderError, "exactly one") as raised:
-                await backend.complete(ModelRequest("/root", "solver", "task"))
+                await backend.complete(ModelRequest("task"))
         self.assertEqual(raised.exception.usage.input_tokens, 1)
 
     async def test_length_finish_without_tool_calls_is_error(self) -> None:
@@ -827,7 +824,7 @@ class ChatCompletionsProviderTests(unittest.IsolatedAsyncioTestCase):
         backend = ChatCompletionsBackend(model="test", api_key="key")
         with patch("mini_agent.providers._post_json", AsyncMock(return_value=response)):
             with self.assertRaisesRegex(ProviderError, "exhausted max tokens") as ctx:
-                await backend.complete(ModelRequest("/root", "solver", "task"))
+                await backend.complete(ModelRequest("task"))
         self.assertIsNotNone(ctx.exception.usage)
         self.assertTrue(ctx.exception.usage.complete)
 
@@ -854,7 +851,7 @@ class ChatCompletionsProviderTests(unittest.IsolatedAsyncioTestCase):
         backend = ChatCompletionsBackend(model="test", api_key="key")
         with patch("mini_agent.providers._post_json", AsyncMock(return_value=response)):
             with self.assertRaisesRegex(ProviderError, "invalid JSON") as ctx:
-                await backend.complete(ModelRequest("/root", "solver", "task"))
+                await backend.complete(ModelRequest("task"))
         self.assertIsNotNone(ctx.exception.usage)
 
     async def test_refusal_and_inconsistent_tool_finish_fail_closed(self) -> None:
@@ -910,7 +907,7 @@ class ChatCompletionsProviderTests(unittest.IsolatedAsyncioTestCase):
                 ),
             ):
                 with self.assertRaisesRegex(ProviderError, message) as raised:
-                    await backend.complete(ModelRequest("/root", "solver", "task"))
+                    await backend.complete(ModelRequest("task"))
                 self.assertEqual(raised.exception.usage.input_tokens, 1)
                 self.assertNotIn("provider detail", str(raised.exception))
 
@@ -1142,9 +1139,7 @@ class ProviderRetryTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.assertRaises(ProviderError) as raised:
                 await backend.complete(
-                    ModelRequest(
-                        agent_id="/root", role="solver", prompt="task"
-                    )
+                    ModelRequest(prompt="task")
                 )
         self.assertEqual(client.calls, 1)
         self.assertIsNotNone(raised.exception.usage)
@@ -1179,7 +1174,7 @@ class ProviderRetryTests(unittest.IsolatedAsyncioTestCase):
             patch.dict("os.environ", {"OPENAI_API_KEY": "key"}),
         ):
             response = await backend.complete(
-                ModelRequest(agent_id="/root", role="solver", prompt="task")
+                ModelRequest(prompt="task")
             )
         self.assertEqual(response.retries, 1)
         self.assertEqual(response.usage.input_tokens, 5)
@@ -1449,8 +1444,6 @@ class ImageHistoryEvictionTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertLessEqual(stored_images, 1)
         request = ModelRequest(
-            agent_id="/root",
-            role="solver",
             prompt="",
             tool_results=(
                 ToolResult(
