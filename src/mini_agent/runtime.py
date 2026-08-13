@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import math
 import os
 import re
 import stat
@@ -33,7 +32,24 @@ from .types import (
     ToolResult,
     TraceEvent,
     Usage,
+    _require_finite_number,
+    _require_int,
+    _require_mapping,
+    _require_str,
 )
+
+
+def _tracks_resources(limits: BudgetLimits) -> bool:
+    """Report whether any resource budget needs verified usage to hold."""
+
+    return any(
+        limit is not None
+        for limit in (
+            limits.max_input_tokens,
+            limits.max_output_tokens,
+            limits.max_cost_usd,
+        )
+    )
 
 
 class BudgetLedger:
@@ -60,8 +76,7 @@ class BudgetLedger:
         self._semaphore = asyncio.Semaphore(limits.max_concurrency)
 
     def configure_agent(self, agent_id: str, limits: BudgetLimits) -> None:
-        if not isinstance(agent_id, str) or not agent_id.strip():
-            raise ValueError("agent_id must be non-empty")
+        _require_str(agent_id, "agent_id")
         if not isinstance(limits, BudgetLimits):
             raise ValueError("agent limits must be BudgetLimits")
         existing = self._agent_limits.get(agent_id)
@@ -144,8 +159,7 @@ class BudgetLedger:
     def restore(self, snapshot: Mapping[str, Any]) -> None:
         """Restore global counters before a resumed evaluation starts."""
 
-        if not isinstance(snapshot, Mapping):
-            raise ValueError("budget snapshot must be an object")
+        _require_mapping(snapshot, "budget snapshot")
         if (
             self.calls
             or self.tool_calls
@@ -156,17 +170,11 @@ class BudgetLedger:
         calls = _snapshot_count(snapshot, "model_calls")
         tool_calls = _snapshot_count(snapshot, "tool_calls")
         output_bytes = _snapshot_count(snapshot, "tool_output_bytes")
-        raw_usage = snapshot.get("usage", {})
-        if not isinstance(raw_usage, Mapping):
-            raise ValueError("budget snapshot usage must be an object")
+        raw_usage = _require_mapping(snapshot.get("usage", {}), "budget snapshot usage")
         usage = Usage(**dict(raw_usage))
         restored_reason = snapshot.get("exhausted_reason")
-        if restored_reason is not None and (
-            not isinstance(restored_reason, str) or not restored_reason.strip()
-        ):
-            raise ValueError(
-                "budget snapshot exhausted_reason must be a string or null"
-            )
+        if restored_reason is not None:
+            _require_str(restored_reason, "budget snapshot exhausted_reason")
         self.calls = calls
         self.tool_calls = tool_calls
         self.tool_output_bytes = output_bytes
@@ -175,14 +183,7 @@ class BudgetLedger:
         if (
             self._exhausted_reason is None
             and not usage.complete
-            and any(
-                value is not None
-                for value in (
-                    self.limits.max_input_tokens,
-                    self.limits.max_output_tokens,
-                    self.limits.max_cost_usd,
-                )
-            )
+            and _tracks_resources(self.limits)
         ):
             self._exhausted_reason = (
                 "restored resource budget cannot be verified because usage "
@@ -245,11 +246,9 @@ class BudgetLedger:
                     agent_limits, agent_usage, crossed=False
                 )
                 calls = self._agent_calls.get(agent_id, 0)
-                if agent_reason is None and calls >= agent_limits.max_model_calls:
-                    agent_reason = (
-                        f"agent model-call budget exhausted "
-                        f"({agent_limits.max_model_calls})"
-                    )
+                limit = agent_limits.max_model_calls
+                if agent_reason is None and calls >= limit:
+                    agent_reason = f"agent model-call budget exhausted ({limit})"
                 if agent_reason is not None:
                     self._agent_exhausted[agent_id] = agent_reason
                     raise BudgetExceeded(agent_reason)
@@ -264,18 +263,10 @@ class BudgetLedger:
             self.usage = self.usage + usage
             agent_limits = self._agent_limits.get(agent_id)
             if agent_id:
-                self._agent_usage[agent_id] = (
-                    self._agent_usage.get(agent_id, Usage()) + usage
-                )
+                previous = self._agent_usage.get(agent_id, Usage())
+                self._agent_usage[agent_id] = previous + usage
             reason: str | None = None
-            if not usage.complete and any(
-                value is not None
-                for value in (
-                    self.limits.max_input_tokens,
-                    self.limits.max_output_tokens,
-                    self.limits.max_cost_usd,
-                )
-            ):
+            if not usage.complete and _tracks_resources(self.limits):
                 reason = (
                     "resource budget cannot be verified because usage is incomplete"
                 )
@@ -288,14 +279,7 @@ class BudgetLedger:
             agent_reason: str | None = None
             if agent_limits is not None:
                 agent_usage = self._agent_usage[agent_id]
-                if not usage.complete and any(
-                    value is not None
-                    for value in (
-                        agent_limits.max_input_tokens,
-                        agent_limits.max_output_tokens,
-                        agent_limits.max_cost_usd,
-                    )
-                ):
+                if not usage.complete and _tracks_resources(agent_limits):
                     agent_reason = "agent resource usage is incomplete"
                 elif (
                     agent_limits.max_cost_usd is not None and not agent_usage.cost_known
@@ -315,14 +299,7 @@ class BudgetLedger:
     async def mark_incomplete(self, agent_id: str = "") -> None:
         async with self._lock:
             self.usage = _incomplete(self.usage)
-            if any(
-                value is not None
-                for value in (
-                    self.limits.max_input_tokens,
-                    self.limits.max_output_tokens,
-                    self.limits.max_cost_usd,
-                )
-            ):
+            if _tracks_resources(self.limits):
                 self._exhausted_reason = (
                     "resource budget cannot be verified after an incomplete call"
                 )
@@ -346,11 +323,9 @@ class BudgetLedger:
             if agent_limits is not None:
                 reason = self._agent_exhausted.get(agent_id)
                 calls = self._agent_tool_calls.get(agent_id, 0)
-                if reason is None and calls >= agent_limits.max_tool_calls:
-                    reason = (
-                        f"agent tool-call budget exhausted "
-                        f"({agent_limits.max_tool_calls})"
-                    )
+                limit = agent_limits.max_tool_calls
+                if reason is None and calls >= limit:
+                    reason = f"agent tool-call budget exhausted ({limit})"
                 if reason is not None:
                     self._agent_exhausted[agent_id] = reason
                     raise BudgetExceeded(reason)
@@ -361,12 +336,7 @@ class BudgetLedger:
                 )
 
     async def record_tool_output(self, byte_count: int, agent_id: str = "") -> None:
-        if (
-            not isinstance(byte_count, int)
-            or isinstance(byte_count, bool)
-            or byte_count < 0
-        ):
-            raise ValueError("tool output byte count must be a non-negative integer")
+        _require_int(byte_count, "tool output byte count", minimum=0)
         async with self._lock:
             self.tool_output_bytes += byte_count
             if self.tool_output_bytes > self.limits.max_tool_output_bytes:
@@ -401,10 +371,7 @@ def _incomplete(usage: Usage) -> Usage:
 
 
 def _snapshot_count(snapshot: Mapping[str, Any], name: str) -> int:
-    value = snapshot.get(name, 0)
-    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-        raise ValueError(f"budget snapshot {name} must be a non-negative integer")
-    return value
+    return _require_int(snapshot.get(name, 0), f"budget snapshot {name}", minimum=0)
 
 
 _SENSITIVE_KEYS = frozenset(
@@ -448,6 +415,16 @@ def _private_append_descriptor(path: Path) -> int:
     return descriptor
 
 
+def _sync_trace_file(path: Path) -> None:
+    """Persist the trace file's own bytes before they are relied upon."""
+
+    descriptor = _private_append_descriptor(path)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def _sync_directory(path: Path) -> None:
     """Persist a directory entry before it becomes crash-recovery evidence."""
 
@@ -471,22 +448,15 @@ class TraceRecorder:
         elapsed_offset: float = 0.0,
         backend_active_offset: float = 0.0,
     ) -> None:
-        for name, value in (
-            ("elapsed_offset", elapsed_offset),
-            ("backend_active_offset", backend_active_offset),
-        ):
-            if (
-                not isinstance(value, (int, float))
-                or isinstance(value, bool)
-                or not math.isfinite(float(value))
-                or value < 0
-            ):
-                raise ValueError(f"{name} must be finite and non-negative")
+        self._elapsed_offset = _require_finite_number(
+            elapsed_offset, "elapsed_offset", minimum=0
+        )
+        self._backend_active_offset = _require_finite_number(
+            backend_active_offset, "backend_active_offset", minimum=0
+        )
         if path is not None and not isinstance(path, Path):
             raise ValueError("trace path must be a Path or None")
         self.started = time.perf_counter()
-        self._elapsed_offset = float(elapsed_offset)
-        self._backend_active_offset = float(backend_active_offset)
         self.events: list[TraceEvent] = []
         self._lock = asyncio.Lock()
         self._call_intervals: list[tuple[float, float, str]] = []
@@ -507,11 +477,7 @@ class TraceRecorder:
             self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             for created in reversed(missing):
                 created.chmod(0o700)
-            descriptor = _private_append_descriptor(self.path)
-            try:
-                os.fsync(descriptor)
-            finally:
-                os.close(descriptor)
+            _sync_trace_file(self.path)
             _sync_directory(self.path.parent)
             for created in missing:
                 _sync_directory(created.parent)
@@ -536,12 +502,10 @@ class TraceRecorder:
             )
             self.events.append(item)
             if self.path is not None:
-                line = json.dumps(
-                    asdict(item), sort_keys=True, allow_nan=False
-                ) + "\n"
+                line = json.dumps(asdict(item), sort_keys=True, allow_nan=False)
                 descriptor = _private_append_descriptor(self.path)
                 with os.fdopen(descriptor, "a", encoding="utf-8") as stream:
-                    stream.write(line)
+                    stream.write(line + "\n")
                     stream.flush()
                     if event in {"model_call_started", "tool_call_started"}:
                         # Resume treats operation starts as proof that a paid or
@@ -553,25 +517,13 @@ class TraceRecorder:
         """Make every trace record emitted so far durable on disk."""
 
         async with self._lock:
-            if self.path is None:
-                return
-            descriptor = _private_append_descriptor(self.path)
-            try:
-                os.fsync(descriptor)
-            finally:
-                os.close(descriptor)
+            if self.path is not None:
+                _sync_trace_file(self.path)
 
     async def record_interval(self, start: float, finish: float, agent_id: str) -> None:
-        if (
-            not isinstance(start, (int, float))
-            or isinstance(start, bool)
-            or not math.isfinite(float(start))
-            or not isinstance(finish, (int, float))
-            or isinstance(finish, bool)
-            or not math.isfinite(float(finish))
-            or finish < start
-            or not isinstance(agent_id, str)
-        ):
+        for value in (start, finish):
+            _require_finite_number(value, "model interval bound")
+        if finish < start or not isinstance(agent_id, str):
             raise ValueError("model interval is invalid")
         async with self._lock:
             self._call_intervals.append((start, finish, agent_id))
@@ -659,8 +611,6 @@ class RunContext:
             raise ValueError("trace must be TraceRecorder or None")
         if not isinstance(capture_content, bool):
             raise ValueError("capture_content must be a boolean")
-        if limits is None and ledger is None:
-            limits = BudgetLimits()
         self.ledger = ledger or BudgetLedger(limits or BudgetLimits())
         self.trace = trace or TraceRecorder()
         self.capture_content = capture_content
@@ -669,11 +619,7 @@ class RunContext:
         self.ledger.configure_agent(agent_id, limits)
 
     async def record_initial_observation(
-        self,
-        observation: ToolExecution,
-        *,
-        agent_id: str,
-        role: str,
+        self, observation: ToolExecution, *, agent_id: str, role: str
     ) -> None:
         """Charge and trace environment data delivered before the first model call."""
 
@@ -702,11 +648,7 @@ class RunContext:
                 **dict(observation.metadata),
                 "is_error": observation.is_error,
                 "output_bytes": output_bytes,
-                **(
-                    {"output": observation.output}
-                    if self.capture_content
-                    else {}
-                ),
+                **({"output": observation.output} if self.capture_content else {}),
             },
         )
 
@@ -723,22 +665,10 @@ class RunContext:
         data: dict[str, Any] = {
             "message_count": len(messages),
             "tool_count": len(tools),
-            "history_sha256": hashlib.sha256(
-                json.dumps(
-                    [_message_value(message) for message in messages],
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    allow_nan=False,
-                ).encode("utf-8")
-            ).hexdigest(),
-            "tools_sha256": hashlib.sha256(
-                json.dumps(
-                    tool_values,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    allow_nan=False,
-                ).encode("utf-8")
-            ).hexdigest(),
+            "history_sha256": _canonical_digest(
+                [_message_value(message) for message in messages]
+            ),
+            "tools_sha256": _canonical_digest(tool_values),
         }
         if self.capture_content:
             data["messages"] = [_message_value(message) for message in messages]
@@ -836,19 +766,14 @@ class RunContext:
     ) -> ToolResult:
         self._remaining_time(agent_id)
         await self.ledger.reserve_tool_call(agent_id)
-        arguments = json.dumps(
-            dict(action.arguments),
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        )
+        arguments_sha256 = _canonical_digest(dict(action.arguments))
         await self.trace.emit(
             "tool_call_started",
             agent_id=agent_id,
             role=role,
             data={
                 "tool": action.name,
-                "arguments_sha256": hashlib.sha256(arguments.encode()).hexdigest(),
+                "arguments_sha256": arguments_sha256,
                 **(
                     {"arguments": dict(action.arguments)}
                     if self.capture_content
@@ -860,11 +785,9 @@ class RunContext:
             definitions = {tool.name: tool for tool in tools}
             definition = definitions.get(action.name)
             if definition is None:
+                message = f"unknown tool {action.name!r}"
                 return await self._invalid_action(
-                    action,
-                    f"unknown tool {action.name!r}",
-                    agent_id=agent_id,
-                    role=role,
+                    action, message, agent_id=agent_id, role=role
                 )
             schema_error = _validate_arguments(
                 action.arguments, definition.input_schema
@@ -939,19 +862,11 @@ class RunContext:
         )
 
     async def _invalid_action(
-        self,
-        action: ToolCall,
-        message: str,
-        *,
-        agent_id: str,
-        role: str,
+        self, action: ToolCall, message: str, *, agent_id: str, role: str
     ) -> ToolResult:
         output = f"Invalid action: {message}"
         await self._record_tool_output(
-            action,
-            len(output.encode("utf-8")),
-            agent_id=agent_id,
-            role=role,
+            action, len(output.encode("utf-8")), agent_id=agent_id, role=role
         )
         await self.trace.emit(
             "tool_call_completed",
@@ -968,12 +883,7 @@ class RunContext:
         )
 
     async def _record_tool_output(
-        self,
-        action: ToolCall,
-        byte_count: int,
-        *,
-        agent_id: str,
-        role: str,
+        self, action: ToolCall, byte_count: int, *, agent_id: str, role: str
     ) -> None:
         try:
             await self.ledger.record_tool_output(byte_count, agent_id)
@@ -999,6 +909,13 @@ class RunContext:
         if remaining <= 0:
             raise BudgetExceeded("global or per-agent wall-time budget exhausted")
         return remaining
+
+
+def _canonical_digest(value: Any) -> str:
+    """Hash the canonical JSON rendering used by every trace fingerprint."""
+
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def _tool_execution_bytes(execution: ToolExecution) -> int:
@@ -1042,10 +959,9 @@ def _validate_arguments(
         spec = properties.get(name)
         if spec is None:
             continue
-        if not isinstance(spec, Mapping):
-            raise InfrastructureError(
-                f"tool schema property {name!r} must be an object"
-            )
+        _require_mapping(
+            spec, f"tool schema property {name!r}", error=InfrastructureError
+        )
         if "type" not in spec:
             continue
         if not isinstance(spec["type"], str):
@@ -1069,11 +985,8 @@ def _validate_arguments(
                 return f"argument {name!r} must be one of {choices!r}"
         if spec.get("type") == "array" and isinstance(value, list):
             minimum = spec.get("minItems")
-            if (
-                isinstance(minimum, int)
-                and not isinstance(minimum, bool)
-                and len(value) < minimum
-            ):
+            bounded = isinstance(minimum, int) and not isinstance(minimum, bool)
+            if bounded and len(value) < minimum:
                 return f"argument {name!r} requires at least {minimum} items"
     return None
 
@@ -1105,9 +1018,7 @@ def _message_value(message: Message) -> Mapping[str, Any]:
         "role": message.role,
         "content": message.content,
         "tool_calls": [_tool_call_value(call) for call in message.tool_calls],
-        "tool_results": [
-            _tool_result_value(result) for result in message.tool_results
-        ],
+        "tool_results": [_tool_result_value(item) for item in message.tool_results],
         "image_data_url": message.image_data_url,
         "metadata": dict(message.metadata),
     }

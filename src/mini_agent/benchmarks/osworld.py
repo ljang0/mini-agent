@@ -7,7 +7,6 @@ import hashlib
 import importlib
 import inspect
 import json
-import math
 import os
 import stat
 import sys
@@ -29,7 +28,18 @@ from ..models import Model
 from ..orchestrator import Orchestrator
 from ..runtime import RunContext
 from ..specs import AgentSpecV1
-from ..types import BudgetExceeded, BudgetLimits, strict_json_loads
+from ..types import (
+    BudgetExceeded,
+    BudgetLimits,
+    _require_bool,
+    _require_callable,
+    _require_finite_number,
+    _require_mapping,
+    _require_no_symlink,
+    _require_positive_int,
+    _require_str,
+    strict_json_loads,
+)
 from .base import (
     task_agent_builder,
     BenchmarkTask,
@@ -74,27 +84,19 @@ class OSWorldCheckout:
 
 
 def inspect_osworld_checkout(
-    checkout: Path,
-    *,
-    version: str,
-    allow_dirty: bool = False,
+    checkout: Path, *, version: str, allow_dirty: bool = False
 ) -> OSWorldCheckout:
-    expanded = checkout.expanduser()
-    if expanded.is_symlink():
-        raise ValueError("OSWorld checkout must not be a symlink")
-    root = expanded.resolve()
+    root = _require_no_symlink(checkout.expanduser(), "OSWorld checkout").resolve()
     if version not in {"v1", "v2"}:
         raise ValueError("OSWorld version must be v1 or v2")
-    if not isinstance(allow_dirty, bool):
-        raise ValueError("allow_dirty must be boolean")
+    _require_bool(allow_dirty, "allow_dirty")
     if not (root / "desktop_env" / "desktop_env.py").is_file():
         raise ValueError(f"not an OSWorld checkout: {root}")
     revision = _git(root, "rev-parse", "HEAD")
     dirty = bool(_git(root, "status", "--porcelain", "--untracked-files=no"))
-    expected = OSWORLD_V1_REVISION if version == "v1" else None
-    if expected is not None and revision != expected:
+    if version == "v1" and revision != OSWORLD_V1_REVISION:
         raise ValueError(
-            f"OSWorld {version} checkout must be {expected}, found {revision}"
+            f"OSWorld v1 checkout must be {OSWORLD_V1_REVISION}, found {revision}"
         )
     if version == "v2":
         tag = _git(root, "describe", "--tags", "--exact-match", "HEAD")
@@ -106,12 +108,8 @@ def inspect_osworld_checkout(
             )
     if dirty and not allow_dirty:
         raise ValueError("OSWorld checkout has tracked modifications")
-    reject_untracked_execution_files(
-        root,
-        label="OSWorld",
-        exempt=_v2_untracked_exemption if version == "v2" else None,
-        run_git=_git,
-    )
+    exempt = _v2_untracked_exemption if version == "v2" else None
+    reject_untracked_execution_files(root, label="OSWorld", exempt=exempt, run_git=_git)
     return OSWorldCheckout(root, version, revision, dirty)
 
 
@@ -125,12 +123,9 @@ def load_osworld(
 ) -> tuple[BenchmarkTask, ...]:
     """Load official task IDs and agent-visible instructions from a checkout."""
 
-    if limit is not None and (
-        not isinstance(limit, int) or isinstance(limit, bool) or limit < 1
-    ):
-        raise ValueError("OSWorld limit must be positive")
-    if not isinstance(exclude_gitlab, bool):
-        raise ValueError("exclude_gitlab must be boolean")
+    if limit is not None:
+        _require_positive_int(limit, "OSWorld limit")
+    _require_bool(exclude_gitlab, "exclude_gitlab")
 
     info = inspect_osworld_checkout(checkout, version=version)
     if Path.cwd().resolve() != info.path:
@@ -138,11 +133,8 @@ def load_osworld(
             "OSWorld uses checkout-relative task assets; run evaluation with the "
             "checkout as the process working directory"
         )
-    default = (
-        info.path / "evaluation_examples" / "test_all.json"
-        if version == "v1"
-        else info.path / "evaluation_examples" / "test_v2.json"
-    )
+    name = "test_all.json" if version == "v1" else "test_v2.json"
+    default = info.path / "evaluation_examples" / name
     selected = (task_list or default).expanduser().resolve()
     raw = strict_json_loads(selected.read_text(encoding="utf-8"))
     if not isinstance(raw, Mapping):
@@ -155,8 +147,6 @@ def load_osworld(
         if exclude_gitlab and domain.casefold() == "gitlab":
             continue
         for task_id in task_ids:
-            if not isinstance(task_id, str) or not task_id:
-                raise ValueError("OSWorld task IDs must be non-empty strings")
             _safe_component(task_id, "OSWorld task ID")
             class_sha256 = _task_class_sha256(info, domain, task_id)
             config = _load_task_config(info, domain, task_id)
@@ -211,19 +201,14 @@ class UpstreamDesktopFactory:
         apptainer_executable: str = "apptainer",
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
-        if not isinstance(provider_name, str) or not provider_name.strip():
-            raise ValueError("OSWorld provider_name must be non-empty")
+        _require_str(provider_name, "OSWorld provider_name")
         if path_to_vm is not None and not isinstance(path_to_vm, str):
             raise ValueError("OSWorld path_to_vm must be a string or None")
-        if not isinstance(headless, bool) or not isinstance(enable_proxy, bool):
-            raise ValueError("OSWorld boolean options must be booleans")
-        if any(
-            not isinstance(value, int) or isinstance(value, bool) or value < 1
-            for value in (screen_width, screen_height)
-        ):
-            raise ValueError("OSWorld screen dimensions must be positive integers")
-        if not isinstance(client_password, str):
-            raise ValueError("OSWorld client_password must be a string")
+        for flag, name in ((headless, "headless"), (enable_proxy, "enable_proxy")):
+            _require_bool(flag, f"OSWorld {name}")
+        for size in (screen_width, screen_height):
+            _require_positive_int(size, "OSWorld screen dimensions")
+        _require_str(client_password, "OSWorld client_password", non_empty=False)
         normalized_provider = provider_name.casefold().strip()
         if normalized_provider == "docker" and path_to_vm is None:
             raise ValueError("OSWorld Docker provider requires an explicit VM image")
@@ -231,12 +216,8 @@ class UpstreamDesktopFactory:
             raise ValueError("OSWorld Apptainer compatibility requires Docker provider")
         if apptainer_image is not None and not isinstance(apptainer_image, Path):
             raise ValueError("OSWorld apptainer_image must be a Path or None")
-        if not isinstance(apptainer_executable, str) or not (
-            apptainer_executable.strip()
-        ):
-            raise ValueError("OSWorld apptainer_executable must be non-empty")
-        if not callable(sleep):
-            raise ValueError("OSWorld sleep must be callable")
+        _require_str(apptainer_executable, "OSWorld apptainer_executable")
+        _require_callable(sleep, "OSWorld sleep")
         self.checkout = inspect_osworld_checkout(checkout, version=version)
         self.provider_name = provider_name
         self.vm_image = (
@@ -245,14 +226,10 @@ class UpstreamDesktopFactory:
             else None
         )
         self.path_to_vm = (
-            str(self.vm_image["path"])
-            if self.vm_image is not None
-            else path_to_vm
+            str(self.vm_image["path"]) if self.vm_image is not None else path_to_vm
         )
         self.apptainer_image = (
-            machine_image_identity(
-                apptainer_image, label="OSWorld Apptainer image"
-            )
+            machine_image_identity(apptainer_image, label="OSWorld Apptainer image")
             if apptainer_image is not None
             else None
         )
@@ -294,9 +271,7 @@ class UpstreamDesktopFactory:
             return await asyncio.to_thread(desktop, **keywords)
         if self.vm_image is None:
             raise AssertionError("OSWorld Apptainer launch has no VM image")
-        from ..environments.osworld_apptainer import (
-            OSWorldApptainerDockerClient,
-        )
+        from ..environments.osworld_apptainer import OSWorldApptainerDockerClient
 
         client = OSWorldApptainerDockerClient(
             apptainer_image=Path(self.apptainer_image["path"]),
@@ -318,9 +293,7 @@ class UpstreamDesktopFactory:
             if expected is None:
                 continue
             observed = await asyncio.to_thread(
-                machine_image_identity,
-                Path(str(expected["path"])),
-                label=label,
+                machine_image_identity, Path(str(expected["path"])), label=label
             )
             if observed != expected:
                 raise RuntimeError(
@@ -331,9 +304,7 @@ class UpstreamDesktopFactory:
         """Revalidate the exact executable checkout at a lifecycle boundary."""
 
         observed = await asyncio.to_thread(
-            inspect_osworld_checkout,
-            self.checkout.path,
-            version=self.checkout.version,
+            inspect_osworld_checkout, self.checkout.path, version=self.checkout.version
         )
         if observed != self.checkout:
             raise RuntimeError(
@@ -341,6 +312,7 @@ class UpstreamDesktopFactory:
             )
 
     def provenance(self) -> Mapping[str, Any]:
+        apptainer = self.apptainer_image
         return {
             "checkout": self.checkout.as_dict(),
             "provider_name": self.provider_name,
@@ -350,19 +322,13 @@ class UpstreamDesktopFactory:
             "path_to_vm_configured": self.path_to_vm is not None,
             "vm_image": dict(self.vm_image) if self.vm_image is not None else None,
             "container_runtime": (
-                "apptainer" if self.apptainer_image is not None else "docker"
+                "apptainer" if apptainer is not None else "docker"
                 if self.provider_name.casefold().strip() == "docker"
                 else None
             ),
-            "apptainer_image": (
-                dict(self.apptainer_image)
-                if self.apptainer_image is not None
-                else None
-            ),
+            "apptainer_image": dict(apptainer) if apptainer is not None else None,
             "apptainer_executable": (
-                self.apptainer_executable
-                if self.apptainer_image is not None
-                else None
+                self.apptainer_executable if apptainer is not None else None
             ),
             "runtime_adaptation": (
                 {
@@ -375,7 +341,7 @@ class UpstreamDesktopFactory:
                     "official_container_entrypoint": True,
                     "official_guest_and_evaluator": True,
                 }
-                if self.apptainer_image is not None
+                if apptainer is not None
                 else None
             ),
             "reference_timing": {
@@ -419,11 +385,7 @@ def _construct_with_docker_client(
             _DOCKER_CLIENTS.pop(thread_id, None)
             if not _DOCKER_CLIENTS:
                 if _DOCKER_MODULE is not None and _ORIGINAL_DOCKER_FROM_ENV is not None:
-                    setattr(
-                        _DOCKER_MODULE,
-                        "from_env",
-                        _ORIGINAL_DOCKER_FROM_ENV,
-                    )
+                    setattr(_DOCKER_MODULE, "from_env", _ORIGINAL_DOCKER_FROM_ENV)
                 _DOCKER_MODULE = None
                 _ORIGINAL_DOCKER_FROM_ENV = None
 
@@ -443,44 +405,33 @@ def _docker_from_env(*args: Any, **kwargs: Any) -> Any:
 
 class _DesktopPool:
     def __init__(
-        self,
-        *,
-        task: BenchmarkTask,
-        directory: Path,
-        desktop_factory: DesktopFactory,
+        self, *, task: BenchmarkTask, directory: Path, desktop_factory: DesktopFactory
     ) -> None:
-        if not callable(desktop_factory):
-            raise ValueError("desktop_factory must be callable")
+        _require_callable(desktop_factory, "desktop_factory")
         self.task = task
         self.directory = directory
         self.desktop_factory = desktop_factory
         self.desktops: list[Any] = []
-        self.sleep = getattr(desktop_factory, "sleep", asyncio.sleep)
-        if not callable(self.sleep):
-            raise ValueError("OSWorld desktop factory sleep must be callable")
+        self.sleep = _require_callable(
+            getattr(desktop_factory, "sleep", asyncio.sleep),
+            "OSWorld desktop factory sleep",
+        )
         self.initial_settle_seconds = _factory_delay(
             desktop_factory, "initial_settle_seconds"
         )
         self.evaluation_settle_seconds = _factory_delay(
             desktop_factory, "evaluation_settle_seconds"
         )
-        refresh = getattr(
-            desktop_factory, "refresh_initial_observation", False
+        self.refresh_initial_observation = _require_bool(
+            getattr(desktop_factory, "refresh_initial_observation", False),
+            "OSWorld refresh_initial_observation",
         )
-        if not isinstance(refresh, bool):
-            raise ValueError(
-                "OSWorld refresh_initial_observation must be boolean"
-            )
-        self.refresh_initial_observation = refresh
 
     async def environment(self, agent_id: str) -> OSWorldEnvironment:
         config = _task_config_for_benchmark(self.task)
         _reject_unsupported_v2_lifecycle(self.task, config)
-        branch = (
-            self.directory
-            / "branches"
-            / hashlib.sha256(agent_id.encode("utf-8")).hexdigest()
-        )
+        digest = hashlib.sha256(agent_id.encode("utf-8")).hexdigest()
+        branch = self.directory / "branches" / digest
         branch.mkdir(parents=True, exist_ok=True)
         created = self.desktop_factory(agent_id, branch / "cache")
         if inspect.isawaitable(created):
@@ -489,44 +440,35 @@ class _DesktopPool:
             try:
                 desktop = await asyncio.shield(creation)
             except BaseException as operation_error:
-                creation_cleanup_error: BaseException | None = None
+                creation_cleanup: BaseException | None = None
                 try:
                     desktop = await creation
                 except BaseException as exc:
                     if exc is not operation_error:
-                        creation_cleanup_error = exc
+                        creation_cleanup = exc
                 if desktop is not None:
                     try:
                         await _close_desktop(desktop)
                     except BaseException as exc:
-                        creation_cleanup_error = combine_errors(
-                            creation_cleanup_error, exc
-                        )
+                        creation_cleanup = combine_errors(creation_cleanup, exc)
                 raise_after_cleanup(
-                    "OSWorld environment creation",
-                    operation_error,
-                    creation_cleanup_error,
+                    "OSWorld environment creation", operation_error, creation_cleanup
                 )
         else:
             desktop = created
         self.desktops.append(desktop)
         try:
             initial = await complete_in_thread(desktop.reset, task_config=config)
-            if not isinstance(initial, Mapping):
-                raise RuntimeError("OSWorld reset did not return an observation")
+            _require_mapping(initial, "OSWorld reset observation", error=RuntimeError)
             if self.initial_settle_seconds:
                 await self.sleep(self.initial_settle_seconds)
             if self.refresh_initial_observation:
-                getter = getattr(desktop, "_get_obs", None)
-                if not callable(getter):
-                    raise RuntimeError(
-                        "OSWorld reference timing requires callable _get_obs"
-                    )
+                hook = getattr(desktop, "_get_obs", None)
+                getter = _require_callable(hook, "OSWorld _get_obs", error=RuntimeError)
                 initial = await complete_in_thread(getter)
-                if not isinstance(initial, Mapping):
-                    raise RuntimeError(
-                        "OSWorld _get_obs did not return an observation"
-                    )
+                _require_mapping(
+                    initial, "OSWorld _get_obs observation", error=RuntimeError
+                )
             screenshot = initial.get("screenshot")
             if not isinstance(screenshot, bytes):
                 raise RuntimeError("OSWorld reset returned no screenshot")
@@ -566,9 +508,7 @@ class _DesktopPool:
                 "done": transition.get("done"),
                 "screenshot": name,
             }
-            line = (
-                json.dumps(event, sort_keys=True, allow_nan=False) + "\n"
-            ).encode("utf-8")
+            line = (json.dumps(event, sort_keys=True, allow_nan=False) + "\n").encode()
             await complete_in_thread(_append_bytes, branch / "trajectory.jsonl", line)
 
         client = OSWorldClient(
@@ -576,7 +516,7 @@ class _DesktopPool:
             initial,
             transition_sink=record,
             owns_environment=False,
-            resource_identity=f"osworld:{self.task.task_id}:{hashlib.sha256(agent_id.encode()).hexdigest()}",
+            resource_identity=f"osworld:{self.task.task_id}:{digest}",
             pause_seconds=0,
         )
         return OSWorldEnvironment(client, version=str(self.task.data["version"]))
@@ -624,25 +564,20 @@ async def run_osworld_task(
 ) -> EvaluationOutcome:
     """Run inference, then score only the root-selected live desktop."""
 
-    if not callable(desktop_factory) or not callable(model_factory):
-        raise ValueError("desktop_factory and model_factory must be callable")
-    if not isinstance(system_prompt, str):
-        raise ValueError("system_prompt must be a string")
-    if not isinstance(max_steps, int) or isinstance(max_steps, bool) or max_steps < 1:
-        raise ValueError("max_steps must be a positive integer")
-    if not isinstance(multi_agent, bool):
-        raise ValueError("multi_agent must be boolean")
-    checkout = Path(_task_string(task, "checkout")).resolve()
-    version = _task_string(task, "version")
+    for factory, name in ((desktop_factory, "desktop"), (model_factory, "model")):
+        _require_callable(factory, f"{name}_factory")
+    _require_str(system_prompt, "system_prompt", non_empty=False)
+    _require_positive_int(max_steps, "max_steps")
+    _require_bool(multi_agent, "multi_agent")
+    checkout = Path(task_string(task, "checkout", label="OSWorld")).resolve()
+    version = task_string(task, "version", label="OSWorld")
     checkout_info = inspect_osworld_checkout(checkout, version=version)
     if task.data.get("revision") != checkout_info.revision:
         raise RuntimeError("OSWorld checkout changed after manifest creation")
     if Path.cwd().resolve() != checkout:
         raise RuntimeError("OSWorld task must run from its pinned checkout")
     pool = _DesktopPool(
-        task=task,
-        directory=directory,
-        desktop_factory=desktop_factory,
+        task=task, directory=directory, desktop_factory=desktop_factory
     )
     root_id = task_agent_root(task.task_id)
     root_environment: OSWorldEnvironment | None = None
@@ -754,11 +689,9 @@ async def run_osworld_task(
     raise_after_cleanup("OSWorld task", operation_error, cleanup_error)
     if score is None:
         raise AssertionError("successful OSWorld task has no score")
-    provenance_hook = getattr(desktop_factory, "provenance", None)
+    hook = getattr(desktop_factory, "provenance", None)
     factory_provenance = (
-        dict(provenance_hook())
-        if callable(provenance_hook)
-        else {"factory": type(desktop_factory).__name__}
+        dict(hook()) if callable(hook) else {"factory": type(desktop_factory).__name__}
     )
     metadata = {
         "version": task.data["version"],
@@ -772,12 +705,9 @@ async def run_osworld_task(
         "environment_factory": factory_provenance,
         "verifier_exposed_to_agent": False,
         "state_selection": state_selection,
-        **(
-            {"state_adoption_history": list(state_adoption_history)}
-            if multi_agent
-            else {}
-        ),
     }
+    if multi_agent:
+        metadata["state_adoption_history"] = list(state_adoption_history)
     if evaluator_result is not None:
         metadata["evaluator_result"] = dict(evaluator_result)
     score_path = directory / "score.json"
@@ -794,12 +724,12 @@ async def run_osworld_task(
 
 def _task_config_for_benchmark(task: BenchmarkTask) -> Any:
     info = OSWorldCheckout(
-        path=Path(_task_string(task, "checkout")).resolve(),
-        version=_task_string(task, "version"),
-        revision=_task_string(task, "revision"),
+        path=Path(task_string(task, "checkout", label="OSWorld")).resolve(),
+        version=task_string(task, "version", label="OSWorld"),
+        revision=task_string(task, "revision", label="OSWorld"),
         dirty=False,
     )
-    domain = _task_string(task, "domain")
+    domain = task_string(task, "domain", label="OSWorld")
     expected_class = task.data.get("task_class_sha256")
     observed_class = _task_class_sha256(info, domain, task.task_id)
     if expected_class != observed_class:
@@ -814,15 +744,9 @@ def _task_config_for_benchmark(task: BenchmarkTask) -> Any:
 
 
 def _factory_delay(factory: Any, name: str) -> float:
-    value = getattr(factory, name, 0.0)
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, (int, float))
-        or not math.isfinite(float(value))
-        or value < 0
-    ):
-        raise ValueError(f"OSWorld {name} must be finite and non-negative")
-    return float(value)
+    return _require_finite_number(
+        getattr(factory, name, 0.0), f"OSWorld {name}", minimum=0
+    )
 
 
 def _reject_unsupported_v2_lifecycle(task: BenchmarkTask, config: Any) -> None:
@@ -846,87 +770,68 @@ def _reject_unsupported_v2_lifecycle(task: BenchmarkTask, config: Any) -> None:
         )
 
 
-def _task_class_sha256(
-    info: OSWorldCheckout, domain: str, task_id: str
-) -> str | None:
+def _task_class_sha256(info: OSWorldCheckout, domain: str, task_id: str) -> str | None:
     if info.version != "v2":
         return None
-    _safe_component(domain, "OSWorld domain")
-    _safe_component(task_id, "OSWorld task ID")
     base = info.path / "evaluation_examples"
-    _activate_checkout(info.path)
-    loader = _import_from_checkout("task_loader", info.path)
-    class_path = loader.find_task_class_path(
-        task_id=task_id,
-        base_dir=str(base),
-        domain=domain,
-        eval_version="v2",
-    )
+    loader, selection = _v2_loader(info, domain, task_id)
+    class_path = loader.find_task_class_path(**selection)
     if class_path is None:
         return None
-    if not isinstance(class_path, str):
-        raise ValueError("OSWorld v2 task class path is invalid")
-    path = Path(class_path)
+    path = Path(_require_str(class_path, "OSWorld v2 task class path"))
     _require_contained(path, base)
     if path.is_symlink() or not path.is_file():
         raise ValueError("OSWorld v2 task class must be a regular non-symlink file")
-    before = path.stat()
+    before = _file_identity(path)
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    after = path.stat()
-    if (
-        before.st_dev,
-        before.st_ino,
-        before.st_size,
-        before.st_mtime_ns,
-    ) != (
-        after.st_dev,
-        after.st_ino,
-        after.st_size,
-        after.st_mtime_ns,
-    ):
+    if _file_identity(path) != before:
         raise RuntimeError("OSWorld task class changed while hashing")
     return digest
 
 
-def _load_task_config(info: OSWorldCheckout, domain: str, task_id: str) -> Any:
+def _v2_loader(
+    info: OSWorldCheckout, domain: str, task_id: str
+) -> tuple[Any, dict[str, Any]]:
+    """Import the pinned upstream loader plus one task's selection arguments."""
+
     _safe_component(domain, "OSWorld domain")
     _safe_component(task_id, "OSWorld task ID")
+    loader = _import_from_checkout("task_loader", info.path)
+    return loader, {
+        "task_id": task_id,
+        "base_dir": str(info.path / "evaluation_examples"),
+        "domain": domain,
+        "eval_version": "v2",
+    }
+
+
+def _file_identity(path: Path) -> tuple[int, int, int, int]:
+    status = path.stat()
+    return (status.st_dev, status.st_ino, status.st_size, status.st_mtime_ns)
+
+
+def _load_task_config(info: OSWorldCheckout, domain: str, task_id: str) -> Any:
     base = info.path / "evaluation_examples"
     if info.version == "v1":
+        _safe_component(domain, "OSWorld domain")
+        _safe_component(task_id, "OSWorld task ID")
         path = base / "examples" / domain / f"{task_id}.json"
         _require_contained(path, base)
         if not path.is_file():
             raise FileNotFoundError(f"missing OSWorld v1 task: {path}")
         return strict_json_loads(path.read_text(encoding="utf-8"))
-    _activate_checkout(info.path)
-    loader = _import_from_checkout("task_loader", info.path)
-    config_path = loader.resolve_task_json_path(
-        task_id=task_id,
-        base_dir=str(base),
-        domain=domain,
-        eval_version="v2",
-    )
+    loader, selection = _v2_loader(info, domain, task_id)
+    config_path = loader.resolve_task_json_path(**selection)
     if not isinstance(config_path, str):
         raise FileNotFoundError("OSWorld v2 task path could not be resolved")
     _require_contained(Path(config_path), base)
-    class_path = loader.find_task_class_path(
-        task_id=task_id,
-        base_dir=str(base),
-        domain=domain,
-        eval_version="v2",
-    )
+    class_path = loader.find_task_class_path(**selection)
     if class_path is not None:
-        if not isinstance(class_path, str):
-            raise ValueError("OSWorld v2 task class path is invalid")
-        _require_contained(Path(class_path), base)
-    try:
-        return loader.load_task_config(
-            config_path,
-            task_id=task_id,
-            base_dir=str(base),
-            domain=domain,
-            eval_version="v2",
+        _require_contained(
+            Path(_require_str(class_path, "OSWorld v2 task class path")), base
         )
+    try:
+        return loader.load_task_config(config_path, **selection)
     except FileNotFoundError as exc:
         raise FileNotFoundError(
             "OSWorld v2 gated task classes/assets are missing; install the exact "
@@ -935,12 +840,11 @@ def _load_task_config(info: OSWorldCheckout, domain: str, task_id: str) -> Any:
 
 
 def _desktop_env_class(info: OSWorldCheckout) -> Any:
-    _activate_checkout(info.path)
-    module = _import_from_checkout("desktop_env.desktop_env", info.path)
-    return module.DesktopEnv
+    return _import_from_checkout("desktop_env.desktop_env", info.path).DesktopEnv
 
 
 def _import_from_checkout(name: str, checkout: Path) -> Any:
+    _activate_checkout(checkout)
     module = importlib.import_module(name)
     source = Path(inspect.getfile(module)).resolve()
     try:
@@ -971,11 +875,16 @@ def _task_value(config: Any, name: str) -> Any:
     return getattr(config, name, None)
 
 
-def _mentions_gitlab(config: Any) -> bool:
-    if not isinstance(config, Mapping):
-        dump = getattr(config, "model_dump", None)
-        config = dump(mode="json") if callable(dump) else vars(config)
+def _config_data(config: Any) -> Any:
+    """Return the plain JSON-shaped data behind a v1 mapping or a v2 model."""
 
+    if isinstance(config, Mapping):
+        return dict(config)
+    dump = getattr(config, "model_dump", None)
+    return dump(mode="json") if callable(dump) else vars(config)
+
+
+def _mentions_gitlab(config: Any) -> bool:
     def contains(value: Any) -> bool:
         if isinstance(value, str):
             return "gitlab" in value.casefold()
@@ -985,17 +894,12 @@ def _mentions_gitlab(config: Any) -> bool:
             return any(contains(item) for item in value)
         return False
 
-    return contains(config)
+    return contains(_config_data(config))
 
 
 def _config_sha256(config: Any) -> str:
-    if isinstance(config, Mapping):
-        value = dict(config)
-    else:
-        dump = getattr(config, "model_dump", None)
-        value = dump(mode="json") if callable(dump) else vars(config)
     encoded = json.dumps(
-        value, sort_keys=True, separators=(",", ":"), allow_nan=False
+        _config_data(config), sort_keys=True, separators=(",", ":"), allow_nan=False
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
@@ -1007,31 +911,20 @@ def _osworld_score(value: Any) -> tuple[float, Mapping[str, Any] | None]:
         if "score" not in value:
             raise RuntimeError("OSWorld evaluator result has no score")
         value = value["score"]
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, (int, float))
-        or not math.isfinite(float(value))
-    ):
-        raise RuntimeError("OSWorld evaluator returned a non-finite score")
-    score = float(value)
+    score = _require_finite_number(value, "OSWorld evaluator score", error=RuntimeError)
     if not 0.0 <= score <= 1.0:
         raise RuntimeError("OSWorld evaluator score must be in [0, 1]")
     return score, details
 
 
-def _safe_component(value: str, label: str) -> None:
+def _safe_component(value: Any, label: str) -> str:
     if (
-        not value
-        or value in {".", ".."}
-        or "/" in value
-        or "\\" in value
-        or "\x00" in value
+        not isinstance(value, str)
+        or value in {"", ".", ".."}
+        or set(value) & {"/", "\\", "\x00"}
     ):
         raise ValueError(f"{label} must be one safe path component")
-
-
-def _task_string(task: BenchmarkTask, name: str) -> str:
-    return task_string(task, name, label="OSWorld")
+    return value
 
 
 def _require_contained(path: Path, root: Path) -> None:
@@ -1077,12 +970,9 @@ def _v2_gated_task_class(relative: Path) -> bool:
         return False
     task_id = name[len("task_") : -len(".py")]
     return bool(task_id) and len(task_id) <= 128 and all(
-        character.isascii()
-        and (character.isalnum() or character in {"-", "_"})
+        character.isascii() and (character.isalnum() or character in {"-", "_"})
         for character in task_id
     )
-
-
 
 
 __all__ = [

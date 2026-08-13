@@ -13,7 +13,15 @@ import struct
 import uuid
 import zlib
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Mapping, Protocol, Sequence
+from typing import (
+    Any,
+    Awaitable,
+    Callable,
+    Mapping,
+    Protocol,
+    Sequence,
+    TypeGuard,
+)
 from urllib.parse import urlsplit
 
 import httpx
@@ -27,6 +35,11 @@ from ..types import (
     ToolDefinition,
     ToolExecution,
     _json_mapping,
+    _require_bool,
+    _require_finite_number,
+    _require_int,
+    _require_mapping,
+    _require_str,
     strict_json_loads,
 )
 from .base import BaseEnvironment, complete_in_thread, raise_lifecycle_errors
@@ -45,22 +58,26 @@ MAX_SCREENSHOT_PIXELS = 16 * 1024 * 1024
 MAX_SCREENSHOT_BASE64_CHARS = 4 * ((MAX_SCREENSHOT_BYTES + 2) // 3)
 MAX_CUA_OBSERVE_RESPONSE_BYTES = MAX_SCREENSHOT_BASE64_CHARS + 1024 * 1024
 MAX_CUA_RESPONSE_BYTES = 2 * 1024 * 1024
-_ACTION_TYPES = frozenset(
-    {
-        "click",
-        "move",
-        "drag",
-        "scroll",
-        "type",
-        "key",
-        "key_down",
-        "key_up",
-        "wait",
-        "screenshot",
-        "fail",
-    }
-)
 _BUTTONS = frozenset({"left", "middle", "right"})
+_NO_OWNER_EXPORT = "live state export requires an external benchmark session owner"
+_NO_OWNER_ADOPT = "live state adoption requires an external benchmark session owner"
+_PNG_DEPTHS = {
+    0: {1, 2, 4, 8, 16}, 2: {8, 16}, 3: {1, 2, 4, 8}, 4: {8, 16}, 6: {8, 16}
+}
+_ACTION_FIELDS = {
+    "click": {"x", "y", "button", "clicks"},
+    "move": {"x", "y", "duration"},
+    "drag": {"x", "y", "to_x", "to_y", "button", "duration"},
+    "scroll": {"dx", "dy"},
+    "type": {"text"},
+    "key": {"keys"},
+    "key_down": {"key"},
+    "key_up": {"key"},
+    "wait": {"seconds"},
+    "screenshot": set[str](),
+    "fail": set[str](),
+}
+_ACTION_TYPES = frozenset(_ACTION_FIELDS)
 _KEY_ALIASES = {
     "return": "enter",
     "escape": "esc",
@@ -74,6 +91,32 @@ _KEY_ALIASES = {
     "arrowup": "up",
     "arrowdown": "down",
 }
+
+
+def _infra(prefix: str, detail: str) -> InfrastructureError:
+    """Build a prefixed infrastructure error so guards stay one line each."""
+
+    return InfrastructureError(f"{prefix} {detail}")
+
+
+def _integer(value: Any) -> TypeGuard[int]:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _finite(value: Any) -> TypeGuard[float]:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return math.isfinite(float(value))
+
+
+def _optional_callable(value: Any, label: str) -> None:
+    if value is not None and not callable(value):
+        raise ValueError(f"{label} must be callable or None")
+
+
+def _optional_identity(value: Any) -> None:
+    if value is not None and (not isinstance(value, str) or not value):
+        raise ValueError("resource_identity must be non-empty or None")
 
 
 @dataclass(frozen=True)
@@ -102,20 +145,14 @@ class OSWorldLiveState:
     _claimed: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
-        if not isinstance(self.observation, Mapping):
-            raise ValueError("OSWorld live observation must be an object")
+        _require_mapping(self.observation, "OSWorld live observation")
         screenshot = self.observation.get("screenshot")
         if not isinstance(screenshot, bytes):
             raise ValueError("OSWorld live observation requires screenshot bytes")
         validate_png(screenshot)
-        if not isinstance(self.resource_identity, str) or not self.resource_identity:
-            raise ValueError("OSWorld live resource identity must be non-empty")
-        if (
-            not _integer(self.steps)
-            or self.steps < 0
-            or not isinstance(self.done, bool)
-        ):
-            raise ValueError("OSWorld live step count and done flag are invalid")
+        _require_str(self.resource_identity, "OSWorld live resource identity")
+        _require_int(self.steps, "OSWorld live step count", minimum=0)
+        _require_bool(self.done, "OSWorld live done flag")
 
     def claim(self) -> tuple[Any, Mapping[str, Any], str, int, bool]:
         if self._claimed:
@@ -143,10 +180,8 @@ class AdapterLiveState:
     def __post_init__(self) -> None:
         if not isinstance(self.observation, ComputerObservation):
             raise ValueError("adapter live observation must be ComputerObservation")
-        if not isinstance(self.resource_identity, str) or not self.resource_identity:
-            raise ValueError("adapter live resource identity must be non-empty")
-        if not isinstance(self.done, bool):
-            raise ValueError("adapter live done flag must be boolean")
+        _require_str(self.resource_identity, "adapter live resource identity")
+        _require_bool(self.done, "adapter live done flag")
 
     def claim(self) -> tuple[Any, ComputerObservation, str, bool]:
         if self._claimed:
@@ -169,11 +204,9 @@ def validate_png(png: bytes) -> tuple[int, int]:
     """Validate the full PNG chunk stream and return IHDR dimensions."""
 
     if not isinstance(png, bytes) or not png.startswith(_PNG_SIGNATURE):
-        raise InfrastructureError("computer observation is not a PNG")
+        raise _infra("computer observation", "is not a PNG")
     if len(png) > MAX_SCREENSHOT_BYTES:
-        raise InfrastructureError(
-            "computer observation exceeds the screenshot byte limit"
-        )
+        raise _infra("computer observation", "exceeds the screenshot byte limit")
     offset = len(_PNG_SIGNATURE)
     dimensions: tuple[int, int] | None = None
     first = True
@@ -181,84 +214,53 @@ def validate_png(png: bytes) -> tuple[int, int]:
     has_image_data = False
     while offset < len(png):
         if offset + 12 > len(png):
-            raise InfrastructureError(
-                "computer observation contains a truncated PNG chunk"
-            )
+            raise _infra("computer observation", "contains a truncated PNG chunk")
         length = struct.unpack(">I", png[offset : offset + 4])[0]
         kind = png[offset + 4 : offset + 8]
         start = offset + 8
         finish = start + length
         crc_finish = finish + 4
         if crc_finish > len(png):
-            raise InfrastructureError(
-                "computer observation contains a truncated PNG chunk"
-            )
+            raise _infra("computer observation", "contains a truncated PNG chunk")
         expected = struct.unpack(">I", png[finish:crc_finish])[0]
         observed = zlib.crc32(kind)
         observed = zlib.crc32(png[start:finish], observed) & 0xFFFFFFFF
         if observed != expected:
-            raise InfrastructureError(
-                "computer observation contains an invalid PNG checksum"
-            )
+            raise _infra("computer observation", "contains an invalid PNG checksum")
         if first and kind != b"IHDR":
-            raise InfrastructureError(
-                "computer observation PNG does not start with IHDR"
-            )
+            raise _infra("computer observation", "PNG does not start with IHDR")
         if kind == b"IHDR":
             if not first or length != 13:
-                raise InfrastructureError(
-                    "computer observation contains an invalid IHDR"
-                )
-            (
-                width,
-                height,
-                bit_depth,
-                color_type,
-                compression,
-                filter_method,
-                interlace,
-            ) = struct.unpack(">IIBBBBB", png[start:finish])
+                raise _infra("computer observation", "contains an invalid IHDR")
+            ihdr = struct.unpack(">IIBBBBB", png[start:finish])
+            width, height, bit_depth, color_type = ihdr[:4]
+            compression, filter_method, interlace = ihdr[4:]
             if width < 1 or height < 1:
-                raise InfrastructureError(
-                    "computer observation has invalid dimensions"
-                )
+                raise _infra("computer observation", "has invalid dimensions")
             if (
                 width > MAX_SCREENSHOT_WIDTH
                 or height > MAX_SCREENSHOT_HEIGHT
                 or width * height > MAX_SCREENSHOT_PIXELS
             ):
-                raise InfrastructureError(
-                    "computer observation exceeds the dimension limit"
-                )
-            allowed_depths = {
-                0: {1, 2, 4, 8, 16},
-                2: {8, 16},
-                3: {1, 2, 4, 8},
-                4: {8, 16},
-                6: {8, 16},
-            }
+                raise _infra("computer observation", "exceeds the dimension limit")
             if (
-                bit_depth not in allowed_depths.get(color_type, set())
+                bit_depth not in _PNG_DEPTHS.get(color_type, set())
                 or compression != 0
                 or filter_method != 0
                 or interlace not in {0, 1}
             ):
-                raise InfrastructureError(
-                    "computer observation contains an invalid IHDR"
-                )
+                raise _infra("computer observation", "contains an invalid IHDR")
             dimensions = (width, height)
         if kind == b"IDAT":
             has_image_data = True
         if kind == b"IEND":
             if length or crc_finish != len(png):
-                raise InfrastructureError(
-                    "computer observation contains an invalid IEND"
-                )
+                raise _infra("computer observation", "contains an invalid IEND")
             ended = True
         first = False
         offset = crc_finish
     if dimensions is None or not has_image_data or not ended:
-        raise InfrastructureError("computer observation is an incomplete PNG")
+        raise _infra("computer observation", "is an incomplete PNG")
     return dimensions
 
 
@@ -272,7 +274,30 @@ def computer_action_schema(
     if not isinstance(allow_fail, bool) or not isinstance(allow_duration, bool):
         raise ValueError("computer schema options must be boolean")
     action_types = _ACTION_TYPES if allow_fail else _ACTION_TYPES - {"fail"}
-    schema: dict[str, Any] = {
+    fields: dict[str, Any] = {
+        "type": {"type": "string", "enum": sorted(action_types)},
+        "x": {"type": "integer", "minimum": 0},
+        "y": {"type": "integer", "minimum": 0},
+        "to_x": {"type": "integer", "minimum": 0},
+        "to_y": {"type": "integer", "minimum": 0},
+        "button": {"type": "string", "enum": sorted(_BUTTONS)},
+        "clicks": {"type": "integer", "minimum": 1, "maximum": 3},
+        "dx": {"type": "integer"},
+        "dy": {"type": "integer"},
+        "text": {"type": "string", "maxLength": 10000},
+        "keys": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 32,
+            "items": {"type": "string"},
+        },
+        "key": {"type": "string"},
+        "seconds": {"type": "number", "exclusiveMinimum": 0, "maximum": 30},
+        "duration": {"type": "number", "minimum": 0, "maximum": 10},
+    }
+    if not allow_duration:
+        del fields["duration"]
+    return {
         "type": "object",
         "properties": {
             "actions": {
@@ -281,35 +306,7 @@ def computer_action_schema(
                 "maxItems": 32,
                 "items": {
                     "type": "object",
-                    "properties": {
-                        "type": {"type": "string", "enum": sorted(action_types)},
-                        "x": {"type": "integer", "minimum": 0},
-                        "y": {"type": "integer", "minimum": 0},
-                        "to_x": {"type": "integer", "minimum": 0},
-                        "to_y": {"type": "integer", "minimum": 0},
-                        "button": {"type": "string", "enum": sorted(_BUTTONS)},
-                        "clicks": {"type": "integer", "minimum": 1, "maximum": 3},
-                        "dx": {"type": "integer"},
-                        "dy": {"type": "integer"},
-                        "text": {"type": "string", "maxLength": 10000},
-                        "keys": {
-                            "type": "array",
-                            "minItems": 1,
-                            "maxItems": 32,
-                            "items": {"type": "string"},
-                        },
-                        "key": {"type": "string"},
-                        "seconds": {
-                            "type": "number",
-                            "exclusiveMinimum": 0,
-                            "maximum": 30,
-                        },
-                        "duration": {
-                            "type": "number",
-                            "minimum": 0,
-                            "maximum": 10,
-                        },
-                    },
+                    "properties": fields,
                     "required": ["type"],
                     "additionalProperties": False,
                 },
@@ -318,9 +315,6 @@ def computer_action_schema(
         "required": ["actions"],
         "additionalProperties": False,
     }
-    if not allow_duration:
-        del schema["properties"]["actions"]["items"]["properties"]["duration"]
-    return schema
 
 
 def validate_computer_actions(
@@ -346,20 +340,7 @@ def validate_computer_actions(
             raise InvalidAction("computer fail is supported only by OSWorld")
         if "duration" in raw and not allow_duration:
             raise InvalidAction("computer duration is supported only by OSWorld")
-        allowed = {
-            "click": {"type", "x", "y", "button", "clicks"},
-            "move": {"type", "x", "y", "duration"},
-            "drag": {"type", "x", "y", "to_x", "to_y", "button", "duration"},
-            "scroll": {"type", "dx", "dy"},
-            "type": {"type", "text"},
-            "key": {"type", "keys"},
-            "key_down": {"type", "key"},
-            "key_up": {"type", "key"},
-            "wait": {"type", "seconds"},
-            "screenshot": {"type"},
-            "fail": {"type"},
-        }[str(kind)]
-        extra = set(raw).difference(allowed)
+        extra = set(raw).difference(_ACTION_FIELDS[str(kind)] | {"type"})
         if extra:
             raise InvalidAction(f"unexpected {kind} fields: {sorted(extra)}")
         action = dict(raw)
@@ -370,25 +351,19 @@ def validate_computer_actions(
             _coordinate(action, "to_x", width)
             _coordinate(action, "to_y", height)
         if kind in {"click", "drag"}:
-            button = action.get("button", "left")
+            button = action.setdefault("button", "left")
             if not isinstance(button, str) or button not in _BUTTONS:
                 raise InvalidAction("computer button must be left, middle, or right")
-            action["button"] = button
         if kind == "click":
             clicks = action.get("clicks", 1)
             if not _integer(clicks) or not 1 <= clicks <= 3:
-                raise InvalidAction(
-                    "computer clicks must be an integer from 1 to 3"
-                )
+                raise InvalidAction("computer clicks must be an integer from 1 to 3")
             action["clicks"] = clicks
         if kind == "scroll":
             for name in ("dx", "dy"):
-                item = action.get(name, 0)
-                if not _integer(item):
-                    raise InvalidAction(
-                        f"computer scroll {name} must be an integer"
-                    )
-                action[name] = item
+                action[name] = _require_int(
+                    action.get(name, 0), f"computer scroll {name}", error=InvalidAction
+                )
             if action["dx"] == 0 and action["dy"] == 0:
                 raise InvalidAction("computer scroll requires non-zero dx or dy")
         if kind == "type":
@@ -412,22 +387,12 @@ def validate_computer_actions(
             action["key"] = _key(action.get("key"))
         if kind == "wait":
             seconds = action.get("seconds")
-            if (
-                isinstance(seconds, bool)
-                or not isinstance(seconds, (int, float))
-                or not math.isfinite(float(seconds))
-                or not 0 < seconds <= 30
-            ):
+            if not _finite(seconds) or not 0 < seconds <= 30:
                 raise InvalidAction("computer wait seconds must be in (0, 30]")
             action["seconds"] = float(seconds)
         if "duration" in action:
             duration = action["duration"]
-            if (
-                isinstance(duration, bool)
-                or not isinstance(duration, (int, float))
-                or not math.isfinite(float(duration))
-                or not 0 <= duration <= 10
-            ):
+            if not _finite(duration) or not 0 <= duration <= 10:
                 raise InvalidAction("computer duration must be in [0, 10]")
             action["duration"] = float(duration)
         actions.append(action)
@@ -436,26 +401,18 @@ def validate_computer_actions(
     return tuple(actions)
 
 
-def _integer(value: Any) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool)
-
-
 def _coordinate(action: Mapping[str, Any], name: str, limit: int) -> None:
     value = action.get(name)
-    if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value < limit:
+    if not _integer(value) or not 0 <= value < limit:
         raise InvalidAction(f"computer {name} must be an on-screen integer")
 
 
 def _key(value: Any) -> str:
     if not isinstance(value, str) or not value.strip() or len(value) > 32:
-        raise InvalidAction(
-            "computer key names must be non-empty and at most 32 chars"
-        )
+        raise InvalidAction("computer key names must be non-empty and at most 32 chars")
     compact = value.strip().casefold().replace(" ", "")
     compact = _KEY_ALIASES.get(compact, compact)
-    if not all(
-        character.isalnum() or character in {"_", "+", "-"} for character in compact
-    ):
+    if not all(item.isalnum() or item in {"_", "+", "-"} for item in compact):
         raise InvalidAction(f"invalid computer key {value!r}")
     return compact
 
@@ -493,9 +450,7 @@ class CUASpeedRunClient:
             or parsed.fragment
             or not _integer(connect_retries)
             or connect_retries < 0
-            or isinstance(timeout_seconds, bool)
-            or not isinstance(timeout_seconds, (int, float))
-            or not math.isfinite(float(timeout_seconds))
+            or not _finite(timeout_seconds)
             or timeout_seconds <= 0
         ):
             raise ValueError("invalid CUA gateway configuration")
@@ -507,12 +462,8 @@ class CUASpeedRunClient:
             )
         if bearer_token is not None and (
             not isinstance(bearer_token, str)
-            or not bearer_token
-            or len(bearer_token) > 8192
-            or any(
-                ord(character) < 32 or ord(character) == 127
-                for character in bearer_token
-            )
+            or not 0 < len(bearer_token) <= 8192
+            or any(ord(item) < 32 or ord(item) == 127 for item in bearer_token)
         ):
             raise ValueError("CUA gateway bearer token is invalid")
         self.env_url = env_url.rstrip("/")
@@ -548,6 +499,8 @@ class CUASpeedRunClient:
         retry_connect_timeout: bool = False,
         max_response_bytes: int = MAX_CUA_RESPONSE_BYTES,
     ) -> bytes:
+        gateway = f"CUA gateway {path}"
+        offline = f"could not connect to CUA gateway for {path}"
         for attempt in range(self.connect_retries + 1):
             try:
                 async with self._client.stream(
@@ -557,46 +510,25 @@ class CUASpeedRunClient:
                     json=json_body,
                 ) as response:
                     if not 200 <= response.status_code < 300:
-                        raise InfrastructureError(
-                            f"CUA gateway {path} returned HTTP {response.status_code}"
-                        )
+                        raise _infra(gateway, f"returned HTTP {response.status_code}")
                     return await read_bounded_body(response, max_response_bytes)
             except ResponseBodyTooLarge as exc:
-                raise InfrastructureError(
-                    f"CUA gateway {path} response exceeds its byte limit"
-                ) from exc
+                raise _infra(gateway, "response exceeds its byte limit") from exc
             except (TypeError, ValueError) as exc:
-                raise InfrastructureError(
-                    f"CUA gateway {path} response transport failed"
-                ) from exc
-            except httpx.ConnectTimeout as exc:
-                if (
-                    not (retry_connection or retry_connect_timeout)
-                    or attempt == self.connect_retries
-                ):
-                    raise InfrastructureError(
-                        f"could not connect to CUA gateway for {path}"
-                    ) from exc
+                raise _infra(gateway, "response transport failed") from exc
+            except (httpx.ConnectTimeout, httpx.ConnectError) as exc:
+                retry = retry_connection or (
+                    retry_connect_timeout and isinstance(exc, httpx.ConnectTimeout)
+                )
+                if not retry or attempt == self.connect_retries:
+                    raise InfrastructureError(offline) from exc
                 await self._sleep(attempt + 1)
-            except httpx.ConnectError as exc:
+            except (httpx.NetworkError, httpx.RemoteProtocolError) as exc:
                 if not retry_connection or attempt == self.connect_retries:
-                    raise InfrastructureError(
-                        f"could not connect to CUA gateway for {path}"
-                    ) from exc
-                await self._sleep(attempt + 1)
-            except (
-                httpx.NetworkError,
-                httpx.RemoteProtocolError,
-            ) as exc:
-                if not retry_connection or attempt == self.connect_retries:
-                    raise InfrastructureError(
-                        f"CUA gateway {path} request failed"
-                    ) from exc
+                    raise _infra(gateway, "request failed") from exc
                 await self._sleep(attempt + 1)
             except httpx.HTTPError as exc:
-                raise InfrastructureError(
-                    f"CUA gateway {path} request failed"
-                ) from exc
+                raise _infra(gateway, "request failed") from exc
         raise AssertionError("unreachable")
 
     async def observe(self) -> ComputerObservation:
@@ -609,36 +541,26 @@ class CUASpeedRunClient:
         try:
             payload = strict_json_loads(content)
         except ValueError as exc:
-            raise InfrastructureError("gateway observe returned invalid JSON") from exc
+            raise _infra("gateway", "observe returned invalid JSON") from exc
         if (
             not isinstance(payload, Mapping)
             or not isinstance(payload.get("png_b64"), str)
             or not isinstance(payload.get("meta"), Mapping)
         ):
-            raise InfrastructureError(
-                "gateway observe response requires png_b64 and meta"
-            )
+            raise _infra("gateway", "observe response requires png_b64 and meta")
         encoded = payload["png_b64"]
         if len(encoded) > MAX_SCREENSHOT_BASE64_CHARS:
-            raise InfrastructureError(
-                "gateway observe screenshot exceeds the base64 byte limit"
-            )
+            raise _infra("gateway", "observe screenshot exceeds the base64 byte limit")
         try:
             png = base64.b64decode(encoded, validate=True)
         except (TypeError, ValueError) as exc:
-            raise InfrastructureError(
-                "gateway observe returned invalid base64"
-            ) from exc
+            raise _infra("gateway", "observe returned invalid base64") from exc
         if len(png) > MAX_SCREENSHOT_BYTES:
-            raise InfrastructureError(
-                "gateway observe screenshot exceeds the decoded byte limit"
-            )
+            raise _infra("gateway", "observe screenshot exceeds the decoded byte limit")
         try:
             width, height = validate_png(png)
         except InfrastructureError as exc:
-            raise InfrastructureError(
-                "gateway observe returned an invalid PNG"
-            ) from exc
+            raise _infra("gateway", "observe returned an invalid PNG") from exc
         metadata = dict(payload["meta"])
         metadata.update({"width": width, "height": height})
         return ComputerObservation(png, metadata)
@@ -657,22 +579,19 @@ class CUASpeedRunClient:
         try:
             payload = strict_json_loads(content)
         except ValueError as exc:
-            raise InfrastructureError("gateway step returned invalid JSON") from exc
+            raise _infra("gateway", "step returned invalid JSON") from exc
         if not isinstance(payload, Mapping):
-            raise InfrastructureError("gateway step response must be an object")
+            raise _infra("gateway", "step response must be an object")
         if "ok" in payload:
-            if payload.get("ok") is not True or not isinstance(
-                payload.get("info"), Mapping
-            ):
-                raise InfrastructureError(
-                    "gateway step response has an invalid upstream envelope"
-                )
-            result = dict(payload["info"])
+            info = payload.get("info")
+            if payload.get("ok") is not True or not isinstance(info, Mapping):
+                raise _infra("gateway", "step response has an invalid envelope")
+            result = dict(info)
         else:
             result = dict(payload)
         done = result.get("done", False)
         if not isinstance(done, bool):
-            raise InfrastructureError("gateway step done must be a boolean")
+            raise _infra("gateway", "step done must be a boolean")
         self._done = done
         result["done"] = done
         return result
@@ -692,9 +611,9 @@ class CUASpeedRunClient:
         try:
             payload = strict_json_loads(content)
         except ValueError as exc:
-            raise InfrastructureError("gateway done returned invalid JSON") from exc
+            raise _infra("gateway", "done returned invalid JSON") from exc
         if not isinstance(payload, Mapping) or payload.get("ok") is not True:
-            raise InfrastructureError("gateway done response requires ok=true")
+            raise _infra("gateway", "done response requires ok=true")
 
     async def close(self) -> None:
         if self._owns_client:
@@ -733,19 +652,16 @@ def _cua_path_token(path: str) -> str | None:
     if path in {"", "/"}:
         return None
     parts = path.split("/")
+    token = parts[1] if len(parts) == 2 and not parts[0] else ""
     if (
-        len(parts) != 2
-        or parts[0]
-        or not parts[1]
-        or len(parts[1]) > 512
+        not token
+        or len(token) > 512
         or not all(
-            character.isascii()
-            and (character.isalnum() or character in {"-", "_"})
-            for character in parts[1]
+            item.isascii() and (item.isalnum() or item in {"-", "_"}) for item in token
         )
     ):
         raise ValueError("env_url path must be one URL-safe cua-speed-run token")
-    return parts[1]
+    return token
 
 
 class CUASpeedRunAdapterClient:
@@ -765,16 +681,9 @@ class CUASpeedRunAdapterClient:
                 raise ValueError(f"cua-speed-run adapter must expose {name}")
         if not isinstance(owns_adapter, bool):
             raise ValueError("owns_adapter must be boolean")
-        if resource_identity is not None and (
-            not isinstance(resource_identity, str) or not resource_identity
-        ):
-            raise ValueError("resource_identity must be non-empty or None")
-        for name, sink in (
-            ("observation_sink", observation_sink),
-            ("transition_sink", transition_sink),
-        ):
-            if sink is not None and not callable(sink):
-                raise ValueError(f"{name} must be callable or None")
+        _optional_identity(resource_identity)
+        _optional_callable(observation_sink, "observation_sink")
+        _optional_callable(transition_sink, "transition_sink")
         self.adapter = adapter
         self.owns_adapter = owns_adapter
         self._identity = resource_identity or f"cua-adapter:{uuid.uuid4().hex}"
@@ -788,15 +697,11 @@ class CUASpeedRunAdapterClient:
         png = getattr(observed, "png", None)
         metadata = getattr(observed, "meta", {})
         if not isinstance(png, bytes) or not isinstance(metadata, Mapping):
-            raise InfrastructureError(
-                "cua-speed-run adapter returned an invalid observation"
-            )
+            raise _infra("cua-speed-run adapter", "returned an invalid observation")
         try:
             validate_png(png)
         except InfrastructureError as exc:
-            raise InfrastructureError(
-                "cua-speed-run adapter returned an invalid PNG"
-            ) from exc
+            raise _infra("cua-speed-run adapter", "returned an invalid PNG") from exc
         self._observation = ComputerObservation(png, dict(metadata))
         if self.observation_sink is not None:
             emitted = self.observation_sink(self._observation)
@@ -810,12 +715,10 @@ class CUASpeedRunAdapterClient:
             return {}
         result = await complete_in_thread(self.adapter.step, translated)
         if not isinstance(result, Mapping):
-            raise InfrastructureError(
-                "cua-speed-run adapter step must return an object"
-            )
+            raise _infra("cua-speed-run adapter", "step must return an object")
         done = result.get("done", False)
         if not isinstance(done, bool):
-            raise InfrastructureError("cua-speed-run adapter done must be a boolean")
+            raise _infra("cua-speed-run adapter", "done must be a boolean")
         self._done = done
         if self.transition_sink is not None:
             emitted = self.transition_sink(
@@ -838,19 +741,13 @@ class CUASpeedRunAdapterClient:
 
     async def export_state(self) -> AdapterLiveState:
         if self.owns_adapter:
-            raise NotImplementedError(
-                "live state export requires an external benchmark session owner"
-            )
+            raise NotImplementedError(_NO_OWNER_EXPORT)
         observation = self._observation or await self.observe()
-        return AdapterLiveState(
-            self.adapter, observation, self._identity, done=self._done
-        )
+        return AdapterLiveState(self.adapter, observation, self._identity, self._done)
 
     async def adopt_state(self, state: Any) -> ComputerObservation:
         if self.owns_adapter:
-            raise NotImplementedError(
-                "live state adoption requires an external benchmark session owner"
-            )
+            raise NotImplementedError(_NO_OWNER_ADOPT)
         if not isinstance(state, AdapterLiveState):
             raise ProtocolError("computer adapter can adopt only adapter live state")
         adapter, observation, identity, done = state.claim()
@@ -886,16 +783,11 @@ class OSWorldClient:
     ) -> None:
         if not callable(getattr(environment, "step", None)):
             raise ValueError("OSWorld environment must expose step")
-        if not isinstance(initial_observation, Mapping):
-            raise ValueError("OSWorld initial observation must be an object")
-        if transition_sink is not None and not callable(transition_sink):
-            raise ValueError("transition_sink must be callable or None")
+        _require_mapping(initial_observation, "OSWorld initial observation")
+        _optional_callable(transition_sink, "transition_sink")
         if not isinstance(owns_environment, bool):
             raise ValueError("owns_environment must be boolean")
-        if resource_identity is not None and (
-            not isinstance(resource_identity, str) or not resource_identity
-        ):
-            raise ValueError("resource_identity must be non-empty or None")
+        _optional_identity(resource_identity)
         self.environment = environment
         self.observation = dict(initial_observation)
         self.transition_sink = transition_sink
@@ -903,23 +795,18 @@ class OSWorldClient:
         self._identity = resource_identity or f"osworld-desktop:{uuid.uuid4().hex}"
         self._steps = 0
         self._done = False
-        if (
-            isinstance(pause_seconds, bool)
-            or not isinstance(pause_seconds, (int, float))
-            or not math.isfinite(float(pause_seconds))
-            or pause_seconds < 0
-        ):
-            raise ValueError("OSWorld pause_seconds must be finite and non-negative")
-        self.pause_seconds = float(pause_seconds)
+        self.pause_seconds = _require_finite_number(
+            pause_seconds, "OSWorld pause_seconds", minimum=0
+        )
 
     async def observe(self) -> ComputerObservation:
         png = self.observation.get("screenshot")
         if not isinstance(png, bytes):
-            raise InfrastructureError("OSWorld observation requires screenshot bytes")
+            raise _infra("OSWorld", "observation requires screenshot bytes")
         try:
             width, height = validate_png(png)
         except InfrastructureError as exc:
-            raise InfrastructureError("OSWorld returned an invalid PNG") from exc
+            raise _infra("OSWorld", "returned an invalid PNG") from exc
         return ComputerObservation(png, {"width": width, "height": height})
 
     async def step(self, actions: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
@@ -929,11 +816,11 @@ class OSWorldClient:
                 getter = getattr(self.environment, "_get_obs", None)
                 if getter is not None:
                     if not callable(getter):
-                        raise InfrastructureError("OSWorld _get_obs must be callable")
+                        raise _infra("OSWorld", "_get_obs must be callable")
                     observed = await complete_in_thread(getter)
                     if not isinstance(observed, Mapping):
-                        raise InfrastructureError(
-                            "OSWorld _get_obs returned an invalid observation"
+                        raise _infra(
+                            "OSWorld", "_get_obs returned an invalid observation"
                         )
                     self.observation = dict(observed)
                 continue
@@ -942,16 +829,12 @@ class OSWorldClient:
                 self.environment.step, encoded, self.pause_seconds
             )
             if not isinstance(result, tuple) or len(result) < 4:
-                raise InfrastructureError("OSWorld step returned an invalid result")
+                raise _infra("OSWorld", "step returned an invalid result")
             observation, reward, done, info = result[:4]
             if not isinstance(observation, Mapping):
-                raise InfrastructureError(
-                    "OSWorld step returned an invalid observation"
-                )
+                raise _infra("OSWorld", "step returned an invalid observation")
             if not isinstance(done, bool) or not isinstance(info, Mapping):
-                raise InfrastructureError(
-                    "OSWorld step returned invalid done or info values"
-                )
+                raise _infra("OSWorld", "step returned invalid done or info values")
             self.observation = dict(observation)
             self._steps += 1
             self._done = done
@@ -993,9 +876,7 @@ class OSWorldClient:
 
     async def export_state(self) -> OSWorldLiveState:
         if self.owns_environment:
-            raise NotImplementedError(
-                "live state export requires an external benchmark session owner"
-            )
+            raise NotImplementedError(_NO_OWNER_EXPORT)
         return OSWorldLiveState(
             environment=self.environment,
             observation=dict(self.observation),
@@ -1006,9 +887,7 @@ class OSWorldClient:
 
     async def adopt_state(self, state: Any) -> ComputerObservation:
         if self.owns_environment:
-            raise NotImplementedError(
-                "live state adoption requires an external benchmark session owner"
-            )
+            raise NotImplementedError(_NO_OWNER_ADOPT)
         if not isinstance(state, OSWorldLiveState):
             raise ProtocolError("OSWorld can adopt only OSWorld live state")
         environment, observation, identity, steps, done = state.claim()
@@ -1112,9 +991,7 @@ def to_cua_speedrun_actions(
             translated.append({"mouse": {"move": [int(action["x"]), int(action["y"])]}})
         elif kind == "drag":
             if action["button"] == "middle":
-                raise InvalidAction(
-                    "cua-speed-run does not support middle-button drag"
-                )
+                raise InvalidAction("cua-speed-run does not support middle-button drag")
             name = f"{action['button']}_click_drag"
             translated.append(
                 {
@@ -1164,12 +1041,10 @@ class CUAEnvironment(BaseEnvironment):
         for name in ("observe", "step", "done", "close"):
             if not callable(getattr(client, name, None)):
                 raise ValueError(f"computer client must expose {name}")
-        if not isinstance(benchmark, str) or not benchmark.strip():
-            raise ValueError("computer benchmark must be non-empty")
         if not isinstance(allow_fail, bool) or not isinstance(allow_duration, bool):
             raise ValueError("computer environment options must be boolean")
         self.client = client
-        self.benchmark = benchmark
+        self.benchmark = _require_str(benchmark, "computer benchmark")
         self.allow_fail = allow_fail
         self.allow_duration = allow_duration
         self._observation: ComputerObservation | None = None
@@ -1180,21 +1055,17 @@ class CUAEnvironment(BaseEnvironment):
         self._episode_done = False
 
     def tools(self) -> Sequence[ToolDefinition]:
+        fail_note = " Use fail alone only when the OSWorld task is infeasible."
         return (
             ToolDefinition(
                 name="computer",
                 description=(
                     "Execute an ordered batch of mouse/keyboard/wait actions using "
                     "native screenshot pixel coordinates."
-                    + (
-                        " Use fail alone only when the OSWorld task is infeasible."
-                        if self.allow_fail
-                        else ""
-                    )
+                    + (fail_note if self.allow_fail else "")
                 ),
                 input_schema=computer_action_schema(
-                    allow_fail=self.allow_fail,
-                    allow_duration=self.allow_duration,
+                    allow_fail=self.allow_fail, allow_duration=self.allow_duration
                 ),
             ),
         )
@@ -1204,17 +1075,13 @@ class CUAEnvironment(BaseEnvironment):
             raise RuntimeError("computer environment is closed")
         observation = await self.client.observe()
         if not isinstance(observation, ComputerObservation):
-            raise InfrastructureError(
-                "computer client observe must return ComputerObservation"
-            )
+            raise _infra("computer client", "observe must return ComputerObservation")
         done = getattr(self.client, "episode_done", False)
         if not isinstance(done, bool):
-            raise InfrastructureError("computer client episode_done must be a boolean")
+            raise _infra("computer client", "episode_done must be a boolean")
         self._observation = observation
         self._episode_done = done
-        return self._render(
-            self._observation, executed=0, episode_done=self._episode_done
-        )
+        return self._render(observation, executed=0, episode_done=done)
 
     async def execute(self, call: ToolCall) -> ToolExecution:
         if self._closed or self._finish_attempted:
@@ -1237,47 +1104,29 @@ class CUAEnvironment(BaseEnvironment):
         actionable = [action for action in actions if action["type"] != "screenshot"]
         result = await self.client.step(actions)
         if not isinstance(result, Mapping):
-            raise InfrastructureError("computer client step must return an object")
+            raise _infra("computer client", "step must return an object")
         done = result.get("done", False)
         if not isinstance(done, bool):
-            raise InfrastructureError("computer client step done must be a boolean")
+            raise _infra("computer client", "step done must be a boolean")
         self._episode_done = done
         observation = await self.client.observe()
         if not isinstance(observation, ComputerObservation):
-            raise InfrastructureError(
-                "computer client observe must return ComputerObservation"
-            )
+            raise _infra("computer client", "observe must return ComputerObservation")
         self._observation = observation
-        return self._render(
-            self._observation,
-            executed=len(actionable),
-            episode_done=self._episode_done,
-        )
+        return self._render(observation, executed=len(actionable), episode_done=done)
 
     def _render(
-        self,
-        observation: ComputerObservation,
-        *,
-        executed: int,
-        episode_done: bool,
+        self, observation: ComputerObservation, *, executed: int, episode_done: bool
     ) -> ToolExecution:
         width, height = validate_png(observation.png)
         image = "data:image/png;base64," + base64.b64encode(observation.png).decode()
+        size = {"width": width, "height": height}
         return ToolExecution(
             output=json.dumps(
-                {
-                    "width": width,
-                    "height": height,
-                    "executed": executed,
-                    "episode_done": episode_done,
-                }
+                {**size, "executed": executed, "episode_done": episode_done}
             ),
             image_data_url=image,
-            metadata={
-                "width": width,
-                "height": height,
-                "screenshot_bytes": len(observation.png),
-            },
+            metadata={**size, "screenshot_bytes": len(observation.png)},
         )
 
     async def finish(self) -> None:
@@ -1306,14 +1155,10 @@ class CUAEnvironment(BaseEnvironment):
             raise NotImplementedError("computer client cannot adopt state")
         observation = await hook(state)
         if not isinstance(observation, ComputerObservation):
-            raise InfrastructureError(
-                "computer state adoption returned no observation"
-            )
+            raise InfrastructureError("computer state adoption returned no observation")
         done = getattr(self.client, "episode_done", False)
         if not isinstance(done, bool):
-            raise InfrastructureError(
-                "computer client episode_done must be a boolean"
-            )
+            raise _infra("computer client", "episode_done must be a boolean")
         self._observation = observation
         self._episode_done = done
 

@@ -26,7 +26,16 @@ from ..models import Model
 from ..orchestrator import Orchestrator
 from ..runtime import RunContext
 from ..specs import AgentSpecV1
-from ..types import BudgetLimits, strict_json_loads
+from ..types import (
+    BudgetLimits,
+    _require_bool,
+    _require_callable,
+    _require_mapping,
+    _require_no_symlink,
+    _require_positive_int,
+    _require_str,
+    strict_json_loads,
+)
 from .base import (
     BenchmarkTask,
     EvaluationOutcome,
@@ -151,10 +160,9 @@ def inspect_programbench_checkout(
     """Bind the pinned upstream checkout that supplies task data and scoring."""
 
     inspect_git = _git if run_git is None else run_git
-    expanded = checkout.expanduser()
-    if expanded.is_symlink():
-        raise ValueError("ProgramBench checkout must not be a symlink")
-    root = expanded.resolve()
+    root = _require_no_symlink(
+        checkout.expanduser(), "ProgramBench checkout"
+    ).resolve()
     tasks = root / "src" / "programbench" / "data" / "tasks"
     project = root / "pyproject.toml"
     if (
@@ -203,10 +211,8 @@ def load_programbench(
 ) -> tuple[BenchmarkTask, ...]:
     """Load agent-visible tasks; `tests.json` only ever becomes a hidden hash."""
 
-    if limit is not None and (
-        not isinstance(limit, int) or isinstance(limit, bool) or limit < 1
-    ):
-        raise ValueError("ProgramBench limit must be positive")
+    if limit is not None:
+        _require_positive_int(limit, "ProgramBench limit")
     identity = inspect_programbench_checkout(checkout)
     tasks_root = Path(str(identity["tasks_dir"]))
     selected: frozenset[str] | None = None
@@ -310,14 +316,10 @@ async def run_programbench_task(
 ) -> EvaluationOutcome:
     """Generate one offline submission archive; never assign a local score."""
 
-    if not callable(model_factory):
-        raise ValueError("model_factory must be callable")
-    if not isinstance(system_prompt, str):
-        raise ValueError("system_prompt must be a string")
-    if not isinstance(max_steps, int) or isinstance(max_steps, bool) or max_steps < 1:
-        raise ValueError("max_steps must be a positive integer")
-    if not isinstance(multi_agent, bool):
-        raise ValueError("multi_agent must be boolean")
+    _require_callable(model_factory, "model_factory")
+    _require_str(system_prompt, "system_prompt", non_empty=False)
+    _require_positive_int(max_steps, "max_steps")
+    _require_bool(multi_agent, "multi_agent")
     instance_id = _require_instance_id(
         task.task_id, "ProgramBench task instance_id"
     )
@@ -455,8 +457,7 @@ def collect_submissions(output: Path, destination: Path) -> int:
             declared = strict_json_loads(
                 (parent / "result.json").read_text(encoding="utf-8")
             )
-            if not isinstance(declared, Mapping):
-                raise ValueError("result artifact must be an object")
+            _require_mapping(declared, "result artifact")
             instance_id = _require_instance_id(
                 declared.get("task_id"), "ProgramBench result task_id"
             )
@@ -507,10 +508,9 @@ def collect_submissions(output: Path, destination: Path) -> int:
 def _submission_collection_target(
     root: Path, destination: Path, *, require_exists: bool = False
 ) -> Path:
-    expanded = destination.expanduser()
-    if expanded.is_symlink():
-        raise ValueError("ProgramBench collection must not be a symlink")
-    target = expanded.resolve()
+    target = _require_no_symlink(
+        destination.expanduser(), "ProgramBench collection"
+    ).resolve()
     if target.parent != root:
         raise ValueError(
             "ProgramBench collection must be a direct child of the evaluation"
@@ -527,10 +527,9 @@ def inspect_programbench_grade_inputs(
 ) -> Mapping[str, Any]:
     """Validate the official run layout and bind it to visible task prompts."""
 
-    expanded = run_directory.expanduser()
-    if expanded.is_symlink():
-        raise ValueError("ProgramBench run directory must not be a symlink")
-    runs_root = expanded.resolve()
+    runs_root = _require_no_symlink(
+        run_directory.expanduser(), "ProgramBench run directory"
+    ).resolve()
     if not runs_root.is_dir():
         raise ValueError("ProgramBench grading requires a run directory")
     submissions: dict[str, Mapping[str, Any]] = {}

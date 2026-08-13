@@ -15,6 +15,12 @@ from typing import Any, Mapping
 from .storage import StorageLayout
 
 
+def _failure(exc: BaseException, **extra: Any) -> dict[str, Any]:
+    """Report one doctor check that could not run, without leaking a traceback."""
+
+    return {"ok": False, **extra, "detail": f"{type(exc).__name__}: {exc}"}
+
+
 async def _doctor(args: argparse.Namespace) -> int:
     reports: dict[str, Any] = {}
     okay = True
@@ -154,11 +160,7 @@ async def _page_reader_doctor(reader: str) -> Mapping[str, Any]:
         finally:
             await playwright.stop()
     except Exception as exc:
-        return {
-            "name": "playwright",
-            "ok": False,
-            "detail": f"{type(exc).__name__}: {exc}",
-        }
+        return _failure(exc, name="playwright")
 
 
 def _fixed_web_doctor(
@@ -214,10 +216,7 @@ def _fixed_web_doctor(
                 "version": ANSERINI_VERSION,
             }
         except Exception as exc:
-            jar_report = {
-                "ok": False,
-                "detail": f"{type(exc).__name__}: {exc}",
-            }
+            jar_report = _failure(exc)
     java = _java_doctor(required_major=21)
     index_report: dict[str, Any]
     if index is None:
@@ -233,10 +232,7 @@ def _fixed_web_doctor(
                 "sha256": directory_sha256(index),
             }
         except Exception as exc:
-            index_report = {
-                "ok": False,
-                "detail": f"{type(exc).__name__}: {exc}",
-            }
+            index_report = _failure(exc)
     ok = (
         all(packages.values())
         and bool(java["ok"])
@@ -273,12 +269,7 @@ def _java_doctor(*, required_major: int) -> Mapping[str, Any]:
             timeout=10,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        return {
-            "ok": False,
-            "required_major": required_major,
-            "executable": executable,
-            "detail": f"{type(exc).__name__}: {exc}",
-        }
+        return _failure(exc, required_major=required_major, executable=executable)
     version = (result.stderr or result.stdout).strip().splitlines()
     first_line = version[0] if version else ""
     match = re.search(r'version\s+"(?:1\.)?(\d+)', first_line)
@@ -374,6 +365,6 @@ async def _computer_doctor(args: argparse.Namespace) -> Mapping[str, Any]:
             "machine_launch_canary_run": False,
         }
     except Exception as exc:
-        return {"ok": False, "detail": f"{type(exc).__name__}: {exc}"}
+        return _failure(exc)
 
 

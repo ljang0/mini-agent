@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import os
 import re
 import shutil
@@ -27,7 +26,17 @@ from ..models import Model
 from ..orchestrator import Orchestrator
 from ..runtime import RunContext
 from ..specs import AgentSpecV1
-from ..types import BudgetLimits, strict_json_loads
+from ..types import (
+    BudgetLimits,
+    _require_bool,
+    _require_callable,
+    _require_finite_number,
+    _require_mapping,
+    _require_no_symlink,
+    _require_positive_int,
+    _require_str,
+    strict_json_loads,
+)
 from .base import (
     task_agent_builder,
     BenchmarkTask,
@@ -186,10 +195,40 @@ emit(result)
 """
 
 
+_INVALID_IDENTITY = "isolated SWE-bench grader image identity is invalid"
+_INVALID_SDK = "isolated SWE-bench Docker SDK identity is invalid"
+_INVALID_SOURCE = "official SWE-bench package source tree is invalid"
+_INVALID_VERIFY = "isolated SWE-bench grader image verification failed"
+_UNSAFE_ENTRY = "official SWE-bench package contains an unsafe {kind}"
+_PROBE_IMAGE_ERRORS = {
+    "unavailable": "is unavailable",
+    "invalid_id": "returned an invalid image ID",
+    "changed": "changed identity",
+}
+
+
 def _require_grader_component(value: Any, label: str) -> str:
     if not isinstance(value, str) or not _SAFE_GRADER_COMPONENT.fullmatch(value):
         raise ValueError(f"{label} must be one path-safe component")
     return value
+
+
+def _plain_string(value: Any) -> bool:
+    """Return whether ``value`` is a non-empty string free of NUL bytes."""
+
+    return isinstance(value, str) and bool(value) and "\x00" not in value
+
+
+def _canonical_bytes(value: Any) -> bytes:
+    """Encode ``value`` as the deterministic JSON bytes used for identities."""
+
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")
+
+
+def _sha256(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
 
 
 def swebench_grader_image_name(instance_id: Any) -> str:
@@ -209,8 +248,7 @@ def verify_swebench_grader_images(
 ) -> Mapping[str, Any]:
     """Inspect tags through the exact Docker SDK/daemon used by the grader."""
 
-    if not isinstance(generation_manifest, Mapping):
-        raise ValueError("SWE-bench generation manifest must be an object")
+    _require_mapping(generation_manifest, "SWE-bench generation manifest")
     config = generation_manifest.get("config")
     adapter = config.get("adapter") if isinstance(config, Mapping) else None
     if not isinstance(adapter, Mapping) or adapter.get("runtime") != "docker":
@@ -221,18 +259,11 @@ def verify_swebench_grader_images(
     if (
         not isinstance(recorded_runtime, list)
         or not recorded_runtime
-        or not all(
-            isinstance(item, str) and item and "\x00" not in item
-            for item in recorded_runtime
-        )
+        or not all(_plain_string(item) for item in recorded_runtime)
     ):
         raise ValueError("SWE-bench generation container runtime is invalid")
     if not isinstance(grader_environment, Mapping) or not all(
-        isinstance(name, str)
-        and name
-        and "\x00" not in name
-        and isinstance(value, str)
-        and "\x00" not in value
+        _plain_string(name) and isinstance(value, str) and "\x00" not in value
         for name, value in grader_environment.items()
     ):
         raise ValueError("SWE-bench grader environment must contain strings")
@@ -255,8 +286,7 @@ def verify_swebench_grader_images(
         raise ValueError("SWE-bench generation manifest has no Docker image bindings")
     task_ids: list[str] = []
     for task in tasks:
-        if not isinstance(task, Mapping):
-            raise ValueError("SWE-bench generation task identity is invalid")
+        _require_mapping(task, "SWE-bench generation task")
         task_ids.append(
             _require_grader_component(task.get("id"), "SWE-bench generation task id")
         )
@@ -264,13 +294,9 @@ def verify_swebench_grader_images(
         raise ValueError(
             "SWE-bench Docker image bindings must exactly cover generation tasks"
         )
-    if (
-        isinstance(timeout_seconds, bool)
-        or not isinstance(timeout_seconds, (int, float))
-        or not math.isfinite(float(timeout_seconds))
-        or timeout_seconds <= 0
-    ):
-        raise ValueError("SWE-bench image verification timeout must be positive")
+    _require_finite_number(
+        timeout_seconds, "SWE-bench image verification timeout", exclusive_minimum=0
+    )
 
     expected_images: list[tuple[str, str, str]] = []
     for instance_id in sorted(task_ids):
@@ -285,19 +311,10 @@ def verify_swebench_grader_images(
             raise ValueError(
                 f"SWE-bench task {instance_id!r} has an invalid Docker image binding"
             )
-        expected_images.append(
-            (
-                instance_id,
-                swebench_grader_image_name(instance_id),
-                str(binding["identity"]),
-            )
-        )
+        grader_image = swebench_grader_image_name(instance_id)
+        expected_images.append((instance_id, grader_image, str(binding["identity"])))
 
-    if (
-        not isinstance(python_executable, str)
-        or not python_executable
-        or "\x00" in python_executable
-    ):
+    if not _plain_string(python_executable):
         raise ValueError("SWE-bench grader Python executable is invalid")
     executable_value = shutil.which(python_executable)
     try:
@@ -324,9 +341,7 @@ def verify_swebench_grader_images(
             for _, grader_image, expected in expected_images
         ],
     }
-    request_encoded = json.dumps(
-        request_value, sort_keys=True, separators=(",", ":"), allow_nan=False
-    ).encode("utf-8")
+    request_encoded = _canonical_bytes(request_value)
     if len(request_encoded) > _DOCKER_PROBE_MAX_BYTES:
         raise ValueError("SWE-bench image verification request is too large")
     with tempfile.TemporaryDirectory(prefix="mini-agent-swebench-images-") as temporary:
@@ -334,9 +349,8 @@ def verify_swebench_grader_images(
         probe_root.chmod(0o700)
         request_path = probe_root / "request.json"
         output_path = probe_root / "identity.json"
-        descriptor = os.open(
-            request_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
-        )
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        descriptor = os.open(request_path, flags, 0o600)
         try:
             with os.fdopen(descriptor, "wb", closefd=False) as stream:
                 stream.write(request_encoded)
@@ -362,15 +376,13 @@ def verify_swebench_grader_images(
                 timeout=float(timeout_seconds),
             )
         except (OSError, subprocess.SubprocessError) as exc:
-            raise RuntimeError(
-                "isolated SWE-bench grader image verification failed"
-            ) from exc
+            raise RuntimeError(_INVALID_VERIFY) from exc
         if completed.returncode != 0:
-            raise RuntimeError("isolated SWE-bench grader image verification failed")
+            raise RuntimeError(_INVALID_VERIFY)
         value = _read_docker_probe_output(output_path)
 
     if value.get("schema") != "mini-agent-isolated-swebench-images-v1":
-        raise RuntimeError("isolated SWE-bench grader image identity is invalid")
+        raise RuntimeError(_INVALID_IDENTITY)
     if value.get("ok") is not True:
         code = value.get("error")
         image = value.get("image")
@@ -382,54 +394,33 @@ def verify_swebench_grader_images(
             raise RuntimeError(
                 "could not connect to the official SWE-bench grader Docker engine"
             )
-        if code == "unavailable" and image:
-            raise RuntimeError(
-                f"official SWE-bench grader image {image!r} is unavailable"
-            )
-        if code == "invalid_id" and image:
-            raise RuntimeError(
-                f"official SWE-bench grader image {image!r} returned an invalid "
-                "image ID"
-            )
-        if code == "changed" and image:
-            raise RuntimeError(
-                f"official SWE-bench grader image {image!r} changed identity"
-            )
         if code == "cleanup":
             raise RuntimeError("SWE-bench grader Docker client cleanup failed")
-        raise RuntimeError("isolated SWE-bench grader image identity is invalid")
+        detail = _PROBE_IMAGE_ERRORS.get(str(code))
+        if image and detail is not None:
+            raise RuntimeError(f"official SWE-bench grader image {image!r} {detail}")
+        raise RuntimeError(_INVALID_IDENTITY)
     if set(value) != {"schema", "ok", "python", "docker_sdk", "images"}:
-        raise RuntimeError("isolated SWE-bench grader image identity is invalid")
-    python_identity = value.get("python")
-    if (
-        not isinstance(python_identity, Mapping)
-        or set(python_identity) != {"executable", "prefix", "base_prefix"}
-        or python_identity.get("executable") != str(executable)
-        or python_identity.get("prefix") != str(Path(sys.prefix).absolute())
-        or python_identity.get("base_prefix")
-        != str(Path(sys.base_prefix).absolute())
-    ):
+        raise RuntimeError(_INVALID_IDENTITY)
+    if value.get("python") != {
+        "executable": str(executable),
+        "prefix": str(Path(sys.prefix).absolute()),
+        "base_prefix": str(Path(sys.base_prefix).absolute()),
+    }:
         raise RuntimeError("isolated SWE-bench grader Python identity is invalid")
     docker_sdk = value.get("docker_sdk")
     observed_images = value.get("images")
-    if not isinstance(docker_sdk, Mapping) or set(docker_sdk) != {
-        "version",
-        "origin",
-        "package_root",
-    }:
-        raise RuntimeError("isolated SWE-bench Docker SDK identity is invalid")
-    docker_version = docker_sdk.get("version")
-    docker_origin = docker_sdk.get("origin")
-    docker_root = docker_sdk.get("package_root")
+    sdk_keys = ("version", "origin", "package_root")
     if (
-        not isinstance(docker_version, str)
-        or not docker_version
-        or not isinstance(docker_origin, str)
-        or not isinstance(docker_root, str)
+        not isinstance(docker_sdk, Mapping)
+        or set(docker_sdk) != set(sdk_keys)
+        or not all(isinstance(docker_sdk[key], str) for key in sdk_keys)
+        or not docker_sdk["version"]
     ):
-        raise RuntimeError("isolated SWE-bench Docker SDK identity is invalid")
-    origin_path = Path(docker_origin)
-    root_path = Path(docker_root)
+        raise RuntimeError(_INVALID_SDK)
+    docker_version = str(docker_sdk["version"])
+    origin_path = Path(str(docker_sdk["origin"]))
+    root_path = Path(str(docker_sdk["package_root"]))
     try:
         valid_sdk_paths = (
             origin_path.is_absolute()
@@ -444,21 +435,16 @@ def verify_swebench_grader_images(
     except OSError:
         valid_sdk_paths = False
     if not valid_sdk_paths:
-        raise RuntimeError("isolated SWE-bench Docker SDK identity is invalid")
+        raise RuntimeError(_INVALID_SDK)
     if not isinstance(observed_images, list) or len(observed_images) != len(
         expected_images
     ):
-        raise RuntimeError("isolated SWE-bench grader image identity is invalid")
+        raise RuntimeError(_INVALID_IDENTITY)
     verified: list[Mapping[str, str]] = []
     for observed_value, expected_value in zip(observed_images, expected_images):
         instance_id, grader_image, expected = expected_value
-        if (
-            not isinstance(observed_value, Mapping)
-            or set(observed_value) != {"grader_image", "image_id"}
-            or observed_value.get("grader_image") != grader_image
-            or observed_value.get("image_id") != expected
-        ):
-            raise RuntimeError("isolated SWE-bench grader image identity is invalid")
+        if observed_value != {"grader_image": grader_image, "image_id": expected}:
+            raise RuntimeError(_INVALID_IDENTITY)
         binding = bindings[instance_id]
         assert isinstance(binding, Mapping)
         verified.append(
@@ -470,9 +456,6 @@ def verify_swebench_grader_images(
             }
         )
 
-    environment_encoded = json.dumps(
-        environment, sort_keys=True, separators=(",", ":"), allow_nan=False
-    ).encode("utf-8")
     return {
         "engine_contract": "isolated-python-I:docker.from_env",
         "docker_sdk_version": docker_version,
@@ -481,7 +464,7 @@ def verify_swebench_grader_images(
             "origin": str(origin_path),
             "package_root": str(root_path),
         },
-        "environment_sha256": hashlib.sha256(environment_encoded).hexdigest(),
+        "environment_sha256": _sha256(_canonical_bytes(environment)),
         "generation_container_runtime": list(recorded_runtime),
         "images": verified,
     }
@@ -505,9 +488,7 @@ def _read_docker_probe_output(path: Path) -> Mapping[str, Any]:
             or status.st_size < 1
             or status.st_size > _DOCKER_PROBE_MAX_BYTES
         ):
-            raise RuntimeError(
-                "isolated SWE-bench grader image identity is invalid"
-            )
+            raise RuntimeError(_INVALID_IDENTITY)
         chunks: list[bytes] = []
         remaining = _DOCKER_PROBE_MAX_BYTES + 1
         while remaining:
@@ -524,19 +505,15 @@ def _read_docker_probe_output(path: Path) -> Mapping[str, Any]:
     try:
         value = strict_json_loads(encoded.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
-        raise RuntimeError(
-            "isolated SWE-bench grader image identity is invalid"
-        ) from exc
+        raise RuntimeError(_INVALID_IDENTITY) from exc
     if not isinstance(value, Mapping):
-        raise RuntimeError("isolated SWE-bench grader image identity is invalid")
+        raise RuntimeError(_INVALID_IDENTITY)
     return value
 
 
 def load_swebench(path: Path, *, limit: int | None = None) -> tuple[BenchmarkTask, ...]:
-    if limit is not None and (
-        not isinstance(limit, int) or isinstance(limit, bool) or limit < 1
-    ):
-        raise ValueError("SWE-bench limit must be positive")
+    if limit is not None:
+        _require_positive_int(limit, "SWE-bench limit")
     source = path.expanduser().resolve()
     rows: list[tuple[int, Any]] = []
     if source.suffix.casefold() == ".json":
@@ -548,9 +525,8 @@ def load_swebench(path: Path, *, limit: int | None = None) -> tuple[BenchmarkTas
             raise ValueError("SWE-bench .json dataset must contain an array")
         rows = list(enumerate(value, 1))
     else:
-        for number, line in enumerate(
-            source.read_text(encoding="utf-8").splitlines(), 1
-        ):
+        lines = source.read_text(encoding="utf-8").splitlines()
+        for number, line in enumerate(lines, 1):
             if not line.strip():
                 continue
             try:
@@ -562,14 +538,12 @@ def load_swebench(path: Path, *, limit: int | None = None) -> tuple[BenchmarkTas
     tasks: list[BenchmarkTask] = []
     seen: set[str] = set()
     for number, item in rows:
-        if not isinstance(item, Mapping):
-            raise ValueError(f"SWE-bench line {number} must be an object")
-        instance_id = item.get("instance_id")
+        _require_mapping(item, f"SWE-bench line {number}")
         problem = item.get("problem_statement")
         if not isinstance(problem, str) or not problem.strip():
             raise ValueError(f"SWE-bench line {number} is missing required fields")
         instance_id = _require_grader_component(
-            instance_id, f"SWE-bench line {number} instance_id"
+            item.get("instance_id"), f"SWE-bench line {number} instance_id"
         )
         if instance_id in seen:
             raise ValueError(f"duplicate SWE-bench instance_id {instance_id!r}")
@@ -641,21 +615,15 @@ async def run_swebench_task(
     per_agent_limits: BudgetLimits | None = None,
     agent_spec: AgentSpecV1 | None = None,
 ) -> EvaluationOutcome:
-    if not callable(model_factory):
-        raise ValueError("model_factory must be callable")
-    if not isinstance(system_prompt, str):
-        raise ValueError("system_prompt must be a string")
-    if not isinstance(max_steps, int) or isinstance(max_steps, bool) or max_steps < 1:
-        raise ValueError("max_steps must be a positive integer")
-    if not isinstance(model_name, str) or not model_name.strip():
-        raise ValueError("model_name must be non-empty")
+    _require_callable(model_factory, "model_factory")
+    _require_str(system_prompt, "system_prompt", non_empty=False)
+    _require_positive_int(max_steps, "max_steps")
+    _require_str(model_name, "model_name")
     _require_grader_component(task.task_id, "SWE-bench task instance_id")
     _require_grader_component(
-        model_name.replace("/", "__"),
-        "SWE-bench model_name_or_path",
+        model_name.replace("/", "__"), "SWE-bench model_name_or_path"
     )
-    if not isinstance(multi_agent, bool):
-        raise ValueError("multi_agent must be boolean")
+    _require_bool(multi_agent, "multi_agent")
     if runtime not in {"docker", "apptainer"}:
         raise ValueError("SWE-bench runtime must be docker or apptainer")
 
@@ -663,9 +631,7 @@ async def run_swebench_task(
         del agent_id
         if runtime == "docker":
             return await DockerSWEEnvironment.create(
-                task.data,
-                image_binding=image_binding,
-                runtime=container_runtime,
+                task.data, image_binding=image_binding, runtime=container_runtime
             )
         return await ApptainerSWEEnvironment.create(
             task.data,
@@ -683,8 +649,8 @@ async def run_swebench_task(
         agent_spec=agent_spec,
     )
 
+    root_id = task_agent_root(task.task_id)
     if multi_agent:
-        root_id = task_agent_root(task.task_id)
         orchestrator = Orchestrator(
             agent_builder=agent_for,
             environment_factory=environment_for,
@@ -713,7 +679,6 @@ async def run_swebench_task(
             },
         }
     else:
-        root_id = task_agent_root(task.task_id)
         environment = await environment_for(root_id)
         operation_error: BaseException | None = None
         result = None
@@ -747,16 +712,11 @@ async def run_swebench_task(
     artifact_metadata = {
         **metadata,
         "patch_bytes": len(patch),
-        "patch_sha256": hashlib.sha256(patch).hexdigest(),
-        "prediction_sha256": hashlib.sha256(
-            (directory / "prediction.json").read_bytes()
-        ).hexdigest(),
+        "patch_sha256": _sha256(patch),
+        "prediction_sha256": _sha256((directory / "prediction.json").read_bytes()),
     }
     return EvaluationOutcome(
-        task.task_id,
-        "completed",
-        answer=result.answer,
-        metadata=artifact_metadata,
+        task.task_id, "completed", answer=result.answer, metadata=artifact_metadata
     )
 
 
@@ -769,16 +729,12 @@ def official_grader_argv(
     python_executable: str = sys.executable,
 ) -> tuple[str, ...]:
     if (
-        not isinstance(dataset_name, str)
-        or not dataset_name
+        not _plain_string(dataset_name)
         or dataset_name.startswith("-")
-        or "\x00" in dataset_name
         or not isinstance(max_workers, int)
         or isinstance(max_workers, bool)
         or max_workers < 1
-        or not isinstance(python_executable, str)
-        or not python_executable
-        or "\x00" in python_executable
+        or not _plain_string(python_executable)
     ):
         raise ValueError("invalid SWE-bench grader configuration")
     _require_grader_component(run_id, "SWE-bench run_id")
@@ -808,7 +764,7 @@ def swebench_grader_source_identity(source_root: Path) -> Mapping[str, Any]:
     try:
         canonical = root.resolve(strict=True)
     except OSError as exc:
-        raise RuntimeError("official SWE-bench package source tree is invalid") from exc
+        raise RuntimeError(_INVALID_SOURCE) from exc
     if (
         not root.is_absolute()
         or canonical != root
@@ -817,7 +773,7 @@ def swebench_grader_source_identity(source_root: Path) -> Mapping[str, Any]:
         or entry.is_symlink()
         or not entry.is_file()
     ):
-        raise RuntimeError("official SWE-bench package source tree is invalid")
+        raise RuntimeError(_INVALID_SOURCE)
     candidates: list[Path] = []
     for directory, directory_names, names in os.walk(root, followlinks=False):
         parent = Path(directory)
@@ -825,18 +781,14 @@ def swebench_grader_source_identity(source_root: Path) -> Mapping[str, Any]:
         for name in sorted(directory_names):
             path = parent / name
             if path.is_symlink() or not path.is_dir():
-                raise RuntimeError(
-                    "official SWE-bench package contains an unsafe directory"
-                )
+                raise RuntimeError(_UNSAFE_ENTRY.format(kind="directory"))
             if name != "__pycache__":
                 retained.append(name)
         directory_names[:] = retained
         for name in sorted(names):
             path = parent / name
             if path.is_symlink() or not path.is_file():
-                raise RuntimeError(
-                    "official SWE-bench package contains an unsafe source"
-                )
+                raise RuntimeError(_UNSAFE_ENTRY.format(kind="source"))
             candidates.append(path)
     files: list[Mapping[str, Any]] = []
     for path in sorted(candidates, key=lambda item: item.relative_to(root).as_posix()):
@@ -848,10 +800,7 @@ def swebench_grader_source_identity(source_root: Path) -> Mapping[str, Any]:
                 "sha256": identity["sha256"],
             }
         )
-    encoded = json.dumps(
-        files, sort_keys=True, separators=(",", ":"), allow_nan=False
-    ).encode("utf-8")
-    source_sha256 = hashlib.sha256(encoded).hexdigest()
+    source_sha256 = _sha256(_canonical_bytes(files))
     size_bytes = sum(int(item["size_bytes"]) for item in files)
     if (
         source_sha256 != SWEBENCH_SOURCE_SHA256
@@ -908,17 +857,15 @@ def collect_predictions(output: Path, destination: Path) -> int:
         value = strict_json_loads(path.read_text(encoding="utf-8"))
         if not isinstance(value, Mapping):
             raise ValueError(f"invalid SWE-bench prediction: {path}")
-        instance_id = value.get("instance_id")
         model_patch = value.get("model_patch")
         model_name = value.get("model_name_or_path")
         if not isinstance(model_patch, str) or not isinstance(model_name, str):
             raise ValueError(f"incomplete SWE-bench prediction: {path}")
         instance_id = _require_grader_component(
-            instance_id, "SWE-bench prediction instance_id"
+            value.get("instance_id"), "SWE-bench prediction instance_id"
         )
         _require_grader_component(
-            model_name.replace("/", "__"),
-            "SWE-bench prediction model_name_or_path",
+            model_name.replace("/", "__"), "SWE-bench prediction model_name_or_path"
         )
         if instance_id in instance_ids:
             raise ValueError(f"duplicate SWE-bench instance_id {instance_id!r}")
@@ -931,10 +878,10 @@ def collect_predictions(output: Path, destination: Path) -> int:
         if result.get("status") != "completed":
             raise ValueError(f"SWE-bench prediction result is not completed: {path}")
         metadata = result.get("metadata")
+        digest = _sha256(path.read_bytes())
         if (
             not isinstance(metadata, Mapping)
-            or metadata.get("prediction_sha256")
-            != hashlib.sha256(path.read_bytes()).hexdigest()
+            or metadata.get("prediction_sha256") != digest
         ):
             raise ValueError(f"SWE-bench prediction hash does not match: {path}")
         instance_ids.add(instance_id)
@@ -948,21 +895,19 @@ def collect_predictions(output: Path, destination: Path) -> int:
     if not records:
         raise ValueError("evaluation contains no SWE-bench predictions")
     records.sort(key=lambda value: str(value["instance_id"]))
-    content = b"".join(
-        (json.dumps(dict(value), sort_keys=True, allow_nan=False) + "\n").encode(
-            "utf-8"
-        )
+    content = "".join(
+        json.dumps(dict(value), sort_keys=True, allow_nan=False) + "\n"
         for value in records
-    )
+    ).encode("utf-8")
     _prediction_collection_target(root, destination)
     atomic_bytes(target, content)
     return len(records)
 
 
 def _prediction_collection_target(root: Path, destination: Path) -> Path:
-    expanded = destination.expanduser()
-    if expanded.is_symlink():
-        raise ValueError("SWE-bench predictions destination must not be a symlink")
+    expanded = _require_no_symlink(
+        destination.expanduser(), "SWE-bench predictions destination"
+    )
     if expanded.parent.resolve() != root:
         raise ValueError(
             "SWE-bench predictions must be a direct child of the evaluation"
@@ -983,33 +928,21 @@ def inspect_swebench_grade_inputs(
     if dataset_path.suffix.casefold() not in {".json", ".jsonl"}:
         raise ValueError("SWE-bench grading requires a local .json or .jsonl dataset")
     tasks = load_swebench(dataset_path)
-    task_prompts = {
-        task.task_id: hashlib.sha256(task.prompt.encode("utf-8")).hexdigest()
-        for task in tasks
-    }
-    task_data = {
-        task.task_id: hashlib.sha256(
-            json.dumps(
-                task.data,
-                sort_keys=True,
-                separators=(",", ":"),
-                allow_nan=False,
-            ).encode("utf-8")
-        ).hexdigest()
-        for task in tasks
-    }
+    task_prompts: dict[str, str] = {}
+    task_data: dict[str, str] = {}
+    for task in tasks:
+        task_prompts[task.task_id] = _sha256(task.prompt.encode("utf-8"))
+        task_data[task.task_id] = _sha256(_canonical_bytes(task.data))
     prediction_ids: set[str] = set()
-    for number, line in enumerate(
-        prediction_path.read_text(encoding="utf-8").splitlines(), 1
-    ):
+    lines = prediction_path.read_text(encoding="utf-8").splitlines()
+    for number, line in enumerate(lines, 1):
         if not line.strip():
             continue
         value = strict_json_loads(line)
-        if not isinstance(value, Mapping):
-            raise ValueError(f"SWE-bench prediction line {number} must be an object")
-        instance_id = value.get("instance_id")
+        _require_mapping(value, f"SWE-bench prediction line {number}")
         instance_id = _require_grader_component(
-            instance_id, f"SWE-bench prediction line {number} instance_id"
+            value.get("instance_id"),
+            f"SWE-bench prediction line {number} instance_id",
         )
         if instance_id in prediction_ids:
             raise ValueError(f"duplicate SWE-bench prediction {instance_id!r}")
@@ -1022,6 +955,7 @@ def inspect_swebench_grade_inputs(
             "SWE-bench predictions are missing from the local dataset: "
             + ", ".join(missing)
         )
+    selected = sorted(prediction_ids)
     return {
         "predictions": immutable_file_identity(
             prediction_path, label="SWE-bench predictions"
@@ -1029,14 +963,8 @@ def inspect_swebench_grade_inputs(
         "dataset": immutable_file_identity(dataset_path, label="SWE-bench dataset"),
         "prediction_count": len(prediction_ids),
         "dataset_count": len(task_prompts),
-        "task_prompt_sha256": {
-            instance_id: task_prompts[instance_id]
-            for instance_id in sorted(prediction_ids)
-        },
-        "task_data_sha256": {
-            instance_id: task_data[instance_id]
-            for instance_id in sorted(prediction_ids)
-        },
+        "task_prompt_sha256": {key: task_prompts[key] for key in selected},
+        "task_data_sha256": {key: task_data[key] for key in selected},
     }
 
 

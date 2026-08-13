@@ -29,7 +29,18 @@ from ..models import Model
 from ..orchestrator import Orchestrator
 from ..runtime import RunContext
 from ..specs import AgentSpecV1
-from ..types import BudgetExceeded, BudgetLimits
+from ..types import (
+    BudgetExceeded,
+    BudgetLimits,
+    _require_bool,
+    _require_callable,
+    _require_finite_number,
+    _require_int,
+    _require_mapping,
+    _require_no_symlink,
+    _require_positive_int,
+    _require_str,
+)
 from .base import (
     task_agent_builder,
     BenchmarkTask,
@@ -92,11 +103,8 @@ class CUASpeedRunCheckout:
 def inspect_cua_speedrun_checkout(
     checkout: Path, *, allow_dirty: bool = False
 ) -> CUASpeedRunCheckout:
-    expanded = checkout.expanduser()
-    if expanded.is_symlink():
-        raise ValueError("cua-speed-run checkout must not be a symlink")
-    if not isinstance(allow_dirty, bool):
-        raise ValueError("allow_dirty must be boolean")
+    expanded = _require_no_symlink(checkout.expanduser(), "cua-speed-run checkout")
+    _require_bool(allow_dirty, "allow_dirty")
     root = expanded.resolve()
     if not (root / "src" / "cua_speedrun" / "specs.py").is_file():
         raise ValueError(f"not a cua-speed-run checkout: {root}")
@@ -119,10 +127,8 @@ def inspect_cua_speedrun_checkout(
             f"expected {GYM_ANYTHING_REVISION}"
         )
     gym_anything = root / "third_party" / "gym-anything"
-    if (
-        gym_anything.is_symlink()
-        or not (gym_anything / "src" / "gym_anything" / "__init__.py").is_file()
-    ):
+    marker = gym_anything / "src" / "gym_anything" / "__init__.py"
+    if gym_anything.is_symlink() or not marker.is_file():
         raise ValueError(
             f"cua-speed-run gym-anything submodule is not initialized at {gym_anything}"
         )
@@ -135,18 +141,11 @@ def inspect_cua_speedrun_checkout(
     gym_dirty = bool(
         _git(gym_anything, "status", "--porcelain", "--untracked-files=all")
     )
-    reject_untracked_execution_files(
-        gym_anything, label="gym-anything", run_git=_git
-    )
+    reject_untracked_execution_files(gym_anything, label="gym-anything", run_git=_git)
     if gym_dirty and not allow_dirty:
         raise ValueError("cua-speed-run gym-anything submodule is dirty")
     return CUASpeedRunCheckout(
-        root,
-        revision,
-        dirty,
-        gym_anything,
-        gym_revision,
-        gym_dirty,
+        root, revision, dirty, gym_anything, gym_revision, gym_dirty
     )
 
 
@@ -158,18 +157,15 @@ def load_cua_speedrun(
     task_ids: Sequence[str] = (),
     limit: int | None = None,
 ) -> tuple[BenchmarkTask, ...]:
-    if not isinstance(seed, int) or isinstance(seed, bool):
-        raise ValueError("cua-speed-run seed must be an integer")
+    _require_int(seed, "cua-speed-run seed")
     if isinstance(task_ids, (str, bytes)) or not all(
         isinstance(task_id, str) and task_id for task_id in task_ids
     ):
         raise ValueError("cua-speed-run task_ids must be non-empty strings")
     if len(task_ids) != len(set(task_ids)):
         raise ValueError("cua-speed-run task_ids must be unique")
-    if limit is not None and (
-        not isinstance(limit, int) or isinstance(limit, bool) or limit < 1
-    ):
-        raise ValueError("cua-speed-run limit must be positive")
+    if limit is not None:
+        _require_positive_int(limit, "cua-speed-run limit")
     info = inspect_cua_speedrun_checkout(checkout)
     _activate(info.path)
     specification = _load_benchmark(benchmark)
@@ -196,24 +192,12 @@ def load_cua_speedrun(
             generated_sha256, prompt = _generated_task_sha256(generated)
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValueError(f"cua-speed-run task {upstream.task_id!r} has no prompt")
-        raw_timeout = upstream.timeout_sec
-        raw_grace = upstream.grace_sec
-        if (
-            isinstance(raw_timeout, bool)
-            or not isinstance(raw_timeout, (int, float))
-            or not math.isfinite(float(raw_timeout))
-            or raw_timeout <= 0
-        ):
-            raise ValueError("cua-speed-run task timeout must be finite and positive")
-        if (
-            isinstance(raw_grace, bool)
-            or not isinstance(raw_grace, (int, float))
-            or not math.isfinite(float(raw_grace))
-            or raw_grace < 0
-        ):
-            raise ValueError("cua-speed-run task grace must be finite and non-negative")
-        timeout = float(raw_timeout)
-        grace = float(raw_grace)
+        timeout = _require_finite_number(
+            upstream.timeout_sec, "cua-speed-run task timeout", exclusive_minimum=0
+        )
+        grace = _require_finite_number(
+            upstream.grace_sec, "cua-speed-run task grace", minimum=0
+        )
         tasks.append(
             BenchmarkTask(
                 upstream.task_id,
@@ -269,8 +253,7 @@ class _AdapterPool:
         backend_name: str,
         checkout_identity: CUASpeedRunCheckout | None = None,
     ) -> None:
-        if not isinstance(backend_name, str) or not backend_name.strip():
-            raise ValueError("backend_name must be non-empty")
+        _require_str(backend_name, "backend_name")
         self.task = task
         self.directory = directory
         self.backend_name = backend_name
@@ -283,8 +266,7 @@ class _AdapterPool:
         self.available: list[tuple[int, Any, Callable[[], Any] | None]] = []
 
     async def prepare(self, slot: int) -> None:
-        if not isinstance(slot, int) or isinstance(slot, bool) or slot < 1:
-            raise ValueError("adapter slot must be a positive integer")
+        _require_positive_int(slot, "adapter slot")
         await self.verify_checkout()
         prepared_directory = self.directory / "prepared" / f"{slot:04d}"
         prepared_directory.mkdir(parents=True, exist_ok=True)
@@ -292,12 +274,10 @@ class _AdapterPool:
         if self.backend is None:
             self.backend = _backend(self.backend_name)
         backend = self.backend
+        seed = int(self.task.data["seed"])
         prepare = asyncio.create_task(
             asyncio.to_thread(
-                backend.prepare,
-                upstream_task.env,
-                int(self.task.data["seed"]),
-                prepared_directory,
+                backend.prepare, upstream_task.env, seed, prepared_directory
             )
         )
         prepared: Any = None
@@ -325,11 +305,9 @@ class _AdapterPool:
             resolved_description = prepared.description
             checker: Callable[[], Any] | None = None
             if generator is not None:
-                generated = generator.generate(int(self.task.data["seed"]))
-                generated_sha256, resolved_description = _generated_task_sha256(
-                    generated
-                )
-                if generated_sha256 != self.task.data.get("generated_task_sha256"):
+                generated = generator.generate(seed)
+                sha256, resolved_description = _generated_task_sha256(generated)
+                if sha256 != self.task.data.get("generated_task_sha256"):
                     raise RuntimeError(
                         "generated cua-speed-run task differs from the manifest"
                     )
@@ -341,13 +319,15 @@ class _AdapterPool:
                 raise RuntimeError(
                     "prepared task instruction differs from the manifest"
                 )
-            prepare_time = float(prepared.prepare_time_sec)
-            if not math.isfinite(prepare_time) or prepare_time < 0:
-                raise RuntimeError(
-                    "environment preparation time must be finite and non-negative"
-                )
-            if not isinstance(prepared.info, Mapping):
-                raise RuntimeError("prepared environment info must be an object")
+            prepare_time = _require_finite_number(
+                prepared.prepare_time_sec,
+                "environment preparation time",
+                minimum=0,
+                error=RuntimeError,
+            )
+            _require_mapping(
+                prepared.info, "prepared environment info", error=RuntimeError
+            )
             runtime_assets = _prepared_runtime_assets(prepared, upstream_task)
             evidence = {
                 "slot": slot,
@@ -367,19 +347,13 @@ class _AdapterPool:
                 validation_cleanup_error,
             )
         self.prepared.append(prepared)
-        self.runtime_assets[id(prepared.adapter)] = (
-            runtime_assets,
-            upstream_task,
-        )
+        self.runtime_assets[id(prepared.adapter)] = (runtime_assets, upstream_task)
         self.evidence.append(evidence)
         self.available.append((slot, prepared, checker))
 
     async def prewarm(self, count: int, concurrency: int) -> None:
-        if any(
-            not isinstance(value, int) or isinstance(value, bool) or value < 1
-            for value in (count, concurrency)
-        ):
-            raise ValueError("prewarm count and concurrency must be positive integers")
+        _require_positive_int(count, "prewarm count")
+        _require_positive_int(concurrency, "prewarm concurrency")
         semaphore = asyncio.Semaphore(concurrency)
 
         async def one(slot: int) -> None:
@@ -398,11 +372,8 @@ class _AdapterPool:
 
     async def environment(self, agent_id: str) -> CUAEnvironment:
         await self.verify_checkout()
-        branch = (
-            self.directory
-            / "branches"
-            / hashlib.sha256(agent_id.encode("utf-8")).hexdigest()
-        )
+        agent_digest = hashlib.sha256(agent_id.encode("utf-8")).hexdigest()
+        branch = self.directory / "branches" / agent_digest
         branch.mkdir(parents=True, exist_ok=True)
         if not self.available:
             await self.prepare(len(self.prepared) + 1)
@@ -423,11 +394,8 @@ class _AdapterPool:
         async def observation_sink(observation: ComputerObservation) -> None:
             nonlocal observation_number
             observation_number += 1
-            await complete_in_thread(
-                atomic_bytes,
-                branch / f"observation_{observation_number:04d}.png",
-                observation.png,
-            )
+            path = branch / f"observation_{observation_number:04d}.png"
+            await complete_in_thread(atomic_bytes, path, observation.png)
 
         async def transition_sink(transition: Mapping[str, Any]) -> None:
             nonlocal transition_number
@@ -446,10 +414,7 @@ class _AdapterPool:
         client = CUASpeedRunAdapterClient(
             prepared.adapter,
             owns_adapter=False,
-            resource_identity=(
-                f"cua-speed-run:{self.task.task_id}:"
-                + hashlib.sha256(agent_id.encode("utf-8")).hexdigest()
-            ),
+            resource_identity=f"cua-speed-run:{self.task.task_id}:{agent_digest}",
             observation_sink=observation_sink,
             transition_sink=transition_sink,
         )
@@ -493,18 +458,11 @@ class _AdapterPool:
                 errors.append(exc)
                 remaining.append(prepared)
         self.prepared = list(reversed(remaining))
-        remaining_ids = {id(prepared.adapter) for prepared in remaining}
-        self.by_adapter = {
-            key: value for key, value in self.by_adapter.items() if key in remaining_ids
-        }
-        self.runtime_assets = {
-            key: value
-            for key, value in self.runtime_assets.items()
-            if key in remaining_ids
-        }
-        self.available = [
-            value for value in self.available if id(value[1].adapter) in remaining_ids
-        ]
+        kept = {id(prepared.adapter) for prepared in remaining}
+        self.by_adapter = {k: v for k, v in self.by_adapter.items() if k in kept}
+        assets = self.runtime_assets.items()
+        self.runtime_assets = {k: v for k, v in assets if k in kept}
+        self.available = [v for v in self.available if id(v[1].adapter) in kept]
         if errors:
             raise RuntimeError(
                 "; ".join(f"{type(error).__name__}: {error}" for error in errors)
@@ -530,16 +488,11 @@ async def run_cua_speedrun_task(
 ) -> EvaluationOutcome:
     """Run the minimal agent on a pinned cua-speed-run environment backend."""
 
-    if not isinstance(backend_name, str) or not backend_name.strip():
-        raise ValueError("backend_name must be non-empty")
-    if not callable(model_factory):
-        raise ValueError("model_factory must be callable")
-    if not isinstance(system_prompt, str):
-        raise ValueError("system_prompt must be a string")
-    if not isinstance(max_steps, int) or isinstance(max_steps, bool) or max_steps < 1:
-        raise ValueError("max_steps must be a positive integer")
-    if not isinstance(multi_agent, bool):
-        raise ValueError("multi_agent must be boolean")
+    _require_str(backend_name, "backend_name")
+    _require_callable(model_factory, "model_factory")
+    _require_str(system_prompt, "system_prompt", non_empty=False)
+    _require_positive_int(max_steps, "max_steps")
+    _require_bool(multi_agent, "multi_agent")
     checkout = _task_string(task, "checkout")
     info = inspect_cua_speedrun_checkout(Path(checkout))
     if task.data.get("revision") != info.revision:
@@ -626,10 +579,7 @@ async def run_cua_speedrun_task(
                 state_adoption_history = tuple(root.adoption_history)
                 if state_adoption_history:
                     state_selection = "adopted_descendant_environment"
-            statuses = {
-                agent_id: record.status
-                for agent_id, record in orchestrator.records.items()
-            }
+            statuses = {name: r.status for name, r in orchestrator.records.items()}
         else:
             root_environment = await pool.environment(root_id)
             agent = await agent_for(root_id, root_environment, context)
@@ -661,15 +611,8 @@ async def run_cua_speedrun_task(
             )
             if not task_time_seconds:
                 task_time_seconds = min(time.monotonic() - started, timeout)
-            statuses = {
-                root_id: (
-                    "timed_out"
-                    if finish_reason == "timeout"
-                    else "failed"
-                    if agent_error
-                    else "completed"
-                )
-            }
+            ended = "failed" if agent_error else "completed"
+            statuses = {root_id: "timed_out" if finish_reason == "timeout" else ended}
         if agent_error is not None and finish_reason == "agent_error":
             # cua-speed-run gives an agent-process failure zero without running
             # the checker.  The root environment may already have been closed
@@ -707,25 +650,18 @@ async def run_cua_speedrun_task(
     raise_after_cleanup("cua-speed-run task", operation_error, cleanup_error)
     if verdict is None:
         raise AssertionError("successful cua-speed-run task has no verdict")
-    passed_value = getattr(verdict, "passed", None)
-    if not isinstance(passed_value, bool):
-        raise RuntimeError("cua-speed-run verifier returned a non-boolean verdict")
-    passed = passed_value
-    raw_score = getattr(verdict, "score", None)
-    score = (
-        100.0
-        if raw_score is None and passed
-        else 0.0
-        if raw_score is None
-        else raw_score
+    passed = _require_bool(
+        getattr(verdict, "passed", None),
+        "cua-speed-run verifier verdict",
+        error=RuntimeError,
     )
-    if (
-        isinstance(score, bool)
-        or not isinstance(score, (int, float))
-        or not math.isfinite(float(score))
-    ):
-        raise RuntimeError("cua-speed-run verifier returned a non-finite score")
-    if not 0.0 <= float(score) <= 100.0:
+    raw_score = getattr(verdict, "score", None)
+    score = _require_finite_number(
+        (100.0 if passed else 0.0) if raw_score is None else raw_score,
+        "cua-speed-run verifier score",
+        error=RuntimeError,
+    )
+    if not 0.0 <= score <= 100.0:
         raise RuntimeError("cua-speed-run verifier score must be in [0, 100]")
     metadata = {
         "benchmark": task.data["benchmark_name"],
@@ -759,20 +695,11 @@ async def run_cua_speedrun_task(
     verdict_path = directory / "verdict.json"
     atomic_json(
         verdict_path,
-        {
-            "task_id": task.task_id,
-            "score": float(score),
-            "detail": detail,
-            **metadata,
-        },
+        {"task_id": task.task_id, "score": float(score), "detail": detail, **metadata},
     )
     metadata["verdict_sha256"] = hashlib.sha256(verdict_path.read_bytes()).hexdigest()
     return EvaluationOutcome(
-        task.task_id,
-        "completed",
-        answer=answer,
-        score=float(score),
-        metadata=metadata,
+        task.task_id, "completed", answer=answer, score=float(score), metadata=metadata
     )
 
 
@@ -782,14 +709,12 @@ def preflight_cua_speedrun(
     *,
     backend_name: str,
 ) -> Mapping[str, Any]:
-    if not isinstance(backend_name, str) or not backend_name.strip():
-        raise ValueError("backend_name must be non-empty")
+    _require_str(backend_name, "backend_name")
     info = inspect_cua_speedrun_checkout(checkout)
     _activate(info.path)
-    expanded_benchmark = benchmark.expanduser()
-    if expanded_benchmark.is_symlink():
-        raise ValueError("cua-speed-run benchmark path must not be a symlink")
-    benchmark_path = expanded_benchmark.resolve()
+    benchmark_path = _require_no_symlink(
+        benchmark.expanduser(), "cua-speed-run benchmark path"
+    ).resolve()
     if not (benchmark_path / "manifest.yaml").is_file():
         raise ValueError(
             "computer doctor requires an already materialized cua-speed-run "
@@ -833,11 +758,7 @@ def prepare_cua_speedrun_backend(
 ) -> Mapping[str, Any]:
     """Run cua-speed-run's real provisioning preflight before evaluation."""
 
-    source = preflight_cua_speedrun(
-        checkout,
-        benchmark,
-        backend_name=backend_name,
-    )
+    source = preflight_cua_speedrun(checkout, benchmark, backend_name=backend_name)
     specification = _load_benchmark(benchmark)
     backend = _backend(backend_name)
     preflight = getattr(backend, "preflight", None)
@@ -861,10 +782,7 @@ def _cua_machine_images() -> list[Mapping[str, Any]]:
     """Observe conventional cache files without claiming runner selection."""
 
     cache = Path(
-        os.environ.get(
-            "GYM_ANYTHING_QEMU_CACHE",
-            "~/.cache/gym-anything/qemu",
-        )
+        os.environ.get("GYM_ANYTHING_QEMU_CACHE", "~/.cache/gym-anything/qemu")
     ).expanduser()
     candidates = [
         cache / "base_ubuntu_gnome.qcow2",
@@ -883,12 +801,8 @@ def _cua_machine_images() -> list[Mapping[str, Any]]:
             continue
         seen.add(resolved)
         identity = dict(_cached_machine_image_identity(candidate))
-        identity.update(
-            {
-                "identity_scope": "unverified_cache_candidate",
-                "effective_runtime_input": None,
-            }
-        )
+        identity["identity_scope"] = "unverified_cache_candidate"
+        identity["effective_runtime_input"] = None
         images.append(identity)
     return images
 
@@ -921,12 +835,7 @@ def _prepared_runtime_assets(prepared: Any, upstream_task: Any) -> Mapping[str, 
         if key in seen:
             return
         seen.add(key)
-        files.append(
-            {
-                "role": role,
-                **dict(_cached_machine_image_identity(resolved)),
-            }
-        )
+        files.append({"role": role, **_cached_machine_image_identity(resolved)})
 
     add_file("base_image", getattr(runner, "base_qcow2", None))
     env = getattr(upstream_task, "env", None)
@@ -942,10 +851,8 @@ def _prepared_runtime_assets(prepared: Any, upstream_task: Any) -> Mapping[str, 
     if isinstance(raw_container, str) and raw_container:
         candidate = Path(raw_container).expanduser()
         if candidate.is_file() and not candidate.is_symlink():
-            container = {
-                "kind": "local_file",
-                **dict(_cached_machine_image_identity(candidate)),
-            }
+            identity = _cached_machine_image_identity(candidate)
+            container = {"kind": "local_file", **identity}
         elif candidate.is_dir() and not candidate.is_symlink():
             tree_sha256, file_count = _source_roots_sha256(
                 (("runtime-container", candidate),)
@@ -980,14 +887,11 @@ def _cached_machine_image_identity(path: Path) -> Mapping[str, Any]:
         )
     resolved = expanded.resolve()
     sidecar = Path(str(resolved) + ".provenance.json")
+    has_sidecar = sidecar.exists() or sidecar.is_symlink()
     key = (
         str(resolved),
         _image_stat(resolved),
-        (
-            _image_stat(sidecar, follow_symlinks=False)
-            if sidecar.exists() or sidecar.is_symlink()
-            else None
-        ),
+        _image_stat(sidecar, follow_symlinks=False) if has_sidecar else None,
     )
     cached = _MACHINE_IMAGE_IDENTITIES.get(key)
     if cached is not None:
@@ -997,8 +901,9 @@ def _cached_machine_image_identity(path: Path) -> Mapping[str, Any]:
     return identity
 
 
-def _image_stat(path: Path, *, follow_symlinks: bool = True) -> _ImageStat:
-    observed = path.stat(follow_symlinks=follow_symlinks)
+def _stat_identity(observed: os.stat_result) -> _ImageStat:
+    """Detect a file being replaced, rewritten, or re-permissioned underneath us."""
+
     return (
         observed.st_dev,
         observed.st_ino,
@@ -1007,6 +912,10 @@ def _image_stat(path: Path, *, follow_symlinks: bool = True) -> _ImageStat:
         observed.st_mtime_ns,
         observed.st_ctime_ns,
     )
+
+
+def _image_stat(path: Path, *, follow_symlinks: bool = True) -> _ImageStat:
+    return _stat_identity(path.stat(follow_symlinks=follow_symlinks))
 
 
 _UNEXPANDED_VARIABLE = re.compile(r"\$(?:\{[^}]+\}|[A-Za-z_][A-Za-z0-9_]*)")
@@ -1025,11 +934,7 @@ def _nonprovisioning_backend_checks(
             "gym-anything is not importable; install the exact pinned "
             "cua-speed-run submodule before running this backend"
         ) from exc
-    _assert_module_origin(
-        gym_anything,
-        gym_anything_root,
-        label="gym-anything",
-    )
+    _assert_module_origin(gym_anything, gym_anything_root, label="gym-anything")
 
     _check_local_runner_commands(backend_name)
     checked: set[Path] = set()
@@ -1039,34 +944,12 @@ def _nonprovisioning_backend_checks(
             raise ValueError(
                 "gym-anything backend requires gym-anything task env blocks"
             )
-        for key in ("env_dir", "task_id"):
-            if not isinstance(env.get(key), str) or not env[key].strip():
-                raise ValueError(f"gym-anything task env requires a non-empty {key}")
-        task_id = env["task_id"]
-        if (
-            task_id in {".", ".."}
-            or "/" in task_id
-            or "\\" in task_id
-            or "\x00" in task_id
-        ):
-            raise ValueError("gym-anything task_id must be one safe path component")
-        expanded = os.path.expanduser(os.path.expandvars(env["env_dir"]))
-        if _UNEXPANDED_VARIABLE.search(expanded):
-            raise ValueError(
-                f"unresolved variable in gym-anything env_dir: {env['env_dir']}"
-            )
-        env_dir = Path(expanded).resolve()
-        if not env_dir.is_dir():
-            raise FileNotFoundError(f"gym-anything environment not found: {env_dir}")
+        task_id, env_dir = _gym_anything_env_dir(env)
         if not any((env_dir / name).is_file() for name in _SPEC_FILENAMES):
             raise FileNotFoundError(
                 f"gym-anything environment has no env spec: {env_dir}"
             )
-        task_dir = env_dir / "tasks" / task_id
-        try:
-            task_dir.resolve().relative_to(env_dir)
-        except ValueError as exc:
-            raise ValueError("gym-anything task_id escapes env_dir") from exc
+        task_dir = _gym_anything_task_dir(env_dir, task_id)
         if not any((task_dir / name).is_file() for name in _TASK_FILENAMES):
             raise FileNotFoundError(f"gym-anything task spec not found: {task_dir}")
         checked.add(env_dir)
@@ -1077,14 +960,11 @@ _SPEC_FILENAMES = ("env.yaml", "env.yml", "env.json")
 _TASK_FILENAMES = ("task.yaml", "task.yml", "task.json")
 
 
-def _gym_anything_task_identity(
-    task: Any, *, checkout: Path | None = None
-) -> Mapping[str, Any] | None:
-    """Resolve the exact task text and source bytes the upstream backend loads."""
+def _gym_anything_env_dir(
+    env: Mapping[str, Any], *, reject_symlink: bool = False
+) -> tuple[str, Path]:
+    """Validate one gym-anything env block and resolve its environment directory."""
 
-    env = getattr(task, "env", None)
-    if not isinstance(env, Mapping) or env.get("kind") != "gym-anything":
-        return None
     for key in ("env_dir", "task_id"):
         if not isinstance(env.get(key), str) or not env[key].strip():
             raise ValueError(f"gym-anything task env requires a non-empty {key}")
@@ -1096,29 +976,45 @@ def _gym_anything_task_identity(
         raise ValueError(
             f"unresolved variable in gym-anything env_dir: {env['env_dir']}"
         )
-    untrusted_env_dir = Path(expanded)
-    if untrusted_env_dir.is_symlink():
-        raise ValueError("gym-anything environment directory must not be a symlink")
-    env_dir = untrusted_env_dir.resolve()
+    untrusted = Path(expanded)
+    if reject_symlink:
+        _require_no_symlink(untrusted, "gym-anything environment directory")
+    env_dir = untrusted.resolve()
     if not env_dir.is_dir():
         raise FileNotFoundError(f"gym-anything environment not found: {env_dir}")
-    environment_spec = _first_file(env_dir, _SPEC_FILENAMES, "environment spec")
+    return task_id, env_dir
+
+
+def _gym_anything_task_dir(env_dir: Path, task_id: str) -> Path:
+    """Return the task directory that ``task_id`` may not escape."""
+
     task_dir = env_dir / "tasks" / task_id
     try:
         task_dir.resolve().relative_to(env_dir)
     except ValueError as exc:
         raise ValueError("gym-anything task_id escapes env_dir") from exc
+    return task_dir
+
+
+def _gym_anything_task_identity(
+    task: Any, *, checkout: Path | None = None
+) -> Mapping[str, Any] | None:
+    """Resolve the exact task text and source bytes the upstream backend loads."""
+
+    env = getattr(task, "env", None)
+    if not isinstance(env, Mapping) or env.get("kind") != "gym-anything":
+        return None
+    task_id, env_dir = _gym_anything_env_dir(env, reject_symlink=True)
+    environment_spec = _first_file(env_dir, _SPEC_FILENAMES, "environment spec")
+    task_dir = _gym_anything_task_dir(env_dir, task_id)
     if task_dir.is_symlink() or not task_dir.is_dir():
         raise ValueError("gym-anything task directory must be a real directory")
     task_spec = _first_file(task_dir, _TASK_FILENAMES, "task spec")
 
     loading = importlib.import_module("gym_anything.config.loading")
     if checkout is not None:
-        _assert_module_origin(
-            loading,
-            checkout / "third_party" / "gym-anything",
-            label="gym-anything loader",
-        )
+        gym_root = checkout / "third_party" / "gym-anything"
+        _assert_module_origin(loading, gym_root, label="gym-anything loader")
     loaded_task = loading._load_taskspec(task_spec)
     natural_language = getattr(loaded_task, "natural_language", None)
     description = getattr(loaded_task, "description", None)
@@ -1147,13 +1043,9 @@ def _gym_anything_task_identity(
         raw_source = getattr(mount, "source", None)
         target = getattr(mount, "target", None)
         mode = getattr(mount, "mode", None)
-        if not isinstance(raw_source, str) or not raw_source:
+        if not all(isinstance(x, str) and x for x in (raw_source, target, mode)):
             raise RuntimeError("gym-anything environment has an invalid mount")
-        if not isinstance(target, str) or not target:
-            raise RuntimeError("gym-anything environment has an invalid mount")
-        if not isinstance(mode, str) or not mode:
-            raise RuntimeError("gym-anything environment has an invalid mount")
-        mount_source = Path(raw_source).expanduser()
+        mount_source = Path(cast(str, raw_source)).expanduser()
         if not mount_source.is_absolute():
             mount_source = mount_source.resolve()
         source_roots.append((f"mount:{index}:{mode}:{target}", mount_source))
@@ -1171,8 +1063,7 @@ def _gym_anything_task_identity(
 
 def _reject_python_bytecode(paths: Sequence[Path], *, label: str) -> None:
     bytecode = next(
-        (path for path in paths if path.suffix.casefold() in {".pyc", ".pyo"}),
-        None,
+        (path for path in paths if path.suffix.casefold() in {".pyc", ".pyo"}), None
     )
     if bytecode is not None:
         raise ValueError(f"{label} must not contain Python bytecode: {bytecode}")
@@ -1182,7 +1073,7 @@ def _source_roots_sha256(roots: Sequence[tuple[str, Path]]) -> tuple[str, int]:
     """Hash the exact files copied or mounted by one gym-anything task."""
 
     digest = hashlib.sha256()
-    identities: dict[Path, tuple[int, int, int, int, int]] = {}
+    identities: dict[Path, _ImageStat] = {}
     listings: dict[Path, tuple[Path, ...]] = {}
     file_count = 0
     for label, untrusted_root in roots:
@@ -1236,21 +1127,8 @@ def _source_roots_sha256(roots: Sequence[tuple[str, Path]]) -> tuple[str, int]:
                 with path.open("rb") as stream:
                     for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b""):
                         digest.update(chunk)
-            after = path.stat()
-            identity = (
-                after.st_dev,
-                after.st_ino,
-                after.st_mode,
-                after.st_size,
-                after.st_mtime_ns,
-            )
-            if identity != (
-                before.st_dev,
-                before.st_ino,
-                before.st_mode,
-                before.st_size,
-                before.st_mtime_ns,
-            ):
+            identity = _stat_identity(path.stat())
+            if identity != _stat_identity(before):
                 raise RuntimeError(f"gym-anything source changed while hashing: {path}")
             identities[path] = identity
     for root, expected_entries in listings.items():
@@ -1262,14 +1140,7 @@ def _source_roots_sha256(roots: Sequence[tuple[str, Path]]) -> tuple[str, int]:
                 f"gym-anything source tree changed while hashing: {root}"
             )
     for path, identity in identities.items():
-        current = path.stat()
-        if identity != (
-            current.st_dev,
-            current.st_ino,
-            current.st_mode,
-            current.st_size,
-            current.st_mtime_ns,
-        ):
+        if identity != _stat_identity(path.stat()):
             raise RuntimeError(f"gym-anything source changed while hashing: {path}")
     return digest.hexdigest(), file_count
 
@@ -1284,41 +1155,31 @@ def _first_file(root: Path, names: Sequence[str], label: str) -> Path:
     raise FileNotFoundError(f"gym-anything {label} not found under {root}")
 
 
+def _missing_commands(*commands: str) -> list[str]:
+    return [command for command in commands if shutil.which(command) is None]
+
+
+_RUNNER_COMMANDS = {
+    "gym-anything-qemu-native": ("qemu-system-x86_64", "qemu-img"),
+    "gym-anything-avd-native": ("emulator", "adb"),
+}
+
+
 def _check_local_runner_commands(backend_name: str) -> None:
-    if backend_name in {
-        "gym-anything",
-        "gym-anything-local",
-        "gym-anything-qemu",
-    }:
-        has_native = all(
-            shutil.which(command) is not None
-            for command in ("qemu-system-x86_64", "qemu-img")
-        )
-        if shutil.which("apptainer") is None and not has_native:
+    if backend_name in {"gym-anything", "gym-anything-local", "gym-anything-qemu"}:
+        if shutil.which("apptainer") is None and _missing_commands(
+            "qemu-system-x86_64", "qemu-img"
+        ):
             raise RuntimeError(
                 "gym-anything QEMU needs Apptainer or qemu-system-x86_64 and qemu-img"
             )
     elif backend_name == "gym-anything-qemu-apptainer":
         if shutil.which("apptainer") is None:
             raise RuntimeError("gym-anything-qemu-apptainer needs Apptainer")
-    elif backend_name == "gym-anything-qemu-native":
-        missing = [
-            command
-            for command in ("qemu-system-x86_64", "qemu-img")
-            if shutil.which(command) is None
-        ]
+    elif backend_name in _RUNNER_COMMANDS:
+        missing = _missing_commands(*_RUNNER_COMMANDS[backend_name])
         if missing:
-            raise RuntimeError(
-                "gym-anything-qemu-native is missing: " + ", ".join(missing)
-            )
-    elif backend_name == "gym-anything-avd-native":
-        missing = [
-            command for command in ("emulator", "adb") if shutil.which(command) is None
-        ]
-        if missing:
-            raise RuntimeError(
-                "gym-anything-avd-native is missing: " + ", ".join(missing)
-            )
+            raise RuntimeError(f"{backend_name} is missing: " + ", ".join(missing))
 
     if (
         backend_name != "gym-anything-avd-native"
@@ -1347,11 +1208,8 @@ def _checker(generator: Any, prepared: Any, expected: Any) -> Callable[[], Any]:
             raise RuntimeError(
                 "cua-speed-run generator checker returned a non-string detail"
             )
-        return verdict_type(
-            passed=passed,
-            score=100.0 if passed else 0.0,
-            detail=detail,
-        )
+        score = 100.0 if passed else 0.0
+        return verdict_type(passed=passed, score=score, detail=detail)
 
     return check
 
@@ -1387,8 +1245,7 @@ def _task_source_sha256(task: Any) -> str:
     task_dir = getattr(task, "task_dir", None)
     if not isinstance(task_dir, Path):
         raise ValueError("cua-speed-run task has no source directory")
-    if task_dir.is_symlink():
-        raise ValueError("cua-speed-run task source directory must not be a symlink")
+    _require_no_symlink(task_dir, "cua-speed-run task source directory")
     if not task_dir.is_dir():
         raise ValueError("cua-speed-run task source directory does not exist")
     entries = sorted(task_dir.rglob("*"))
@@ -1402,50 +1259,27 @@ def _task_source_sha256(task: Any) -> str:
     if not paths:
         raise ValueError("cua-speed-run task source directory is empty")
     digest = hashlib.sha256()
-    identities: dict[Path, tuple[int, int, int, int]] = {}
+    identities: dict[Path, _ImageStat] = {}
     for path in sorted(paths):
         if not path.is_file():
             raise FileNotFoundError(f"missing cua-speed-run task source: {path}")
         relative = path.relative_to(task_dir).as_posix().encode("utf-8")
-        before = path.stat()
+        before = _stat_identity(path.stat())
         content = path.read_bytes()
-        after = path.stat()
-        if (
-            before.st_dev,
-            before.st_ino,
-            before.st_size,
-            before.st_mtime_ns,
-        ) != (
-            after.st_dev,
-            after.st_ino,
-            after.st_size,
-            after.st_mtime_ns,
-        ):
+        after = _stat_identity(path.stat())
+        if before != after:
             raise RuntimeError("cua-speed-run task source changed while hashing")
         digest.update(len(relative).to_bytes(8, "big"))
         digest.update(relative)
         digest.update(len(content).to_bytes(8, "big"))
         digest.update(content)
-        identities[path] = (
-            after.st_dev,
-            after.st_ino,
-            after.st_size,
-            after.st_mtime_ns,
-        )
+        identities[path] = after
     observed_entries = sorted(task_dir.rglob("*"))
-    _reject_python_bytecode(
-        observed_entries, label="cua-speed-run task sources"
-    )
+    _reject_python_bytecode(observed_entries, label="cua-speed-run task sources")
     if observed_entries != entries:
         raise RuntimeError("cua-speed-run task sources changed while hashing")
     for path, identity in identities.items():
-        current = path.stat()
-        if identity != (
-            current.st_dev,
-            current.st_ino,
-            current.st_size,
-            current.st_mtime_ns,
-        ):
+        if identity != _stat_identity(path.stat()):
             raise RuntimeError("cua-speed-run task source changed while hashing")
     return digest.hexdigest()
 
@@ -1494,18 +1328,19 @@ def _upstream_task(task: BenchmarkTask) -> Any:
         ("timeout_seconds", upstream.timeout_sec),
         ("grace_seconds", upstream.grace_sec),
     ):
-        expected = task.data.get(field)
-        if (
-            isinstance(expected, bool)
-            or not isinstance(expected, (int, float))
-            or not math.isfinite(float(expected))
-            or isinstance(observed, bool)
-            or not isinstance(observed, (int, float))
-            or not math.isfinite(float(observed))
-            or float(expected) != float(observed)
-        ):
+        expected = _finite_seconds(task.data.get(field))
+        if expected is None or expected != _finite_seconds(observed):
             raise RuntimeError("cua-speed-run timing changed after manifest creation")
     return upstream
+
+
+def _finite_seconds(value: Any) -> float | None:
+    """Return a finite duration as a float, or ``None`` when it is not one."""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
 
 
 def _task_string(task: BenchmarkTask, name: str) -> str:
@@ -1514,28 +1349,20 @@ def _task_string(task: BenchmarkTask, name: str) -> str:
 
 def _task_number(task: BenchmarkTask, name: str, *, positive: bool) -> float:
     value = task.data.get(name)
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, (int, float))
-        or not math.isfinite(float(value))
-        or (value <= 0 if positive else value < 0)
-    ):
-        qualifier = "positive" if positive else "non-negative"
-        raise ValueError(f"cua-speed-run task {name} must be finite and {qualifier}")
-    return float(value)
+    label = f"cua-speed-run task {name}"
+    if positive:
+        return _require_finite_number(value, label, exclusive_minimum=0)
+    return _require_finite_number(value, label, minimum=0)
 
 
 def _load_benchmark(path: Path) -> Any:
-    expanded = path.expanduser()
-    if expanded.is_symlink():
-        raise ValueError("cua-speed-run benchmark path must not be a symlink")
+    expanded = _require_no_symlink(path.expanduser(), "cua-speed-run benchmark path")
     benchmark_type = importlib.import_module("cua_speedrun.specs").Benchmark
     return benchmark_type.load(expanded.resolve())
 
 
 def _backend(name: str) -> Any:
-    if not isinstance(name, str) or not name.strip():
-        raise ValueError("cua-speed-run backend name must be non-empty")
+    _require_str(name, "cua-speed-run backend name")
     return importlib.import_module("cua_speedrun.envs").get_backend(name)
 
 
@@ -1548,20 +1375,13 @@ def _activate(checkout: Path) -> None:
         text = str(source)
         if text not in sys.path:
             sys.path.insert(0, text)
-    loaded_cua = sys.modules.get("cua_speedrun")
-    if loaded_cua is not None:
-        _assert_module_origin(
-            loaded_cua,
-            checkout,
-            label="cua-speed-run",
-        )
-    loaded_gym = sys.modules.get("gym_anything")
-    if loaded_gym is not None:
-        _assert_module_origin(
-            loaded_gym,
-            gym_anything,
-            label="gym-anything",
-        )
+    for name, root, label in (
+        ("cua_speedrun", checkout, "cua-speed-run"),
+        ("gym_anything", gym_anything, "gym-anything"),
+    ):
+        loaded = sys.modules.get(name)
+        if loaded is not None:
+            _assert_module_origin(loaded, root, label=label)
 
 
 def _gym_anything_module_origin(root: Path) -> str:
@@ -1583,8 +1403,6 @@ def _append_jsonl(path: Path, value: Mapping[str, Any]) -> None:
     with path.open("a", encoding="utf-8") as stream:
         stream.write(json.dumps(dict(value), sort_keys=True, allow_nan=False) + "\n")
         stream.flush()
-
-
 
 
 __all__ = [

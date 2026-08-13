@@ -6,7 +6,6 @@ import shutil
 import signal
 import tempfile
 import uuid
-import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
@@ -17,6 +16,10 @@ from ..types import (
     ToolCall,
     ToolDefinition,
     ToolExecution,
+    _require_finite_number,
+    _require_no_symlink,
+    _require_positive_int,
+    _require_str,
 )
 from .base import (
     BaseEnvironment,
@@ -50,8 +53,7 @@ class SWEPatchState:
     patch: bytes
 
     def __post_init__(self) -> None:
-        if not isinstance(self.base_identity, str) or not self.base_identity:
-            raise ValueError("SWE patch base identity must be non-empty")
+        _require_str(self.base_identity, "SWE patch base identity")
         if not isinstance(self.patch, bytes):
             raise ValueError("SWE patch must be bytes")
 
@@ -144,19 +146,10 @@ class LocalProcessRunner:
             or not all(isinstance(item, str) and item for item in argv)
         ):
             raise ValueError("argv must contain non-empty strings")
-        if (
-            isinstance(timeout_seconds, bool)
-            or not isinstance(timeout_seconds, (int, float))
-            or not math.isfinite(float(timeout_seconds))
-            or timeout_seconds <= 0
-        ):
-            raise ValueError("timeout_seconds must be positive")
-        if (
-            not isinstance(max_output_bytes, int)
-            or isinstance(max_output_bytes, bool)
-            or max_output_bytes < 1
-        ):
-            raise ValueError("max_output_bytes must be positive")
+        _require_finite_number(
+            timeout_seconds, "timeout_seconds", exclusive_minimum=0
+        )
+        _require_positive_int(max_output_bytes, "max_output_bytes")
         if environment is not None and (
             not isinstance(environment, Mapping)
             or not all(
@@ -276,25 +269,11 @@ class BashEnvironment(BaseEnvironment):
         self.workspace = workspace.resolve()
         if not self.workspace.is_dir():
             raise ValueError(f"SWE workspace is not a directory: {workspace}")
-        if (
-            isinstance(timeout_seconds, bool)
-            or not isinstance(timeout_seconds, (int, float))
-            or not math.isfinite(float(timeout_seconds))
-            or timeout_seconds <= 0
-        ):
-            raise ValueError("timeout_seconds must be positive")
-        if (
-            not isinstance(max_output_bytes, int)
-            or isinstance(max_output_bytes, bool)
-            or max_output_bytes < 1
-        ):
-            raise ValueError("max_output_bytes must be positive")
-        if (
-            not isinstance(max_patch_bytes, int)
-            or isinstance(max_patch_bytes, bool)
-            or max_patch_bytes < 1
-        ):
-            raise ValueError("max_patch_bytes must be positive")
+        _require_finite_number(
+            timeout_seconds, "timeout_seconds", exclusive_minimum=0
+        )
+        _require_positive_int(max_output_bytes, "max_output_bytes")
+        _require_positive_int(max_patch_bytes, "max_patch_bytes")
         self.timeout_seconds = float(timeout_seconds)
         self.max_output_bytes = max_output_bytes
         self.max_patch_bytes = max_patch_bytes
@@ -533,9 +512,9 @@ class BashEnvironment(BaseEnvironment):
         if destination is not None:
             if not isinstance(destination, Path):
                 raise ValueError("patch destination must be a Path or None")
-            target = destination.expanduser()
-            if target.is_symlink():
-                raise ValueError("patch destination must not be a symlink")
+            target = _require_no_symlink(
+                destination.expanduser(), "patch destination"
+            )
             await complete_in_thread(_atomic_write, target, patch.output)
         return patch.output
 

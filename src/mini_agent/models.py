@@ -11,6 +11,8 @@ from .types import (
     ToolDefinition,
     ToolResult,
     _json_mapping,
+    _require_positive_int,
+    _require_str,
 )
 
 if TYPE_CHECKING:
@@ -36,25 +38,16 @@ class BackendModel:
         metadata: Mapping[str, Any] | None = None,
         expected_resolved_model: str | None = None,
     ) -> None:
-        if max_output_tokens is not None and (
-            not isinstance(max_output_tokens, int)
-            or isinstance(max_output_tokens, bool)
-            or max_output_tokens < 1
-        ):
-            raise ValueError("max_output_tokens must be a positive integer or None")
-        if not isinstance(agent_id, str) or not agent_id:
-            raise ValueError("agent_id must be non-empty")
-        if not isinstance(role, str) or not role:
-            raise ValueError("role must be non-empty")
-        if expected_resolved_model is not None and (
-            not isinstance(expected_resolved_model, str)
-            or not expected_resolved_model.strip()
-            or expected_resolved_model != expected_resolved_model.strip()
-            or "\x00" in expected_resolved_model
-        ):
-            raise ValueError(
-                "expected_resolved_model must be a non-empty string or None"
+        if max_output_tokens is not None:
+            _require_positive_int(max_output_tokens, "max_output_tokens")
+        _require_str(agent_id, "agent_id")
+        _require_str(role, "role")
+        if expected_resolved_model is not None:
+            _require_str(
+                expected_resolved_model, "expected_resolved_model", stripped=True
             )
+            if "\x00" in expected_resolved_model:
+                raise ValueError("expected_resolved_model must not contain NUL")
         if not callable(getattr(backend, "complete", None)):
             raise ValueError("backend must expose an async complete method")
         self.backend = backend
@@ -225,6 +218,13 @@ def parse_model_spec(spec: str) -> tuple[str, str]:
 _UNSET: Any = object()
 
 
+_PROVIDER_DEFAULTS: Mapping[str, tuple[str, str]] = {
+    "openai": ("https://api.openai.com/v1", "OPENAI_API_KEY"),
+    "meta": ("", "MODEL_API_KEY"),
+    "anthropic": ("https://api.anthropic.com/v1", "ANTHROPIC_API_KEY"),
+}
+
+
 def build_model(
     spec: str,
     *,
@@ -255,6 +255,10 @@ def build_model(
         raise ValueError(
             "protocol must be 'responses', 'chat-completions', or None"
         )
+    if provider not in _PROVIDER_DEFAULTS:
+        raise ValueError(
+            f"unsupported provider {provider!r}; choose openai, anthropic, or meta"
+        )
     transport: dict[str, Any] = {}
     if max_retries is not None:
         transport["max_retries"] = max_retries
@@ -270,98 +274,37 @@ def build_model(
                 "max_history_images requires a transcript-replay protocol; "
                 "the Responses adapter's continuation is server-side"
             )
-    if provider == "openai":
-        if protocol == "chat-completions":
-            from .providers import ChatCompletionsBackend
-
-            resolved_backend: Any = ChatCompletionsBackend(
-                model=model_name,
-                provider="openai",
-                base_url=(
-                    "https://api.openai.com/v1" if base_url is None else base_url
-                ),
-                api_key_env=(
-                    "OPENAI_API_KEY" if api_key_env is None else api_key_env
-                ),
-                default_body=default_body,
-                default_headers=default_headers,
-                pricing=pricing,
-                **replay_transport,
-            )
-        else:
-            require_replay_protocol()
-            from .providers import OpenAIResponsesBackend
-
-            resolved_backend = OpenAIResponsesBackend(
-                model=model_name,
-                base_url=(
-                    "https://api.openai.com/v1" if base_url is None else base_url
-                ),
-                api_key_env=(
-                    "OPENAI_API_KEY" if api_key_env is None else api_key_env
-                ),
-                default_body=default_body,
-                default_headers=default_headers,
-                pricing=pricing,
-                **transport,
-            )
-    elif provider == "meta":
-        if base_url is None:
-            raise ValueError(
-                "meta models require an explicit --base-url naming the deployment"
-            )
-        if protocol == "chat-completions":
-            from .providers import ChatCompletionsBackend
-
-            resolved_backend = ChatCompletionsBackend(
-                model=model_name,
-                provider="meta",
-                base_url=base_url,
-                api_key_env=(
-                    "MODEL_API_KEY" if api_key_env is None else api_key_env
-                ),
-                default_body=default_body,
-                default_headers=default_headers,
-                pricing=pricing,
-                **replay_transport,
-            )
-        else:
-            require_replay_protocol()
-            from .providers import OpenAIResponsesBackend
-
-            resolved_backend = OpenAIResponsesBackend(
-                model=model_name,
-                provider="meta",
-                base_url=base_url,
-                api_key_env=(
-                    "MODEL_API_KEY" if api_key_env is None else api_key_env
-                ),
-                default_body=default_body,
-                default_headers=default_headers,
-                pricing=pricing,
-                **transport,
-            )
-    elif provider == "anthropic":
-        if protocol is not None:
-            raise ValueError("anthropic models always use the Messages protocol")
+    if provider == "meta" and base_url is None:
+        raise ValueError(
+            "meta models require an explicit --base-url naming the deployment"
+        )
+    if provider == "anthropic" and protocol is not None:
+        raise ValueError("anthropic models always use the Messages protocol")
+    default_url, default_key_env = _PROVIDER_DEFAULTS[provider]
+    common: dict[str, Any] = {
+        "model": model_name,
+        "base_url": default_url if base_url is None else base_url,
+        "api_key_env": default_key_env if api_key_env is None else api_key_env,
+        "default_body": default_body,
+        "default_headers": default_headers,
+        "pricing": pricing,
+    }
+    if provider == "anthropic":
         from .providers import AnthropicMessagesBackend
 
-        resolved_backend = AnthropicMessagesBackend(
-            model=model_name,
-            base_url=(
-                "https://api.anthropic.com/v1" if base_url is None else base_url
-            ),
-            api_key_env=(
-                "ANTHROPIC_API_KEY" if api_key_env is None else api_key_env
-            ),
-            default_body=default_body,
-            default_headers=default_headers,
-            pricing=pricing,
-            **replay_transport,
+        resolved_backend: Any = AnthropicMessagesBackend(**common, **replay_transport)
+    elif protocol == "chat-completions":
+        from .providers import ChatCompletionsBackend
+
+        resolved_backend = ChatCompletionsBackend(
+            provider=provider, **common, **replay_transport
         )
     else:
-        raise ValueError(
-            f"unsupported provider {provider!r}; choose openai, anthropic, or meta"
+        require_replay_protocol()
+        from .providers import OpenAIResponsesBackend
+
+        resolved_backend = OpenAIResponsesBackend(
+            provider=provider, **common, **transport
         )
     return BackendModel(
         resolved_backend,

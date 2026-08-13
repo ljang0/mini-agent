@@ -12,14 +12,25 @@ import random
 import re
 import sys
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Mapping
+from typing import Any, Awaitable, Callable, Iterator, Mapping, TypeGuard
 
 from ..environments.web import BrowserEnvironment
 from ..models import Model
 from ..orchestrator import Orchestrator
 from ..runtime import RunContext
 from ..specs import AgentSpecV1
-from ..types import BudgetLimits, Message, strict_json_loads
+from ..types import (
+    BudgetLimits,
+    Message,
+    strict_json_loads,
+    _require_bool,
+    _require_callable,
+    _require_int,
+    _require_mapping,
+    _require_no_symlink,
+    _require_positive_int,
+    _require_str,
+)
 from .checkout import git as _git, reject_untracked_execution_files
 from .base import (
     task_agent_builder,
@@ -93,12 +104,9 @@ def load_browsecomp(
 ) -> tuple[BenchmarkTask, ...]:
     """Load the official encrypted CSV downloaded from simple-evals."""
 
-    if limit is not None and (
-        not isinstance(limit, int) or isinstance(limit, bool) or limit < 1
-    ):
-        raise ValueError("BrowseComp limit must be positive")
-    if not isinstance(sample_seed, int) or isinstance(sample_seed, bool):
-        raise ValueError("BrowseComp sample_seed must be an integer")
+    if limit is not None:
+        _require_positive_int(limit, "BrowseComp limit")
+    _require_int(sample_seed, "BrowseComp sample_seed")
     with path.expanduser().resolve().open(newline="", encoding="utf-8") as stream:
         reader = csv.DictReader(stream)
         fields = reader.fieldnames
@@ -151,17 +159,11 @@ def load_browsecomp_plus(
     source = path.expanduser().resolve()
     tasks: list[BenchmarkTask] = []
     seen: set[str] = set()
-    if limit is not None and (
-        not isinstance(limit, int) or isinstance(limit, bool) or limit < 1
-    ):
-        raise ValueError("BrowseComp-Plus limit must be positive")
+    if limit is not None:
+        _require_positive_int(limit, "BrowseComp-Plus limit")
     if source.suffix.casefold() == ".jsonl":
         rows = []
-        for number, line in enumerate(
-            source.read_text(encoding="utf-8").splitlines(), 1
-        ):
-            if not line.strip():
-                continue
+        for number, line in _numbered_lines(source):
             try:
                 rows.append(strict_json_loads(line))
             except (json.JSONDecodeError, ValueError) as exc:
@@ -188,29 +190,22 @@ def load_browsecomp_plus(
                     )
                 rows.append({"query_id": row[0].strip(), "query": row[1].strip()})
     for index, row in enumerate(rows):
-        if not isinstance(row, Mapping):
-            raise ValueError("BrowseComp-Plus rows must be objects")
+        _require_mapping(row, "BrowseComp-Plus rows")
         query = row.get("query", row.get("question"))
-        task_id = row.get("query_id", row.get("id", index))
         if not isinstance(query, str) or not query.strip():
             raise ValueError(f"BrowseComp-Plus row {index + 1} has no query")
-        if (
-            not isinstance(task_id, (str, int))
-            or isinstance(task_id, bool)
-            or not str(task_id)
-        ):
+        normalized_id = _query_identifier(row.get("query_id", row.get("id", index)))
+        if normalized_id is None:
             raise ValueError(f"BrowseComp-Plus row {index + 1} has no query_id")
-        normalized_id = str(task_id)
         if normalized_id in seen:
             raise ValueError(f"duplicate BrowseComp-Plus query_id {normalized_id!r}")
         seen.add(normalized_id)
         data: dict[str, Any] = {"benchmark": "browsecomp-plus"}
         answer = row.get("answer")
         if answer is not None:
-            if not isinstance(answer, str):
-                raise ValueError(
-                    f"BrowseComp-Plus row {index + 1} has a non-string answer"
-                )
+            _require_str(
+                answer, f"BrowseComp-Plus row {index + 1} answer", non_empty=False
+            )
             data.update({"question": query, "answer": answer})
         tasks.append(
             BenchmarkTask(
@@ -242,18 +237,13 @@ async def run_web_task(
     per_agent_limits: BudgetLimits | None = None,
     agent_spec: AgentSpecV1 | None = None,
 ) -> EvaluationOutcome:
-    if not callable(browser_factory) or not callable(model_factory):
-        raise ValueError("browser_factory and model_factory must be callable")
-    if not isinstance(system_prompt, str):
-        raise ValueError("system_prompt must be a string")
-    if not isinstance(max_steps, int) or isinstance(max_steps, bool) or max_steps < 1:
-        raise ValueError("max_steps must be a positive integer")
-    if not isinstance(multi_agent, bool):
-        raise ValueError("multi_agent must be boolean")
-    if task.data.get("benchmark") == "browsecomp-plus" and (
-        not isinstance(model_name, str) or not model_name.strip()
-    ):
-        raise ValueError("BrowseComp-Plus generation requires model_name")
+    _require_callable(browser_factory, "browser_factory")
+    _require_callable(model_factory, "model_factory")
+    _require_str(system_prompt, "system_prompt", non_empty=False)
+    _require_positive_int(max_steps, "max_steps")
+    _require_bool(multi_agent, "multi_agent")
+    if task.data.get("benchmark") == "browsecomp-plus":
+        _require_str(model_name, "BrowseComp-Plus generation model_name")
 
     async def environment_for(agent_id: str) -> BrowserEnvironment:
         browser = browser_factory(agent_id)
@@ -282,8 +272,8 @@ async def run_web_task(
         agent_spec=agent_spec,
     )
 
+    root_id = task_agent_root(task.task_id)
     if multi_agent:
-        root_id = task_agent_root(task.task_id)
         orchestrator = Orchestrator(
             agent_builder=agent_for,
             environment_factory=environment_for,
@@ -310,7 +300,6 @@ async def run_web_task(
             },
         }
     else:
-        root_id = task_agent_root(task.task_id)
         environment = await environment_for(root_id)
         operation_error: BaseException | None = None
         result = None
@@ -426,43 +415,74 @@ def _decrypt(ciphertext: str, password: str) -> str:
         raise ValueError("BrowseComp field did not decrypt to UTF-8") from exc
 
 
+def _numbered_lines(path: Path) -> Iterator[tuple[int, str]]:
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if line.strip():
+            yield number, line
+
+
+def _query_identifier(value: Any) -> str | None:
+    if not isinstance(value, (str, int)) or isinstance(value, bool):
+        return None
+    return str(value) or None
+
+
+def _reject_missing(
+    identifiers: set[str], known: Mapping[str, Any] | set[str], message: str
+) -> None:
+    missing = sorted(identifiers.difference(known))
+    if missing:
+        raise ValueError(f"{message}: " + ", ".join(missing))
+
+
+def _valid_counts(value: Any, *, named: bool) -> bool:
+    """Return whether ``value`` maps tool names to non-negative counts.
+
+    ``named`` additionally rejects the empty tool name.
+    """
+
+    return isinstance(value, Mapping) and all(
+        isinstance(name, str)
+        and (name != "" or not named)
+        and isinstance(count, int)
+        and not isinstance(count, bool)
+        and count >= 0
+        for name, count in value.items()
+    )
+
+
+def _valid_references(value: Any) -> TypeGuard[list[str]]:
+    return isinstance(value, list) and all(
+        isinstance(item, str) and item for item in value
+    )
+
+
 def _browser_accounting(metadata: Mapping[str, Any]) -> dict[str, Any]:
     counts: dict[str, int] = {}
     references: set[str] = set()
+    browsers = metadata.get("browsers", {})
     if metadata.get("mode") == "single":
         values = [metadata.get("browser", {})]
+    elif isinstance(browsers, Mapping):
+        values = [
+            item.get("accounting", {})
+            for item in browsers.values()
+            if isinstance(item, Mapping)
+        ]
     else:
-        browsers = metadata.get("browsers", {})
-        values = (
-            [
-                item.get("accounting", {})
-                for item in browsers.values()
-                if isinstance(item, Mapping)
-            ]
-            if isinstance(browsers, Mapping)
-            else []
-        )
+        values = []
     if not values:
         raise ValueError("web generation metadata has no browser accounting")
     for value in values:
-        if not isinstance(value, Mapping):
-            raise ValueError("web browser accounting must be an object")
+        _require_mapping(value, "web browser accounting")
         raw_counts = value.get("tool_calls", {})
-        if not isinstance(raw_counts, Mapping):
-            raise ValueError("web tool-call accounting must be an object")
+        _require_mapping(raw_counts, "web tool-call accounting")
+        if not _valid_counts(raw_counts, named=False):
+            raise ValueError("web tool-call accounting is invalid")
         for name, count in raw_counts.items():
-            if (
-                not isinstance(name, str)
-                or not isinstance(count, int)
-                or isinstance(count, bool)
-                or count < 0
-            ):
-                raise ValueError("web tool-call accounting is invalid")
             counts[name] = counts.get(name, 0) + count
         raw_references = value.get("references", [])
-        if not isinstance(raw_references, list) or any(
-            not isinstance(item, str) or not item for item in raw_references
-        ):
+        if not _valid_references(raw_references):
             raise ValueError("web reference accounting is invalid")
         references.update(raw_references)
     return {"tool_calls": counts, "references": sorted(references)}
@@ -570,9 +590,7 @@ def _browsecomp_plus_collection_target(
     root: Path, destination: Path, *, require_exists: bool = False
 ) -> Path:
     expanded = destination.expanduser()
-    if expanded.is_symlink():
-        raise ValueError("BrowseComp-Plus collection must not be a symlink")
-    target = expanded.resolve()
+    target = _require_no_symlink(expanded, "BrowseComp-Plus collection").resolve()
     if target.parent != root:
         raise ValueError(
             "BrowseComp-Plus collection must be a direct child of the evaluation"
@@ -595,17 +613,8 @@ def _validate_browsecomp_plus_run(value: Any, path: Path) -> str:
         not isinstance(query_id, str)
         or not query_id
         or value.get("status") != "completed"
-        or not isinstance(counts, Mapping)
-        or any(
-            not isinstance(name, str)
-            or not name
-            or not isinstance(count, int)
-            or isinstance(count, bool)
-            or count < 0
-            for name, count in counts.items()
-        )
-        or not isinstance(references, list)
-        or any(not isinstance(reference, str) or not reference for reference in references)
+        or not _valid_counts(counts, named=True)
+        or not _valid_references(references)
         or len(references) != len(set(references))
         or not isinstance(result, list)
         or not result
@@ -628,10 +637,9 @@ def official_browsecomp_plus_grader_argv(
     model: str = "Qwen/Qwen3-32B",
     tensor_parallel_size: int = 1,
 ) -> tuple[str, ...]:
-    expanded_checkout = checkout.expanduser()
-    if expanded_checkout.is_symlink():
-        raise ValueError("BrowseComp-Plus checkout must not be a symlink")
-    root = expanded_checkout.resolve()
+    root = _require_no_symlink(
+        checkout.expanduser(), "BrowseComp-Plus checkout"
+    ).resolve()
     script = root / "scripts_evaluation" / "evaluate_run.py"
     if not root.is_dir() or not script.is_file() or script.is_symlink():
         raise ValueError("BrowseComp-Plus checkout is missing the official grader")
@@ -642,49 +650,34 @@ def official_browsecomp_plus_grader_argv(
         )
     if _git(root, "status", "--porcelain", "--untracked-files=no"):
         raise ValueError("BrowseComp-Plus checkout has tracked modifications")
-    reject_untracked_execution_files(
-        root, label="BrowseComp-Plus", run_git=_git
-    )
+    reject_untracked_execution_files(root, label="BrowseComp-Plus", run_git=_git)
+    words = (python_executable, model)
     if (
         not isinstance(tensor_parallel_size, int)
         or isinstance(tensor_parallel_size, bool)
         or tensor_parallel_size < 1
-        or not isinstance(python_executable, str)
-        or not python_executable
-        or "\x00" in python_executable
-        or not isinstance(model, str)
-        or not model
+        or any(not isinstance(w, str) or not w or "\x00" in w for w in words)
         or model.startswith("-")
-        or "\x00" in model
     ):
         raise ValueError("invalid BrowseComp-Plus grader configuration")
     resolved_input = input_dir.expanduser().resolve()
     resolved_truth = ground_truth.expanduser().resolve()
     resolved_eval = eval_dir.expanduser().resolve()
     resolved_qrels = qrel_evidence.expanduser().resolve()
-    if (
-        not resolved_input.is_dir()
-        or not resolved_truth.is_file()
-        or not resolved_qrels.is_file()
-        or not resolved_eval.parent.is_dir()
+    if not resolved_input.is_dir() or not resolved_eval.parent.is_dir() or not all(
+        item.is_file() for item in (resolved_truth, resolved_qrels)
     ):
         raise ValueError("BrowseComp-Plus grader inputs are missing")
     return (
         python_executable,
         "-I",
         str(script),
-        "--input_dir",
-        str(resolved_input),
-        "--ground_truth",
-        str(resolved_truth),
-        "--eval_dir",
-        str(resolved_eval),
-        "--qrel_evidence",
-        str(resolved_qrels),
-        "--model",
-        model,
-        "--tensor_parallel_size",
-        str(tensor_parallel_size),
+        "--input_dir", str(resolved_input),
+        "--ground_truth", str(resolved_truth),
+        "--eval_dir", str(resolved_eval),
+        "--qrel_evidence", str(resolved_qrels),
+        "--model", model,
+        "--tensor_parallel_size", str(tensor_parallel_size),
     )
 
 
@@ -706,44 +699,26 @@ def inspect_browsecomp_plus_grade_inputs(
 
     truth_path = ground_truth.expanduser().resolve()
     questions: dict[str, str] = {}
-    for number, line in enumerate(
-        truth_path.read_text(encoding="utf-8").splitlines(), 1
-    ):
-        if not line.strip():
-            continue
+    for number, line in _numbered_lines(truth_path):
         value = strict_json_loads(line)
-        if not isinstance(value, Mapping):
-            raise ValueError(f"ground truth line {number} must be an object")
-        truth_query_id = value.get("query_id")
+        _require_mapping(value, f"ground truth line {number}")
         query = value.get("query")
-        answer = value.get("answer")
-        if (
-            not isinstance(truth_query_id, (str, int))
-            or isinstance(truth_query_id, bool)
-            or not str(truth_query_id)
-            or not isinstance(query, str)
-            or not query.strip()
-            or not isinstance(answer, str)
-            or not answer.strip()
+        normalized = _query_identifier(value.get("query_id"))
+        if normalized is None or not all(
+            isinstance(item, str) and item.strip()
+            for item in (query, value.get("answer"))
         ):
             raise ValueError(f"ground truth line {number} is malformed")
-        normalized = str(truth_query_id)
         if normalized in questions:
             raise ValueError(f"duplicate ground-truth query_id {normalized!r}")
         questions[normalized] = query
-    missing_truth = sorted(run_ids.difference(questions))
-    if missing_truth:
-        raise ValueError(
-            "BrowseComp-Plus runs are missing ground truth: " + ", ".join(missing_truth)
-        )
+    _reject_missing(
+        run_ids, questions, "BrowseComp-Plus runs are missing ground truth"
+    )
 
     qrel_path = qrel_evidence.expanduser().resolve()
     qrel_ids: set[str] = set()
-    for number, line in enumerate(
-        qrel_path.read_text(encoding="utf-8").splitlines(), 1
-    ):
-        if not line.strip():
-            continue
+    for number, line in _numbered_lines(qrel_path):
         fields = line.split()
         if len(fields) != 4 or not fields[0] or not fields[2]:
             raise ValueError(f"qrel evidence line {number} is malformed")
@@ -752,17 +727,8 @@ def inspect_browsecomp_plus_grade_inputs(
         except ValueError as exc:
             raise ValueError(f"qrel evidence line {number} is malformed") from exc
         qrel_ids.add(fields[0])
-    unknown_qrels = sorted(qrel_ids.difference(questions))
-    if unknown_qrels:
-        raise ValueError(
-            "qrel evidence references unknown queries: " + ", ".join(unknown_qrels)
-        )
-    missing_qrels = sorted(run_ids.difference(qrel_ids))
-    if missing_qrels:
-        raise ValueError(
-            "BrowseComp-Plus runs have no qrel evidence: "
-            + ", ".join(missing_qrels)
-        )
+    _reject_missing(qrel_ids, questions, "qrel evidence references unknown queries")
+    _reject_missing(run_ids, qrel_ids, "BrowseComp-Plus runs have no qrel evidence")
 
     return {
         "runs": immutable_tree_identity(runs_root, label="BrowseComp-Plus runs"),

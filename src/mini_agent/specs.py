@@ -14,7 +14,14 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Mapping, Tuple
 
-from .types import BudgetLimits, ToolDefinition, strict_json_loads
+from .types import (
+    BudgetLimits,
+    ToolDefinition,
+    _require_mapping,
+    _require_positive_int,
+    _require_tuple_of,
+    strict_json_loads,
+)
 
 if TYPE_CHECKING:
     from .agent import MiniAgent
@@ -110,12 +117,7 @@ class AgentSpecV1:
             "system_prompt",
             _text(self.system_prompt, "system_prompt", allow_empty=True),
         )
-        if (
-            not isinstance(self.max_steps, int)
-            or isinstance(self.max_steps, bool)
-            or self.max_steps < 1
-        ):
-            raise ValueError("max_steps must be a positive integer")
+        _require_positive_int(self.max_steps, "max_steps")
         if not isinstance(self.budget, BudgetLimits):
             raise ValueError("budget must be BudgetLimits")
         object.__setattr__(
@@ -175,8 +177,7 @@ class AgentSpecV1:
     def from_dict(cls, value: Mapping[str, Any]) -> "AgentSpecV1":
         """Load one v1 spec, rejecting missing, extra, or newer-version fields."""
 
-        if not isinstance(value, Mapping):
-            raise ValueError("agent spec must be an object")
+        _require_mapping(value, "agent spec")
         if not all(isinstance(key, str) for key in value):
             raise ValueError("agent spec keys must be strings")
         expected = {
@@ -200,9 +201,7 @@ class AgentSpecV1:
             )
         if value["schema"] != cls.schema:
             raise ValueError(f"unsupported agent spec schema {value['schema']!r}")
-        budget_value = value["budget"]
-        if not isinstance(budget_value, Mapping):
-            raise ValueError("agent spec budget must be an object")
+        budget_value = _require_mapping(value["budget"], "agent spec budget")
         if not all(isinstance(key, str) for key in budget_value):
             raise ValueError("agent spec budget keys must be strings")
         budget_fields = {
@@ -243,10 +242,9 @@ class AgentSpecV1:
     def from_json(cls, value: str | bytes | bytearray) -> "AgentSpecV1":
         """Load a canonical spec document and verify its optional fingerprint."""
 
-        decoded = strict_json_loads(value)
-        if not isinstance(decoded, Mapping):
-            raise ValueError("agent spec document must be an object")
-        document = dict(decoded)
+        document = dict(
+            _require_mapping(strict_json_loads(value), "agent spec document")
+        )
         claimed = document.pop("fingerprint", None)
         spec = cls.from_dict(document)
         if claimed is not None and (
@@ -283,9 +281,9 @@ class AgentSpecV1:
             raise ValueError("environment identifier does not match the agent spec")
         if not callable(getattr(environment, "tools", None)):
             raise ValueError("environment must expose tools")
-        tools = tuple(environment.tools())
-        if not all(isinstance(tool, ToolDefinition) for tool in tools):
-            raise ValueError("environment tools must be ToolDefinition values")
+        tools = _require_tuple_of(
+            tuple(environment.tools()), ToolDefinition, "environment tools", brief=True
+        )
         names = tuple(sorted(tool.name for tool in tools))
         if len(names) != len(set(names)):
             raise ValueError("environment tool names must be unique")
@@ -370,10 +368,7 @@ class TranslationReport:
         )
         if not isinstance(self.spec, AgentSpecV1):
             raise ValueError("translation spec must be AgentSpecV1")
-        if not isinstance(self.losses, tuple) or not all(
-            isinstance(loss, TranslationLoss) for loss in self.losses
-        ):
-            raise ValueError("translation losses must be a tuple of TranslationLoss")
+        _require_tuple_of(self.losses, TranslationLoss, "translation losses")
         ordered = tuple(
             sorted(self.losses, key=lambda loss: (loss.field, loss.kind, loss.reason))
         )

@@ -666,7 +666,7 @@ class WebEnvironmentTests(unittest.IsolatedAsyncioTestCase):
             ),
             patch("mini_agent.environments.web._validate_public_url", AsyncMock()),
         ):
-            with self.assertRaisesRegex(InfrastructureError, "HTTP 304"):
+            with self.assertRaisesRegex(InfrastructureError, "HTTP status 304"):
                 await HttpPageReader().open("https://example.com/not-modified")
 
     def test_jsonl_bm25_and_tree_identity_are_deterministic(self) -> None:

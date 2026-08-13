@@ -5,12 +5,11 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import json
-import math
 import os
 import random
 import re
 from dataclasses import dataclass
-from typing import Any, ClassVar, Mapping
+from typing import Any, ClassVar, Mapping, NoReturn
 from urllib.parse import urlsplit
 
 import httpx
@@ -25,12 +24,28 @@ from .types import (
     ToolDefinition,
     Usage,
     _json_mapping,
+    _require_finite_number,
+    _require_int,
+    _require_str,
     strict_json_loads,
 )
 
 
 MAX_PROVIDER_RESPONSE_BYTES = 16 * 1024 * 1024
 _ENVIRONMENT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+_TOOL_FINISH_REASONS = frozenset({"tool_calls", "function_call"})
+_CHAT_FINISH_REASONS = _TOOL_FINISH_REASONS | {"stop", "length", "content_filter"}
+_ANTHROPIC_STOP_REASONS = frozenset(
+    {
+        "end_turn",
+        "max_tokens",
+        "stop_sequence",
+        "tool_use",
+        "pause_turn",
+        "refusal",
+        "model_context_window_exceeded",
+    }
+)
 
 
 class ProviderError(InfrastructureError):
@@ -44,6 +59,51 @@ class ProviderError(InfrastructureError):
         super().__init__(message)
         self.usage = usage
         self.attempts = attempts
+
+
+class _Decoder:
+    """Reads one provider response, failing closed with that call's usage.
+
+    ``subject`` prefixes every rejection so the message names the deployment
+    whose response broke the contract, and every failure carries the usage
+    already charged for the call so accounting is never lost.
+    """
+
+    def __init__(self, subject: str, usage: Usage) -> None:
+        self.subject = subject
+        self.usage = usage
+
+    def fail(self, message: str) -> NoReturn:
+        raise ProviderError(f"{self.subject} {message}", usage=self.usage)
+
+    def require(self, condition: object, message: str) -> None:
+        if not condition:
+            self.fail(message)
+
+    def field(self, value: Any, kind: type, message: str) -> Any:
+        if not isinstance(value, kind):
+            self.fail(message)
+        return value
+
+    def tool_call(self, call_id: Any, name: Any, arguments: Any) -> ToolCall:
+        """Decode one tool call; every malformed shape shares one message."""
+
+        try:
+            decoded = _arguments(arguments, self.subject)
+        except ProviderError as exc:
+            raise ProviderError(str(exc), usage=self.usage) from exc
+        try:
+            return ToolCall(call_id=call_id, name=name, arguments=decoded)
+        except ValueError as exc:
+            raise ProviderError(
+                f"{self.subject} returned a malformed tool call", usage=self.usage
+            ) from exc
+
+    def unique_call_ids(self, calls: list[ToolCall]) -> None:
+        self.require(
+            len({call.call_id for call in calls}) == len(calls),
+            "returned duplicate tool call ids",
+        )
 
 
 def _validate_endpoint(base_url: str, timeout_seconds: float) -> None:
@@ -69,20 +129,14 @@ def _validate_endpoint(base_url: str, timeout_seconds: float) -> None:
         loopback = hostname == "localhost"
     if parsed.scheme == "http" and not loopback:
         raise ValueError("non-loopback provider base_url values require HTTPS")
-    if (
-        not isinstance(timeout_seconds, (int, float))
-        or isinstance(timeout_seconds, bool)
-        or not math.isfinite(timeout_seconds)
-        or timeout_seconds <= 0
-    ):
-        raise ValueError("provider timeout_seconds must be finite and positive")
+    _require_finite_number(
+        timeout_seconds, "provider timeout_seconds", exclusive_minimum=0
+    )
 
 
 def _validate_api_key_env(value: Any) -> str:
     if not isinstance(value, str) or _ENVIRONMENT_NAME.fullmatch(value) is None:
-        raise ValueError(
-            "api_key_env must match [A-Za-z_][A-Za-z0-9_]*"
-        )
+        raise ValueError("api_key_env must match [A-Za-z_][A-Za-z0-9_]*")
     return value
 
 
@@ -94,23 +148,14 @@ class TokenPricing:
     cache_write_per_million: float | None = None
 
     def __post_init__(self) -> None:
-        values = (
+        for value in (
             self.input_per_million,
             self.output_per_million,
             self.cache_read_per_million,
             self.cache_write_per_million,
-        )
-        if any(
-            value is not None
-            and (
-                not isinstance(value, (int, float))
-                or isinstance(value, bool)
-                or not math.isfinite(value)
-                or value < 0
-            )
-            for value in values
         ):
-            raise ValueError("token prices must be finite and non-negative")
+            if value is not None:
+                _require_finite_number(value, "token prices", minimum=0)
 
     def cost(self, usage: Usage) -> float:
         uncached = (
@@ -170,8 +215,7 @@ def _validated_backend_config(
 ) -> _BackendConfig:
     """Validate the constructor surface shared by every backend codec."""
 
-    if not isinstance(model, str) or not model.strip() or model != model.strip():
-        raise ValueError("model must be a non-empty string")
+    _require_str(model, "model", stripped=True)
     _validate_api_key_env(api_key_env)
     if api_key is not None and (not isinstance(api_key, str) or not api_key.strip()):
         raise ValueError("api_key must be a non-empty string or None")
@@ -182,12 +226,7 @@ def _validated_backend_config(
         raise ValueError("pricing must be TokenPricing or None")
     if default_body is not None and not isinstance(default_body, Mapping):
         raise ValueError("default_body must be an object or None")
-    if (
-        not isinstance(max_retries, int)
-        or isinstance(max_retries, bool)
-        or not 0 <= max_retries <= 10
-    ):
-        raise ValueError("max_retries must be an integer between 0 and 10")
+    _require_int(max_retries, "max_retries", minimum=0, maximum=10)
     body = _json_mapping(default_body or {}, "provider default_body")
     headers = _validate_headers(default_headers, allowed_headers)
     _reject_reserved_body_fields(body, reserved_body_fields)
@@ -205,6 +244,37 @@ def _validated_backend_config(
     )
 
 
+class _Backend:
+    """Attribute plumbing shared by the three backend codecs."""
+
+    provider: str
+
+    def _provenance(self, protocol: str, **extra: Any) -> Mapping[str, Any]:
+        """Provenance keys every codec reports, in wire order."""
+
+        return {
+            "provider": self.provider,
+            "protocol": protocol,
+            "model": self.model,
+            "base_url": self.base_url,
+            **extra,
+            "max_response_bytes": MAX_PROVIDER_RESPONSE_BYTES,
+            "timeout_seconds": self.timeout_seconds,
+            "max_retries": self.max_retries,
+        }
+
+    def _configure(self, config: _BackendConfig) -> None:
+        self.model = config.model
+        self.api_key = config.api_key
+        self.api_key_env = config.api_key_env
+        self.base_url = config.base_url
+        self.timeout_seconds = config.timeout_seconds
+        self.pricing = config.pricing
+        self.default_body = config.default_body
+        self.default_headers = config.default_headers
+        self.max_retries = config.max_retries
+
+
 def _credential(api_key: str | None, api_key_env: str) -> str:
     key = api_key or os.environ.get(api_key_env)
     if not key:
@@ -212,7 +282,7 @@ def _credential(api_key: str | None, api_key_env: str) -> str:
     return key
 
 
-class OpenAIResponsesBackend:
+class OpenAIResponsesBackend(_Backend):
     """OpenAI Responses adapter using generic function tools.
 
     ``provider`` names the deployment for provenance and error reporting; a
@@ -261,9 +331,7 @@ class OpenAIResponsesBackend:
         default_body: Mapping[str, Any] | None = None,
         default_headers: Mapping[str, str] | None = None,
     ) -> None:
-        if not isinstance(provider, str) or not provider.strip():
-            raise ValueError("provider must be a non-empty string")
-        self.provider = provider
+        self.provider = _require_str(provider, "provider")
         config = _validated_backend_config(
             model=model,
             api_key=api_key,
@@ -286,15 +354,7 @@ class OpenAIResponsesBackend:
             protocol_label="Responses",
             max_retries=max_retries,
         )
-        self.model = config.model
-        self.api_key = config.api_key
-        self.api_key_env = config.api_key_env
-        self.base_url = config.base_url
-        self.timeout_seconds = config.timeout_seconds
-        self.pricing = config.pricing
-        self.default_body = config.default_body
-        self.default_headers = config.default_headers
-        self.max_retries = config.max_retries
+        self._configure(config)
         store = self.default_body.get("store")
         if "store" in self.default_body and not isinstance(store, bool):
             raise ValueError("provider body store must be boolean")
@@ -335,85 +395,57 @@ class OpenAIResponsesBackend:
             attempt_counter=attempt_counter,
         )
         usage = _openai_usage(data.get("usage"), self.pricing)
-        if data.get("status") != "completed":
-            raise ProviderError(
-                f"{self.provider} response status is {data.get('status')!r}",
-                usage=usage,
-            )
+        decode = _Decoder(self.provider, usage)
+        decode.require(
+            data.get("status") == "completed",
+            f"response status is {data.get('status')!r}",
+        )
         text: list[str] = []
         calls: list[ToolCall] = []
-        output = data.get("output", [])
-        if not isinstance(output, list):
-            raise ProviderError(
-                f"{self.provider} response output must be a list", usage=usage
+        output = decode.field(
+            data.get("output", []), list, "response output must be a list"
+        )
+        for raw_item in output:
+            item = decode.field(
+                raw_item, Mapping, "response output items must be objects"
             )
-        for item in output:
-            if not isinstance(item, Mapping):
-                raise ProviderError(
-                    f"{self.provider} response output items must be objects",
-                    usage=usage,
-                )
             if item.get("type") == "message":
-                if item.get("role") != "assistant":
-                    raise ProviderError(
-                        f"{self.provider} output message role must be assistant",
-                        usage=usage,
+                decode.require(
+                    item.get("role") == "assistant",
+                    "output message role must be assistant",
+                )
+                content = decode.field(
+                    item.get("content", []), list, "message content must be a list"
+                )
+                for raw_block in content:
+                    block = decode.field(
+                        raw_block, Mapping, "message content items must be objects"
                     )
-                content = item.get("content", [])
-                if not isinstance(content, list):
-                    raise ProviderError(
-                        f"{self.provider} message content must be a list", usage=usage
-                    )
-                for block in content:
-                    if not isinstance(block, Mapping):
-                        raise ProviderError(
-                            f"{self.provider} message content items must be objects",
-                            usage=usage,
-                        )
                     if block.get("type") in {"output_text", "text"}:
-                        value = block.get("text")
-                        if not isinstance(value, str):
-                            raise ProviderError(
-                                f"{self.provider} text content must be a string",
-                                usage=usage,
-                            )
-                        text.append(value)
-                    if block.get("type") == "refusal":
-                        refusal = block.get("refusal")
-                        if not isinstance(refusal, str):
-                            raise ProviderError(
-                                f"{self.provider} refusal content must be a string",
-                                usage=usage,
-                            )
-                        raise ProviderError(
-                            f"{self.provider} refused the request", usage=usage
+                        decode.field(
+                            block.get("text"), str, "text content must be a string"
                         )
+                        text.append(block["text"])
+                    if block.get("type") == "refusal":
+                        decode.field(
+                            block.get("refusal"),
+                            str,
+                            "refusal content must be a string",
+                        )
+                        decode.fail("refused the request")
             if item.get("type") in {"function_call", "tool_call"}:
                 name = item.get("name")
                 call_id = item.get("call_id", item.get("id"))
-                if not isinstance(name, str) or not isinstance(call_id, str):
-                    raise ProviderError(
-                        f"{self.provider} returned a malformed tool call", usage=usage
-                    )
-                try:
-                    arguments = _arguments(item.get("arguments", {}), self.provider)
-                except ProviderError as exc:
-                    raise ProviderError(str(exc), usage=usage) from exc
-                try:
-                    calls.append(
-                        ToolCall(call_id=call_id, name=name, arguments=arguments)
-                    )
-                except ValueError as exc:
-                    raise ProviderError(
-                        f"{self.provider} returned a malformed tool call", usage=usage
-                    ) from exc
-        if len({call.call_id for call in calls}) != len(calls):
-            raise ProviderError(
-                f"{self.provider} returned duplicate tool call ids", usage=usage
-            )
+                decode.require(
+                    isinstance(name, str) and isinstance(call_id, str),
+                    "returned a malformed tool call",
+                )
+                calls.append(decode.tool_call(call_id, name, item.get("arguments", {})))
+        decode.unique_call_ids(calls)
         response_id = data.get("id")
-        if calls and not isinstance(response_id, str):
-            raise ProviderError(f"{self.provider} tool response has no id", usage=usage)
+        decode.require(
+            not calls or isinstance(response_id, str), "tool response has no id"
+        )
         return ModelResponse(
             text="\n".join(part for part in text if part).strip(),
             usage=usage,
@@ -424,19 +456,10 @@ class OpenAIResponsesBackend:
         )
 
     def provenance(self) -> Mapping[str, Any]:
-        return {
-            "provider": self.provider,
-            "protocol": "responses",
-            "model": self.model,
-            "base_url": self.base_url,
-            "continuation": "previous_response_id",
-            "max_response_bytes": MAX_PROVIDER_RESPONSE_BYTES,
-            "timeout_seconds": self.timeout_seconds,
-            "max_retries": self.max_retries,
-        }
+        return self._provenance("responses", continuation="previous_response_id")
 
 
-class ChatCompletionsBackend:
+class ChatCompletionsBackend(_Backend):
     """OpenAI-compatible Chat Completions adapter with full-transcript replay.
 
     Unlike the Responses adapter there is no server-side continuation state:
@@ -496,9 +519,7 @@ class ChatCompletionsBackend:
         default_body: Mapping[str, Any] | None = None,
         default_headers: Mapping[str, str] | None = None,
     ) -> None:
-        if not isinstance(provider, str) or not provider.strip():
-            raise ValueError("provider must be a non-empty string")
-        self.provider = provider
+        self.provider = _require_str(provider, "provider")
         config = _validated_backend_config(
             model=model,
             api_key=api_key,
@@ -518,18 +539,8 @@ class ChatCompletionsBackend:
             protocol_label="Chat Completions",
             max_retries=max_retries,
         )
-        self.model = config.model
-        self.api_key = config.api_key
-        self.api_key_env = config.api_key_env
-        self.base_url = config.base_url
-        self.timeout_seconds = config.timeout_seconds
-        self.pricing = config.pricing
-        self.default_body = config.default_body
-        self.default_headers = config.default_headers
-        self.max_retries = config.max_retries
-        self.max_history_images = _validated_history_images(
-            max_history_images
-        )
+        self._configure(config)
+        self.max_history_images = _validated_history_images(max_history_images)
         choices = self.default_body.get("n", 1)
         if not isinstance(choices, int) or isinstance(choices, bool) or choices != 1:
             raise ValueError(
@@ -566,114 +577,67 @@ class ChatCompletionsBackend:
             attempt_counter=attempt_counter,
         )
         usage = _chat_usage(data.get("usage"), self.pricing)
-        choices = data.get("choices")
-        if not isinstance(choices, list) or len(choices) != 1:
-            raise ProviderError(
-                f"{self.provider} response choices must contain exactly one item",
-                usage=usage,
-            )
-        choice = choices[0]
-        if not isinstance(choice, Mapping):
-            raise ProviderError(
-                f"{self.provider} response choices must be objects", usage=usage
-            )
-        message = choice.get("message")
-        if not isinstance(message, Mapping):
-            raise ProviderError(
-                f"{self.provider} choice message must be an object", usage=usage
-            )
-        if message.get("role") != "assistant":
-            raise ProviderError(
-                f"{self.provider} choice message role must be assistant",
-                usage=usage,
-            )
+        decode = _Decoder(self.provider, usage)
+        choices: Any = data.get("choices")
+        decode.require(
+            isinstance(choices, list) and len(choices) == 1,
+            "response choices must contain exactly one item",
+        )
+        choice = decode.field(choices[0], Mapping, "response choices must be objects")
+        message = decode.field(
+            choice.get("message"), Mapping, "choice message must be an object"
+        )
+        decode.require(
+            message.get("role") == "assistant", "choice message role must be assistant"
+        )
         refusal = message.get("refusal")
         if refusal is not None:
-            if not isinstance(refusal, str):
-                raise ProviderError(
-                    f"{self.provider} message refusal must be a string or null",
-                    usage=usage,
-                )
-            raise ProviderError(f"{self.provider} refused the request", usage=usage)
+            decode.field(refusal, str, "message refusal must be a string or null")
+            decode.fail("refused the request")
         content = message.get("content")
-        if content is not None and not isinstance(content, str):
-            raise ProviderError(
-                f"{self.provider} message content must be a string or null",
-                usage=usage,
-            )
+        decode.require(
+            content is None or isinstance(content, str),
+            "message content must be a string or null",
+        )
         raw_calls = message.get("tool_calls")
-        if raw_calls is not None and not isinstance(raw_calls, list):
-            raise ProviderError(
-                f"{self.provider} message tool_calls must be a list", usage=usage
-            )
+        decode.require(
+            raw_calls is None or isinstance(raw_calls, list),
+            "message tool_calls must be a list",
+        )
         calls: list[ToolCall] = []
         for item in raw_calls or []:
-            if not isinstance(item, Mapping) or item.get("type") not in {
-                None,
-                "function",
-            }:
-                raise ProviderError(
-                    f"{self.provider} returned a malformed tool call", usage=usage
-                )
-            call_id = item.get("id")
-            function = item.get("function")
-            if not isinstance(call_id, str) or not isinstance(function, Mapping):
-                raise ProviderError(
-                    f"{self.provider} returned a malformed tool call", usage=usage
-                )
-            name = function.get("name")
-            if not isinstance(name, str):
-                raise ProviderError(
-                    f"{self.provider} returned a malformed tool call", usage=usage
-                )
-            try:
-                arguments = _arguments(function.get("arguments", {}), self.provider)
-            except ProviderError as exc:
-                raise ProviderError(str(exc), usage=usage) from exc
-            try:
-                calls.append(
-                    ToolCall(call_id=call_id, name=name, arguments=arguments)
-                )
-            except ValueError as exc:
-                raise ProviderError(
-                    f"{self.provider} returned a malformed tool call", usage=usage
-                ) from exc
-        if len({call.call_id for call in calls}) != len(calls):
-            raise ProviderError(
-                f"{self.provider} returned duplicate tool call ids", usage=usage
+            function: Any = item.get("function") if isinstance(item, Mapping) else None
+            decode.require(
+                isinstance(item, Mapping)
+                and item.get("type") in {None, "function"}
+                and isinstance(item.get("id"), str)
+                and isinstance(function, Mapping)
+                and isinstance(function.get("name"), str),
+                "returned a malformed tool call",
             )
+            calls.append(
+                decode.tool_call(
+                    item["id"], function["name"], function.get("arguments", {})
+                )
+            )
+        decode.unique_call_ids(calls)
         finish_reason = choice.get("finish_reason")
-        if finish_reason not in {
-            "stop",
-            "length",
-            "tool_calls",
-            "content_filter",
-            "function_call",
-        }:
-            raise ProviderError(
-                f"{self.provider} returned an unsupported finish_reason",
-                usage=usage,
-            )
+        decode.require(
+            finish_reason in _CHAT_FINISH_REASONS,
+            "returned an unsupported finish_reason",
+        )
         if finish_reason == "length":
-            raise ProviderError(
-                f"{self.provider} exhausted max tokens before finishing",
-                usage=usage,
-            )
+            decode.fail("exhausted max tokens before finishing")
         if finish_reason == "content_filter":
-            raise ProviderError(
-                f"{self.provider} filtered the completion", usage=usage
-            )
-        if calls and finish_reason not in {"tool_calls", "function_call"}:
-            raise ProviderError(
-                f"{self.provider} returned tool calls with an inconsistent "
-                "finish_reason",
-                usage=usage,
-            )
-        if not calls and finish_reason in {"tool_calls", "function_call"}:
-            raise ProviderError(
-                f"{self.provider} returned a tool finish_reason without tool calls",
-                usage=usage,
-            )
+            decode.fail("filtered the completion")
+        decode.require(
+            not calls or finish_reason in _TOOL_FINISH_REASONS,
+            "returned tool calls with an inconsistent finish_reason",
+        )
+        decode.require(
+            calls or finish_reason not in _TOOL_FINISH_REASONS,
+            "returned a tool finish_reason without tool calls",
+        )
         continuation = (*transcript, dict(message)) if calls else None
         return ModelResponse(
             text=(content or "").strip(),
@@ -685,20 +649,14 @@ class ChatCompletionsBackend:
         )
 
     def provenance(self) -> Mapping[str, Any]:
-        return {
-            "provider": self.provider,
-            "protocol": "chat-completions",
-            "model": self.model,
-            "base_url": self.base_url,
-            "continuation": "full-transcript",
-            "max_history_images": self.max_history_images,
-            "max_response_bytes": MAX_PROVIDER_RESPONSE_BYTES,
-            "timeout_seconds": self.timeout_seconds,
-            "max_retries": self.max_retries,
-        }
+        return self._provenance(
+            "chat-completions",
+            continuation="full-transcript",
+            max_history_images=self.max_history_images,
+        )
 
 
-class AnthropicMessagesBackend:
+class AnthropicMessagesBackend(_Backend):
     """Anthropic Messages adapter using generic function tools."""
 
     provider = "anthropic"
@@ -738,9 +696,7 @@ class AnthropicMessagesBackend:
         default_body: Mapping[str, Any] | None = None,
         default_headers: Mapping[str, str] | None = None,
     ) -> None:
-        if not isinstance(api_version, str) or not api_version.strip():
-            raise ValueError("api_version must be a non-empty string")
-        self.api_version = api_version
+        self.api_version = _require_str(api_version, "api_version")
         config = _validated_backend_config(
             model=model,
             api_key=api_key,
@@ -761,18 +717,8 @@ class AnthropicMessagesBackend:
             protocol_label="Anthropic Messages",
             max_retries=max_retries,
         )
-        self.model = config.model
-        self.api_key = config.api_key
-        self.api_key_env = config.api_key_env
-        self.base_url = config.base_url
-        self.timeout_seconds = config.timeout_seconds
-        self.pricing = config.pricing
-        self.default_body = config.default_body
-        self.default_headers = config.default_headers
-        self.max_retries = config.max_retries
-        self.max_history_images = _validated_history_images(
-            max_history_images
-        )
+        self._configure(config)
+        self.max_history_images = _validated_history_images(max_history_images)
 
     async def complete(self, request: ModelRequest) -> ModelResponse:
         messages = _anthropic_messages(request, self.max_history_images)
@@ -800,89 +746,57 @@ class AnthropicMessagesBackend:
             attempt_counter=attempt_counter,
         )
         usage = _anthropic_usage(data.get("usage"), self.pricing)
-        if data.get("type") != "message" or data.get("role") != "assistant":
-            raise ProviderError(
-                "Anthropic response must be an assistant message", usage=usage
-            )
-        content = data.get("content")
-        if not isinstance(content, list):
-            raise ProviderError(
-                "Anthropic response content must be a list", usage=usage
-            )
+        decode = _Decoder("Anthropic", usage)
+        decode.require(
+            data.get("type") == "message" and data.get("role") == "assistant",
+            "response must be an assistant message",
+        )
+        content = decode.field(
+            data.get("content"), list, "response content must be a list"
+        )
         text: list[str] = []
         calls: list[ToolCall] = []
-        for block in content:
-            if not isinstance(block, Mapping):
-                raise ProviderError(
-                    "Anthropic response content items must be objects", usage=usage
-                )
+        for raw_block in content:
+            block = decode.field(
+                raw_block, Mapping, "response content items must be objects"
+            )
             if block.get("type") == "text":
-                if not isinstance(block.get("text"), str):
-                    raise ProviderError(
-                        "Anthropic text content must be a string", usage=usage
-                    )
+                decode.field(block.get("text"), str, "text content must be a string")
                 text.append(block["text"])
             if block.get("type") == "tool_use":
-                call_id = block.get("id")
-                name = block.get("name")
                 arguments = block.get("input", {})
-                if (
-                    not isinstance(call_id, str)
-                    or not isinstance(name, str)
-                    or not isinstance(arguments, Mapping)
-                ):
-                    raise ProviderError(
-                        "Anthropic returned a malformed tool call", usage=usage
-                    )
-                try:
-                    calls.append(ToolCall(call_id, name, dict(arguments)))
-                except ValueError as exc:
-                    raise ProviderError(
-                        "Anthropic returned a malformed tool call", usage=usage
-                    ) from exc
-        if len({call.call_id for call in calls}) != len(calls):
-            raise ProviderError(
-                "Anthropic returned duplicate tool call ids", usage=usage
-            )
+                decode.require(
+                    isinstance(block.get("id"), str)
+                    and isinstance(block.get("name"), str)
+                    and isinstance(arguments, Mapping),
+                    "returned a malformed tool call",
+                )
+                calls.append(decode.tool_call(block["id"], block["name"], arguments))
+        decode.unique_call_ids(calls)
         stop_reason = data.get("stop_reason")
-        if stop_reason not in {
-            "end_turn",
-            "max_tokens",
-            "stop_sequence",
-            "tool_use",
-            "pause_turn",
-            "refusal",
-            "model_context_window_exceeded",
-        }:
-            raise ProviderError(
-                "Anthropic returned an unsupported stop_reason", usage=usage
-            )
+        decode.require(
+            stop_reason in _ANTHROPIC_STOP_REASONS,
+            "returned an unsupported stop_reason",
+        )
         if stop_reason == "max_tokens":
-            raise ProviderError(
-                "Anthropic exhausted max_tokens before finishing", usage=usage
-            )
+            decode.fail("exhausted max_tokens before finishing")
         if stop_reason == "model_context_window_exceeded":
-            raise ProviderError(
-                "Anthropic exhausted the model context window before finishing",
-                usage=usage,
-            )
+            decode.fail("exhausted the model context window before finishing")
         if stop_reason == "refusal":
-            raise ProviderError("Anthropic refused the request", usage=usage)
+            decode.fail("refused the request")
         if stop_reason == "pause_turn":
-            raise ProviderError(
-                "Anthropic returned pause_turn, which requires an unsupported "
-                "server-tool continuation",
-                usage=usage,
+            decode.fail(
+                "returned pause_turn, which requires an unsupported "
+                "server-tool continuation"
             )
-        if calls and stop_reason != "tool_use":
-            raise ProviderError(
-                "Anthropic returned tool calls with an inconsistent stop_reason",
-                usage=usage,
-            )
-        if not calls and stop_reason == "tool_use":
-            raise ProviderError(
-                "Anthropic returned tool_use without client tool calls", usage=usage
-            )
+        decode.require(
+            not calls or stop_reason == "tool_use",
+            "returned tool calls with an inconsistent stop_reason",
+        )
+        decode.require(
+            calls or stop_reason != "tool_use",
+            "returned tool_use without client tool calls",
+        )
         continuation = (
             (*messages, {"role": "assistant", "content": content}) if calls else None
         )
@@ -896,17 +810,18 @@ class AnthropicMessagesBackend:
         )
 
     def provenance(self) -> Mapping[str, Any]:
-        return {
-            "provider": self.provider,
-            "protocol": "messages",
-            "model": self.model,
-            "base_url": self.base_url,
-            "api_version": self.api_version,
-            "max_history_images": self.max_history_images,
-            "max_response_bytes": MAX_PROVIDER_RESPONSE_BYTES,
-            "timeout_seconds": self.timeout_seconds,
-            "max_retries": self.max_retries,
-        }
+        return self._provenance(
+            "messages",
+            api_version=self.api_version,
+            max_history_images=self.max_history_images,
+        )
+
+
+def _require_function_tool(tool: ToolDefinition, adapter: str) -> None:
+    """Only generic function tools cross this boundary."""
+
+    if tool.kind != "function":
+        raise ProviderError(f"{adapter} supports function tools, not {tool.kind!r}")
 
 
 def _openai_input(request: ModelRequest) -> list[Mapping[str, Any]]:
@@ -939,10 +854,7 @@ def _openai_input(request: ModelRequest) -> list[Mapping[str, Any]]:
 
 
 def _openai_tool(tool: ToolDefinition) -> Mapping[str, Any]:
-    if tool.kind != "function":
-        raise ProviderError(
-            f"OpenAI adapter supports function tools, not {tool.kind!r}"
-        )
+    _require_function_tool(tool, "OpenAI adapter")
     return {
         "type": "function",
         "name": tool.name,
@@ -958,9 +870,7 @@ def _validated_history_images(value: Any) -> int | None:
     if value is None:
         return None
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-        raise ValueError(
-            "max_history_images must be a non-negative integer or None"
-        )
+        raise ValueError("max_history_images must be a non-negative integer or None")
     return value
 
 
@@ -988,62 +898,54 @@ def _evicted_flags(
     ]
 
 
-def _bound_chat_images(
-    items: list[Mapping[str, Any]], boundary: int, limit: int | None
-) -> list[Mapping[str, Any]]:
-    if limit is None:
-        return items
-    positions: list[int] = []
-    for index, message in enumerate(items):
-        content = message.get("content")
-        if message.get("role") == "user" and isinstance(content, list):
-            positions.extend(
-                index
-                for block in content
-                if isinstance(block, Mapping) and block.get("type") == "image_url"
-            )
-    evict = _evicted_flags(positions, boundary, limit)
-    if not any(evict):
-        return items
-    cursor = 0
-    bounded: list[Mapping[str, Any]] = []
-    for message in items:
-        content = message.get("content")
-        if message.get("role") != "user" or not isinstance(content, list):
-            bounded.append(message)
-            continue
-        blocks: list[Any] = []
-        for block in content:
-            if isinstance(block, Mapping) and block.get("type") == "image_url":
-                blocks.append(
-                    {"type": "text", "text": _ELIDED_IMAGE_TEXT}
-                    if evict[cursor]
-                    else block
-                )
-                cursor += 1
-            else:
-                blocks.append(block)
-        bounded.append({**message, "content": blocks})
-    return bounded
+def _nested_blocks(block: Any) -> list[Any] | None:
+    """Return a tool_result's block list, which only Anthropic content nests."""
+
+    if not isinstance(block, Mapping) or block.get("type") != "tool_result":
+        return None
+    content = block.get("content")
+    return content if isinstance(content, list) else None
 
 
-def _bound_anthropic_images(
-    messages: list[Mapping[str, Any]], boundary: int, limit: int | None
+def _bound_images(
+    messages: list[Mapping[str, Any]],
+    boundary: int,
+    limit: int | None,
+    image_type: str,
 ) -> list[Mapping[str, Any]]:
+    """Replace over-budget replayed images with a text placeholder.
+
+    ``image_type`` is the protocol's image block tag; user-turn content is
+    walked, including nested tool_result blocks.
+    """
+
     if limit is None:
         return messages
     positions: list[int] = []
+    cursor = 0
 
     def scan(blocks: list[Any], index: int) -> None:
         for block in blocks:
-            if not isinstance(block, Mapping):
-                continue
-            if block.get("type") == "image":
+            nested = _nested_blocks(block)
+            if isinstance(block, Mapping) and block.get("type") == image_type:
                 positions.append(index)
-            elif block.get("type") == "tool_result" and isinstance(
-                block.get("content"), list
-            ):
-                scan(block["content"], index)
+            elif nested is not None:
+                scan(nested, index)
+
+    def rebuild(blocks: list[Any]) -> list[Any]:
+        nonlocal cursor
+        rebuilt: list[Any] = []
+        for block in blocks:
+            nested = _nested_blocks(block)
+            if isinstance(block, Mapping) and block.get("type") == image_type:
+                elided = {"type": "text", "text": _ELIDED_IMAGE_TEXT}
+                rebuilt.append(elided if evict[cursor] else block)
+                cursor += 1
+            elif nested is not None:
+                rebuilt.append({**block, "content": rebuild(nested)})
+            else:
+                rebuilt.append(block)
+        return rebuilt
 
     for index, message in enumerate(messages):
         content = message.get("content")
@@ -1052,27 +954,6 @@ def _bound_anthropic_images(
     evict = _evicted_flags(positions, boundary, limit)
     if not any(evict):
         return messages
-    cursor = 0
-
-    def rebuild(blocks: list[Any]) -> list[Any]:
-        nonlocal cursor
-        rebuilt: list[Any] = []
-        for block in blocks:
-            if isinstance(block, Mapping) and block.get("type") == "image":
-                rebuilt.append(
-                    {"type": "text", "text": _ELIDED_IMAGE_TEXT}
-                    if evict[cursor]
-                    else block
-                )
-                cursor += 1
-            elif isinstance(block, Mapping) and block.get(
-                "type"
-            ) == "tool_result" and isinstance(block.get("content"), list):
-                rebuilt.append({**block, "content": rebuild(block["content"])})
-            else:
-                rebuilt.append(block)
-        return rebuilt
-
     bounded: list[Mapping[str, Any]] = []
     for message in messages:
         content = message.get("content")
@@ -1119,15 +1000,11 @@ def _chat_transcript(
     if images:
         # The tool role cannot carry images in this protocol.
         items.append({"role": "user", "content": images})
-    return _bound_chat_images(items, boundary, max_history_images)
+    return _bound_images(items, boundary, max_history_images, "image_url")
 
 
 def _chat_tool(tool: ToolDefinition) -> Mapping[str, Any]:
-    if tool.kind != "function":
-        raise ProviderError(
-            f"the Chat Completions adapter supports function tools, "
-            f"not {tool.kind!r}"
-        )
+    _require_function_tool(tool, "the Chat Completions adapter")
     return {
         "type": "function",
         "function": {
@@ -1181,7 +1058,7 @@ def _anthropic_messages(
             }
         )
     messages = [*request.continuation, {"role": "user", "content": results}]
-    return _bound_anthropic_images(messages, boundary, max_history_images)
+    return _bound_images(messages, boundary, max_history_images, "image")
 
 
 def _anthropic_image(value: str) -> Mapping[str, Any]:
@@ -1198,10 +1075,7 @@ def _anthropic_image(value: str) -> Mapping[str, Any]:
 
 
 def _anthropic_tool(tool: ToolDefinition) -> Mapping[str, Any]:
-    if tool.kind != "function":
-        raise ProviderError(
-            f"Anthropic adapter supports function tools, not {tool.kind!r}"
-        )
+    _require_function_tool(tool, "Anthropic adapter")
     return {
         "name": tool.name,
         "description": tool.description,
@@ -1222,15 +1096,9 @@ def _arguments(value: Any, provider: str) -> Mapping[str, Any]:
     raise ProviderError(f"{provider} tool arguments must be an object")
 
 
-def _response_model(
-    value: Mapping[str, Any], provider: str, usage: Usage
-) -> str:
+def _response_model(value: Mapping[str, Any], provider: str, usage: Usage) -> str:
     model = value.get("model")
-    if (
-        not isinstance(model, str)
-        or not model.strip()
-        or model != model.strip()
-    ):
+    if not isinstance(model, str) or not model.strip() or model != model.strip():
         raise ProviderError(
             f"{provider} response model must be a non-empty string", usage=usage
         )
@@ -1340,29 +1208,21 @@ def _priced_usage(
     *,
     complete: bool,
 ) -> Usage:
+    counts: dict[str, Any] = {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cache_read_input_tokens": cache_read,
+        "cache_write_input_tokens": cache_write,
+    }
     try:
         base = Usage(
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cache_read_input_tokens=cache_read,
-            cache_write_input_tokens=cache_write,
+            **counts,
             cost_known=pricing is not None and complete,
             complete=complete,
         )
-    except ValueError as exc:
-        raise ProviderError(f"provider returned inconsistent usage: {exc}") from exc
-    if pricing is None:
-        return base
-    if not complete:
-        return base
-    try:
-        return Usage(
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cache_read_input_tokens=cache_read,
-            cache_write_input_tokens=cache_write,
-            cost_usd=pricing.cost(base),
-        )
+        if pricing is None or not complete:
+            return base
+        return Usage(**counts, cost_usd=pricing.cost(base))
     except ValueError as exc:
         raise ProviderError(f"provider returned inconsistent usage: {exc}") from exc
 

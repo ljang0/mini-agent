@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import math
 import os
 import re
 import shutil
@@ -27,7 +26,18 @@ from .benchmarks.base import (
     immutable_file_identity,
     immutable_tree_identity,
 )
-from .types import strict_json_loads
+from .types import _require_finite_number, _require_mapping, strict_json_loads
+
+_FILE_IDENTITY_FIELDS = ("size_bytes", "sha256")
+_TREE_IDENTITY_FIELDS = ("file_count", "size_bytes", "sha256")
+
+
+def _canonical_json(value: Any) -> bytes:
+    """Encode ``value`` as the canonical JSON bytes every fingerprint covers."""
+
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")
 
 
 def _required_path(value: Path | None, option: str) -> Path:
@@ -44,19 +54,16 @@ def _required_path(value: Path | None, option: str) -> Path:
 
 def _grade(args: argparse.Namespace) -> int:
     evaluation_argument = args.evaluation.expanduser()
-    if evaluation_argument.is_symlink():
-        raise ValueError("--evaluation must be a non-symlink directory")
     evaluation = evaluation_argument.resolve()
-    if not evaluation.is_dir():
+    if evaluation_argument.is_symlink() or not evaluation.is_dir():
         raise ValueError("--evaluation must be a non-symlink directory")
     generation_manifest_path = evaluation / "manifest.json"
     if generation_manifest_path.is_symlink() or not generation_manifest_path.is_file():
         raise ValueError("evaluation manifest must be a non-symlink file")
-    generation_manifest = strict_json_loads(
-        generation_manifest_path.read_text(encoding="utf-8")
+    generation_manifest = _require_mapping(
+        strict_json_loads(generation_manifest_path.read_text(encoding="utf-8")),
+        "evaluation manifest",
     )
-    if not isinstance(generation_manifest, Mapping):
-        raise ValueError("evaluation manifest must be an object")
     _verify_evaluation_manifest(generation_manifest, args.benchmark)
     grade_output = _grade_output_path(evaluation, args.output, args.benchmark)
     if grade_output.exists() and (
@@ -79,8 +86,18 @@ def _grade(args: argparse.Namespace) -> int:
             },
         },
     }
-    verify_grader_assets_before: Callable[[], Mapping[str, Any]] | None = None
-    verify_grader_assets_after: Callable[[], Mapping[str, Any]] | None = None
+    verify_grader_assets: Callable[[], Mapping[str, Any]] | None = None
+
+    def observed_grader_runtime(project: str) -> Mapping[str, Any]:
+        observed = _grader_runtime_identity(
+            args.python_executable,
+            args.benchmark,
+            grader_environment=grader_environment,
+        )
+        if observed != isolated_runtime:
+            raise RuntimeError(f"{project} grader runtime changed during grading")
+        return observed
+
     if args.benchmark == "swebench":
         from .benchmarks.swebench import (
             collect_predictions,
@@ -108,13 +125,13 @@ def _grade(args: argparse.Namespace) -> int:
         input_root = grade_output / "inputs" / "swebench"
         snapshot_predictions = input_root / "predictions.jsonl"
         snapshot_dataset = input_root / ("dataset" + dataset.suffix.casefold())
-        _snapshot_grade_file(
+        _snapshot_grade_input(
             predictions,
             snapshot_predictions,
             source_inputs["predictions"],
             label="SWE-bench predictions",
         )
-        _snapshot_grade_file(
+        _snapshot_grade_input(
             dataset,
             snapshot_dataset,
             source_inputs["dataset"],
@@ -148,14 +165,8 @@ def _grade(args: argparse.Namespace) -> int:
             "images": grader_images,
         }
 
-        def verify_swebench_grader_assets_before() -> Mapping[str, Any]:
-            observed_runtime = _grader_runtime_identity(
-                args.python_executable,
-                args.benchmark,
-                grader_environment=grader_environment,
-            )
-            if observed_runtime != isolated_runtime:
-                raise RuntimeError("SWE-bench grader runtime changed during grading")
+        def verify_swebench_grader_assets() -> Mapping[str, Any]:
+            observed_runtime = observed_grader_runtime("SWE-bench")
             observed_source = swebench_grader_source_identity(
                 _isolated_module_root(observed_runtime, "swebench")
             )
@@ -174,34 +185,7 @@ def _grade(args: argparse.Namespace) -> int:
                 "images": observed_images,
             }
 
-        def verify_swebench_grader_assets_after() -> Mapping[str, Any]:
-            observed_runtime = _grader_runtime_identity(
-                args.python_executable,
-                args.benchmark,
-                grader_environment=grader_environment,
-            )
-            if observed_runtime != isolated_runtime:
-                raise RuntimeError("SWE-bench grader runtime changed during grading")
-            observed_images = verify_swebench_grader_images(
-                generation_manifest,
-                python_executable=str(observed_runtime["python_executable"]),
-                grader_environment=grader_environment,
-            )
-            if observed_images != grader_images:
-                raise RuntimeError("SWE-bench grader images changed during grading")
-            observed_source = swebench_grader_source_identity(
-                _isolated_module_root(observed_runtime, "swebench")
-            )
-            if observed_source != grader_source:
-                raise RuntimeError("SWE-bench grader source changed during grading")
-            return {
-                "runtime": observed_runtime,
-                "source": observed_source,
-                "images": observed_images,
-            }
-
-        verify_grader_assets_before = verify_swebench_grader_assets_before
-        verify_grader_assets_after = verify_swebench_grader_assets_after
+        verify_grader_assets = verify_swebench_grader_assets
     elif args.benchmark == "programbench":
         from .benchmarks.programbench import (
             PROGRAMBENCH_IMAGE_TAG,
@@ -228,11 +212,12 @@ def _grade(args: argparse.Namespace) -> int:
         _verify_grade_prompt_binding(generation_manifest, source_inputs)
         _create_private_grade_output(grade_output)
         snapshot_run = grade_output / "inputs" / "programbench" / "run"
-        _snapshot_grade_tree(
+        _snapshot_grade_input(
             run_directory,
             snapshot_run,
             source_inputs["runs"],
             label="ProgramBench submissions",
+            tree=True,
         )
         inputs = {
             **inspect_programbench_grade_inputs(
@@ -266,15 +251,7 @@ def _grade(args: argparse.Namespace) -> int:
             )
 
         def verify_programbench_grader_assets() -> Mapping[str, Any]:
-            observed_runtime = _grader_runtime_identity(
-                args.python_executable,
-                args.benchmark,
-                grader_environment=grader_environment,
-            )
-            if observed_runtime != isolated_runtime:
-                raise RuntimeError(
-                    "ProgramBench grader runtime changed during grading"
-                )
+            observed_runtime = observed_grader_runtime("ProgramBench")
             observed_checkout = inspect_programbench_checkout(checkout)
             if observed_checkout != grader_checkout:
                 raise RuntimeError(
@@ -287,13 +264,10 @@ def _grade(args: argparse.Namespace) -> int:
                 workers=args.max_workers,
             )
             if revalidated_argv != argv:
-                raise RuntimeError(
-                    "ProgramBench grader command changed during grading"
-                )
+                raise RuntimeError("ProgramBench grader command changed during grading")
             return {"runtime": observed_runtime, "checkout": observed_checkout}
 
-        verify_grader_assets_before = verify_programbench_grader_assets
-        verify_grader_assets_after = verify_programbench_grader_assets
+        verify_grader_assets = verify_programbench_grader_assets
     else:
         from .benchmarks.web import (
             collect_browsecomp_plus_runs,
@@ -307,10 +281,8 @@ def _grade(args: argparse.Namespace) -> int:
                 "immutable model snapshot directory"
             )
         judge_model_argument = Path(args.judge_model).expanduser()
-        if judge_model_argument.is_symlink():
-            raise ValueError("--judge-model must be a local non-symlink directory")
         judge_model = judge_model_argument.resolve()
-        if not judge_model.is_dir():
+        if judge_model_argument.is_symlink() or not judge_model.is_dir():
             raise ValueError("--judge-model must be a local non-symlink directory")
         checkout = _required_path(args.checkout, "--checkout")
         ground_truth = _required_path(args.ground_truth, "--ground-truth")
@@ -335,19 +307,20 @@ def _grade(args: argparse.Namespace) -> int:
         snapshot_runs = input_root / "runs"
         snapshot_truth = input_root / ("ground_truth" + ground_truth.suffix.casefold())
         snapshot_qrel = input_root / ("qrel_evidence" + qrel.suffix.casefold())
-        _snapshot_grade_tree(
+        _snapshot_grade_input(
             input_dir,
             snapshot_runs,
             source_inputs["runs"],
             label="BrowseComp-Plus runs",
+            tree=True,
         )
-        _snapshot_grade_file(
+        _snapshot_grade_input(
             ground_truth,
             snapshot_truth,
             source_inputs["ground_truth"],
             label="BrowseComp-Plus ground truth",
         )
-        _snapshot_grade_file(
+        _snapshot_grade_input(
             qrel,
             snapshot_qrel,
             source_inputs["qrel_evidence"],
@@ -390,15 +363,7 @@ def _grade(args: argparse.Namespace) -> int:
         }
 
         def verify_browsecomp_plus_grader_assets() -> Mapping[str, Any]:
-            observed_runtime = _grader_runtime_identity(
-                args.python_executable,
-                args.benchmark,
-                grader_environment=grader_environment,
-            )
-            if observed_runtime != isolated_runtime:
-                raise RuntimeError(
-                    "BrowseComp-Plus grader runtime changed during grading"
-                )
+            observed_runtime = observed_grader_runtime("BrowseComp-Plus")
             revalidated_argv = official_browsecomp_plus_grader_argv(
                 checkout=checkout,
                 input_dir=snapshot_runs,
@@ -418,8 +383,7 @@ def _grade(args: argparse.Namespace) -> int:
                 "runtime": observed_runtime,
             }
 
-        verify_grader_assets_before = verify_browsecomp_plus_grader_assets
-        verify_grader_assets_after = verify_browsecomp_plus_grader_assets
+        verify_grader_assets = verify_browsecomp_plus_grader_assets
     manifest_value = {
         "schema": "mini-agent-grade-v1",
         "benchmark": args.benchmark,
@@ -438,12 +402,7 @@ def _grade(args: argparse.Namespace) -> int:
             "publish": False,
         },
     }
-    manifest_encoded = json.dumps(
-        manifest_value,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
+    manifest_encoded = _canonical_json(manifest_value)
     manifest = {
         **manifest_value,
         "fingerprint": hashlib.sha256(manifest_encoded).hexdigest(),
@@ -454,8 +413,8 @@ def _grade(args: argparse.Namespace) -> int:
     )
     stdout_path = grade_output / "stdout.log"
     stderr_path = grade_output / "stderr.log"
-    if verify_grader_assets_before is not None:
-        verify_grader_assets_before()
+    if verify_grader_assets is not None:
+        verify_grader_assets()
     with (
         stdout_path.open("xb") as stdout,
         stderr_path.open("xb") as stderr,
@@ -471,7 +430,7 @@ def _grade(args: argparse.Namespace) -> int:
             env=grader_environment,
         )
     verified_grader = (
-        verify_grader_assets_after() if verify_grader_assets_after is not None else None
+        verify_grader_assets() if verify_grader_assets is not None else None
     )
     verified_inputs = _verify_grade_snapshot_identities(inputs)
     observed_manifest_identity = immutable_file_identity(
@@ -513,8 +472,6 @@ _GRADER_RUNTIME_PROBE_TIMEOUT_SECONDS = 30.0
 _GRADER_RUNTIME_PROBE_SOURCE = (
     resources.files("mini_agent").joinpath("_grader_probe.py").read_text("utf-8")
 )
-
-
 
 
 def _current_python_executable(python_executable: str) -> Path:
@@ -609,13 +566,9 @@ def _grader_runtime_identity(
         for name, value in grader_environment.items()
     ):
         raise ValueError("official grader environment must contain strings")
-    if (
-        isinstance(timeout_seconds, bool)
-        or not isinstance(timeout_seconds, (int, float))
-        or not math.isfinite(float(timeout_seconds))
-        or timeout_seconds <= 0
-    ):
-        raise ValueError("official grader runtime probe timeout must be positive")
+    timeout_seconds = _require_finite_number(
+        timeout_seconds, "official grader runtime probe timeout", exclusive_minimum=0
+    )
 
     with tempfile.TemporaryDirectory(prefix="mini-agent-grader-runtime-") as temporary:
         probe_root = Path(temporary)
@@ -629,12 +582,7 @@ def _grader_runtime_identity(
                     "-c",
                     _GRADER_RUNTIME_PROBE_SOURCE,
                     str(output),
-                    json.dumps(
-                        required,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                        allow_nan=False,
-                    ),
+                    _canonical_json(required).decode("utf-8"),
                 ),
                 cwd=probe_root,
                 check=False,
@@ -655,18 +603,15 @@ def _grader_runtime_identity(
         raise RuntimeError("isolated official grader runtime identity is invalid")
     if value.get("ok") is not True:
         name = value.get("name")
-        expected = value.get("expected")
         observed = value.get("observed")
-        if value.get("error") in {"missing", "version"} and (
-            isinstance(name, str)
+        if (
+            value.get("error") in {"missing", "version"}
+            and isinstance(name, str)
             and name in required
-            and expected == required[name]
+            and value.get("expected") == required[name]
         ):
-            suffix = (
-                f", found {observed}"
-                if value.get("error") == "version" and isinstance(observed, str)
-                else ""
-            )
+            found = value.get("error") == "version" and isinstance(observed, str)
+            suffix = f", found {observed}" if found else ""
             raise ValueError(
                 f"official grader requires {name}=={required[name]}{suffix}"
             )
@@ -765,9 +710,7 @@ def _isolated_module_root(runtime: Mapping[str, Any], name: str) -> Path:
     return Path(root)
 
 
-def _official_grader_environment(
-    benchmark: str, grade_output: Path
-) -> dict[str, str]:
+def _official_grader_environment(benchmark: str, grade_output: Path) -> dict[str, str]:
     """Build the narrow host environment exposed to an official grader."""
 
     allowed = {
@@ -806,9 +749,7 @@ def _official_grader_environment(
             "PYTHONDONTWRITEBYTECODE": "1",
         }
     )
-    if benchmark in {"swebench", "programbench"} and not environment.get(
-        "DOCKER_HOST"
-    ):
+    if benchmark in {"swebench", "programbench"} and not environment.get("DOCKER_HOST"):
         # An explicit endpoint prevents Docker SDK context lookup from consulting
         # a different HOME/config than the isolated upstream grader process.
         environment["DOCKER_HOST"] = "unix:///var/run/docker.sock"
@@ -821,16 +762,11 @@ def _verify_evaluation_manifest(manifest: Mapping[str, Any], benchmark: str) -> 
     if manifest.get("benchmark") != benchmark:
         raise ValueError("evaluation manifest benchmark does not match --benchmark")
     fingerprint = manifest.get("fingerprint")
-    if not isinstance(fingerprint, str) or not re.fullmatch(
-        r"[0-9a-f]{64}", fingerprint
-    ):
+    if not _is_sha256(fingerprint):
         raise ValueError("evaluation manifest fingerprint is malformed")
     unsigned = dict(manifest)
     del unsigned["fingerprint"]
-    encoded = json.dumps(
-        unsigned, sort_keys=True, separators=(",", ":"), allow_nan=False
-    ).encode("utf-8")
-    if hashlib.sha256(encoded).hexdigest() != fingerprint:
+    if hashlib.sha256(_canonical_json(unsigned)).hexdigest() != fingerprint:
         raise ValueError("evaluation manifest fingerprint does not match its content")
     raw_tasks = manifest.get("tasks")
     if not isinstance(raw_tasks, list) or not raw_tasks:
@@ -841,15 +777,19 @@ def _verify_evaluation_manifest(manifest: Mapping[str, Any], benchmark: str) -> 
             not isinstance(task, Mapping)
             or not isinstance(task.get("id"), str)
             or not task["id"]
-            or not isinstance(task.get("prompt_sha256"), str)
-            or not re.fullmatch(r"[0-9a-f]{64}", task["prompt_sha256"])
-            or not isinstance(task.get("data_sha256"), str)
-            or not re.fullmatch(r"[0-9a-f]{64}", task["data_sha256"])
+            or not _is_sha256(task.get("prompt_sha256"))
+            or not _is_sha256(task.get("data_sha256"))
         ):
             raise ValueError("evaluation manifest task identity is malformed")
         if task["id"] in seen:
             raise ValueError(f"duplicate evaluation manifest task {task['id']!r}")
         seen.add(task["id"])
+
+
+def _is_sha256(value: Any) -> bool:
+    """Return whether ``value`` is a lowercase hexadecimal SHA-256 digest."""
+
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
 
 
 def _grade_output_path(evaluation: Path, output: Path | None, benchmark: str) -> Path:
@@ -882,11 +822,8 @@ def _reject_grade_output_overlap(output: Path, protected: Path, label: str) -> N
 
 
 def _grade_eval_directory(output: Path, value: Path | None) -> Path:
-    if value is None:
-        candidate = output / "official_evals"
-    else:
-        expanded = value.expanduser()
-        candidate = expanded if expanded.is_absolute() else output / expanded
+    expanded = (Path("official_evals") if value is None else value).expanduser()
+    candidate = expanded if expanded.is_absolute() else output / expanded
     if candidate.is_symlink():
         raise ValueError("--eval-dir must not be a symlink")
     resolved = candidate.resolve()
@@ -901,86 +838,77 @@ def _grade_eval_directory(output: Path, value: Path | None) -> Path:
     return resolved
 
 
-def _snapshot_grade_file(
+def _snapshot_grade_input(
     source: Path,
     destination: Path,
     expected: Mapping[str, Any],
     *,
     label: str,
+    tree: bool = False,
 ) -> Mapping[str, Any]:
+    """Copy one grader input into the private grade output and re-hash it."""
+
     if destination.exists() or destination.is_symlink():
         raise ValueError(f"{label} snapshot already exists: {destination}")
     destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    shutil.copyfile(source, destination)
-    destination.chmod(0o600)
-    observed = immutable_file_identity(destination, label=f"{label} snapshot")
-    if any(
-        observed.get(name) != expected.get(name) for name in ("size_bytes", "sha256")
-    ):
+    if tree:
+        shutil.copytree(source, destination, copy_function=shutil.copyfile)
+        for directory, _, files in os.walk(destination):
+            Path(directory).chmod(0o700)
+            for name in files:
+                (Path(directory) / name).chmod(0o600)
+    else:
+        shutil.copyfile(source, destination)
+        destination.chmod(0o600)
+    identity = immutable_tree_identity if tree else immutable_file_identity
+    observed = identity(destination, label=f"{label} snapshot")
+    fields = _TREE_IDENTITY_FIELDS if tree else _FILE_IDENTITY_FIELDS
+    if any(observed.get(name) != expected.get(name) for name in fields):
         raise RuntimeError(f"{label} changed while it was being snapshotted")
     return observed
 
 
-def _snapshot_grade_tree(
-    source: Path,
-    destination: Path,
-    expected: Mapping[str, Any],
+def _reverify_identity(
+    expected: Any,
     *,
+    tree: bool,
     label: str,
+    malformed: str,
+    changed: str,
+    with_path: bool = False,
 ) -> Mapping[str, Any]:
-    if destination.exists() or destination.is_symlink():
-        raise ValueError(f"{label} snapshot already exists: {destination}")
-    destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    shutil.copytree(source, destination, copy_function=shutil.copyfile)
-    for directory, _, files in os.walk(destination):
-        Path(directory).chmod(0o700)
-        for name in files:
-            (Path(directory) / name).chmod(0o600)
-    observed = immutable_tree_identity(destination, label=f"{label} snapshot")
-    if any(
-        observed.get(name) != expected.get(name)
-        for name in ("file_count", "size_bytes", "sha256")
-    ):
-        raise RuntimeError(f"{label} changed while it was being snapshotted")
+    """Re-hash a recorded identity and fail closed when it no longer matches."""
+
+    if not isinstance(expected, Mapping) or not isinstance(expected.get("path"), str):
+        raise ValueError(malformed)
+    identity = immutable_tree_identity if tree else immutable_file_identity
+    observed = identity(Path(expected["path"]), label=label)
+    fields = _TREE_IDENTITY_FIELDS if tree else _FILE_IDENTITY_FIELDS
+    if with_path:
+        fields = ("path", *fields)
+    if any(observed.get(field) != expected.get(field) for field in fields):
+        raise RuntimeError(changed)
     return observed
 
 
-def _verify_grade_snapshot_identities(
-    inputs: Mapping[str, Any],
-) -> Mapping[str, Any]:
+def _verify_grade_snapshot_identities(inputs: Mapping[str, Any]) -> Mapping[str, Any]:
     observed: dict[str, Any] = {}
-    for name in ("predictions", "dataset", "ground_truth", "qrel_evidence"):
-        expected = inputs.get(name)
-        if expected is None:
+    for name, tree in (
+        ("predictions", False),
+        ("dataset", False),
+        ("ground_truth", False),
+        ("qrel_evidence", False),
+        ("runs", True),
+    ):
+        if inputs.get(name) is None:
             continue
-        if not isinstance(expected, Mapping) or not isinstance(
-            expected.get("path"), str
-        ):
-            raise ValueError(f"grade input identity {name!r} is malformed")
-        identity = immutable_file_identity(
-            Path(expected["path"]), label=f"grade input snapshot {name}"
+        observed[name] = _reverify_identity(
+            inputs[name],
+            tree=tree,
+            label=f"grade input snapshot {name}",
+            malformed=f"grade input identity {name!r} is malformed",
+            changed=f"grade input snapshot {name!r} changed during grading",
         )
-        if any(
-            identity.get(field) != expected.get(field)
-            for field in ("size_bytes", "sha256")
-        ):
-            raise RuntimeError(f"grade input snapshot {name!r} changed during grading")
-        observed[name] = identity
-    expected_runs = inputs.get("runs")
-    if expected_runs is not None:
-        if not isinstance(expected_runs, Mapping) or not isinstance(
-            expected_runs.get("path"), str
-        ):
-            raise ValueError("grade input identity 'runs' is malformed")
-        identity = immutable_tree_identity(
-            Path(expected_runs["path"]), label="grade input snapshot runs"
-        )
-        if any(
-            identity.get(field) != expected_runs.get(field)
-            for field in ("file_count", "size_bytes", "sha256")
-        ):
-            raise RuntimeError("grade input snapshot 'runs' changed during grading")
-        observed["runs"] = identity
     return observed
 
 
@@ -989,33 +917,21 @@ def _verify_browsecomp_plus_grader_assets(
 ) -> Mapping[str, Any]:
     """Re-hash every local grader asset recorded in the grade manifest."""
 
-    observed: dict[str, Any] = {}
-    for name, tree, fields in (
-        ("grader_script", False, ("path", "size_bytes", "sha256")),
-        ("dependency_lock", False, ("path", "size_bytes", "sha256")),
-        (
-            "judge_model",
-            True,
-            ("path", "file_count", "size_bytes", "sha256"),
-        ),
-    ):
-        expected = grader.get(name)
-        if not isinstance(expected, Mapping) or not isinstance(
-            expected.get("path"), str
-        ):
-            raise ValueError(f"BrowseComp-Plus grader identity {name!r} is malformed")
-        label = f"BrowseComp-Plus {name.replace('_', ' ')}"
-        identity = (
-            immutable_tree_identity(Path(expected["path"]), label=label)
-            if tree
-            else immutable_file_identity(Path(expected["path"]), label=label)
+    return {
+        name: _reverify_identity(
+            grader.get(name),
+            tree=tree,
+            label=f"BrowseComp-Plus {name.replace('_', ' ')}",
+            malformed=f"BrowseComp-Plus grader identity {name!r} is malformed",
+            changed=f"BrowseComp-Plus grader asset {name!r} changed during grading",
+            with_path=True,
         )
-        if any(identity.get(field) != expected.get(field) for field in fields):
-            raise RuntimeError(
-                f"BrowseComp-Plus grader asset {name!r} changed during grading"
-            )
-        observed[name] = identity
-    return observed
+        for name, tree in (
+            ("grader_script", False),
+            ("dependency_lock", False),
+            ("judge_model", True),
+        )
+    }
 
 
 def _grade_artifact_inventory(output: Path) -> Mapping[str, Any]:
@@ -1024,6 +940,18 @@ def _grade_artifact_inventory(output: Path) -> Mapping[str, Any]:
     files: list[Mapping[str, Any]] = []
     links: list[Mapping[str, Any]] = []
     evidence = {"manifest.json", "stdout.log", "stderr.log", "result.json"}
+
+    def record_symlink(candidate: Path, relative: Path) -> None:
+        if relative.parts[0] == "inputs":
+            return
+        target = os.fsencode(os.readlink(candidate))
+        links.append(
+            {
+                "path": relative.as_posix(),
+                "target_sha256": hashlib.sha256(target).hexdigest(),
+            }
+        )
+
     output.chmod(0o700)
     for directory, directories, names in os.walk(output, followlinks=False):
         root = Path(directory)
@@ -1034,16 +962,7 @@ def _grade_artifact_inventory(output: Path) -> Mapping[str, Any]:
             status = candidate.lstat()
             if stat.S_ISLNK(status.st_mode):
                 directories.remove(name)
-                if relative.parts[0] != "inputs":
-                    target = os.readlink(candidate)
-                    links.append(
-                        {
-                            "path": relative.as_posix(),
-                            "target_sha256": hashlib.sha256(
-                                os.fsencode(target)
-                            ).hexdigest(),
-                        }
-                    )
+                record_symlink(candidate, relative)
             elif stat.S_ISDIR(status.st_mode):
                 candidate.chmod(0o700)
             else:
@@ -1053,16 +972,7 @@ def _grade_artifact_inventory(output: Path) -> Mapping[str, Any]:
             relative = candidate.relative_to(output)
             status = candidate.lstat()
             if stat.S_ISLNK(status.st_mode):
-                if relative.parts[0] != "inputs":
-                    target = os.readlink(candidate)
-                    links.append(
-                        {
-                            "path": relative.as_posix(),
-                            "target_sha256": hashlib.sha256(
-                                os.fsencode(target)
-                            ).hexdigest(),
-                        }
-                    )
+                record_symlink(candidate, relative)
                 continue
             if not stat.S_ISREG(status.st_mode):
                 raise ValueError(f"grader created a non-regular file: {candidate}")
@@ -1081,12 +991,7 @@ def _grade_artifact_inventory(output: Path) -> Mapping[str, Any]:
             )
     files.sort(key=lambda value: str(value["path"]))
     links.sort(key=lambda value: str(value["path"]))
-    encoded = json.dumps(
-        {"files": files, "links": links},
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
+    encoded = _canonical_json({"files": files, "links": links})
     return {
         "file_count": len(files),
         "symlink_count": len(links),
@@ -1117,35 +1022,32 @@ def _verify_grade_prompt_binding(
     observed = inputs.get("task_prompt_sha256", inputs.get("query_prompt_sha256"))
     count = inputs.get("prediction_count", inputs.get("run_count"))
     if (
-        not isinstance(observed, Mapping)
-        or not observed
+        not observed
         or not isinstance(count, int)
         or isinstance(count, bool)
         or count != len(expected)
-        or set(observed) != set(expected)
-        or any(
-            not isinstance(task_id, str)
-            or not isinstance(prompt_hash, str)
-            or expected.get(task_id) != prompt_hash
-            for task_id, prompt_hash in observed.items()
-        )
+        or not _binds_task_hashes(observed, expected)
     ):
         raise ValueError("official grader inputs do not match evaluation task prompts")
     observed_data = inputs.get("task_data_sha256")
     if observed_data is not None:
         expected_data = {task["id"]: task.get("data_sha256") for task in raw_tasks}
-        if (
-            not isinstance(observed_data, Mapping)
-            or set(observed_data) != set(expected_data)
-            or any(
-                not isinstance(task_id, str)
-                or not isinstance(data_hash, str)
-                or expected_data.get(task_id) != data_hash
-                for task_id, data_hash in observed_data.items()
-            )
-        ):
+        if not _binds_task_hashes(observed_data, expected_data):
             raise ValueError(
                 "official grader task data does not match evaluation task data"
             )
 
 
+def _binds_task_hashes(observed: Any, expected: Mapping[str, Any]) -> bool:
+    """Return whether ``observed`` maps exactly ``expected``'s string hashes."""
+
+    return (
+        isinstance(observed, Mapping)
+        and set(observed) == set(expected)
+        and all(
+            isinstance(task_id, str)
+            and isinstance(task_hash, str)
+            and expected.get(task_id) == task_hash
+            for task_id, task_hash in observed.items()
+        )
+    )

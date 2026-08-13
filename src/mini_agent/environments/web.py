@@ -31,6 +31,15 @@ from ..types import (
     ToolDefinition,
     ToolExecution,
     _json_value,
+    _require_bool,
+    _require_callable,
+    _require_finite_number,
+    _require_int,
+    _require_mapping,
+    _require_no_symlink,
+    _require_positive_int,
+    _require_str,
+    _require_tuple_of,
     strict_json_loads,
 )
 from .base import (
@@ -49,6 +58,7 @@ PYJNIUS_VERSION = "1.6.1"
 HUGGINGFACE_HUB_VERSION = "0.33.4"
 TOKENIZERS_VERSION = "0.21.2"
 MAX_SERPAPI_RESPONSE_BYTES = 4 * 1024 * 1024
+_WEB_FIXED_HINT = "install mini-agent[web-fixed] for Lucene retrieval"
 _TOKEN = re.compile(r"[\w]+", re.UNICODE)
 
 
@@ -95,9 +105,7 @@ class JsonlSearchBackend:
     """Deterministic BM25 for tests and small fixed corpora."""
 
     def __init__(self, corpus: Path) -> None:
-        expanded = corpus.expanduser()
-        if expanded.is_symlink():
-            raise ValueError("corpus must be a regular non-symlink file")
+        expanded = _require_no_symlink(corpus.expanduser(), "corpus")
         self.corpus = expanded.resolve()
         if not self.corpus.is_file():
             raise ValueError(f"corpus does not exist: {self.corpus}")
@@ -115,18 +123,11 @@ class JsonlSearchBackend:
                 item = strict_json_loads(line)
             except (json.JSONDecodeError, ValueError) as exc:
                 raise ValueError(f"corpus line {number} is invalid JSON") from exc
-            if not isinstance(item, Mapping):
-                raise ValueError(f"corpus line {number} must be an object")
-            docid = item.get("docid", item.get("id"))
+            _require_mapping(item, f"corpus line {number}")
+            key = _document_key(item.get("docid", item.get("id")))
             text = item.get("text", item.get("contents"))
-            if (
-                not isinstance(docid, (str, int))
-                or isinstance(docid, bool)
-                or not str(docid)
-                or not isinstance(text, str)
-            ):
+            if key is None or not isinstance(text, str):
                 raise ValueError(f"corpus line {number} requires docid and text")
-            key = str(docid)
             if key in self.documents:
                 raise ValueError(f"duplicate corpus docid {key!r}")
             self.documents[key] = text
@@ -166,13 +167,8 @@ class JsonlSearchBackend:
                 scores.append((score, docid))
         scores.sort(key=lambda item: (-item[0], item[1]))
         return [
-            {
-                "ref": docid,
-                "title": docid,
-                "score": score,
-                "snippet": self.documents[docid],
-            }
-            for score, docid in scores[:k]
+            {"ref": key, "title": key, "score": score, "snippet": self.documents[key]}
+            for score, key in scores[:k]
         ]
 
     def open(self, reference: str) -> Mapping[str, Any] | None:
@@ -198,9 +194,9 @@ class BrowseCompPlusBackend:
         *,
         expected_sha256: str | None = None,
     ) -> None:
-        expanded_index = index_path.expanduser()
-        if expanded_index.is_symlink():
-            raise ValueError("Lucene index root must not be a symlink")
+        expanded_index = _require_no_symlink(
+            index_path.expanduser(), "Lucene index root"
+        )
         self.index_path = expanded_index.resolve()
         if not self.index_path.is_dir():
             raise ValueError(f"Lucene index does not exist: {self.index_path}")
@@ -213,25 +209,19 @@ class BrowseCompPlusBackend:
             raise ValueError(
                 "BrowseComp-Plus index content hash differs from --index-sha256"
             )
-        self.anserini_jar, self.anserini_jar_sha256 = validate_anserini_jar(
-            anserini_jar
-        )
+        jar, jar_sha256 = validate_anserini_jar(anserini_jar)
+        self.anserini_jar, self.anserini_jar_sha256 = jar, jar_sha256
         self.searcher = _lucene_searcher(self.index_path, self.anserini_jar)
 
     def search(self, query: str, k: int = 5) -> Sequence[Mapping[str, Any]]:
         results: list[Mapping[str, Any]] = []
         for hit in self.searcher.search(query, k):
-            docid = getattr(hit, "docid", None)
+            docid = _document_key(getattr(hit, "docid", None))
             score = getattr(hit, "score", None)
             document = getattr(hit, "lucene_document", None)
             if (
-                not isinstance(docid, (str, int))
-                or isinstance(docid, bool)
-                or not str(docid)
-                or isinstance(score, bool)
-                or not isinstance(score, (int, float))
-                or not math.isfinite(float(score))
-                or document is None
+                docid is None or document is None or isinstance(score, bool)
+                or not isinstance(score, (int, float)) or not math.isfinite(score)
                 or not callable(getattr(document, "get", None))
             ):
                 raise InfrastructureError(
@@ -239,12 +229,8 @@ class BrowseCompPlusBackend:
                 )
             raw = _lucene_document(document.get("raw"))
             results.append(
-                {
-                    "ref": str(docid),
-                    "docid": str(docid),
-                    "score": float(score),
-                    "snippet": str(raw["contents"]),
-                }
+                {"ref": docid, "docid": docid, "score": float(score),
+                 "snippet": str(raw["contents"])}
             )
         return results
 
@@ -283,9 +269,7 @@ class BrowseCompPlusBackend:
 
 
 def validate_anserini_jar(path: Path) -> tuple[Path, str]:
-    expanded = path.expanduser()
-    if expanded.is_symlink():
-        raise ValueError("Anserini fat JAR must not be a symlink")
+    expanded = _require_no_symlink(path.expanduser(), "Anserini fat JAR")
     resolved = expanded.resolve()
     if not resolved.is_file():
         raise ValueError(f"Anserini fat JAR does not exist: {resolved}")
@@ -312,9 +296,7 @@ def _lucene_searcher(index_path: Path, anserini_jar: Path) -> Any:
     try:
         import jnius_config  # type: ignore[import-not-found]
     except ImportError as exc:
-        raise RuntimeError(
-            "install mini-agent[web-fixed] for Lucene retrieval"
-        ) from exc
+        raise RuntimeError(_WEB_FIXED_HINT) from exc
     if jnius_config.vm_running:
         configured = {
             Path(item).expanduser().resolve()
@@ -330,9 +312,7 @@ def _lucene_searcher(index_path: Path, anserini_jar: Path) -> Any:
     try:
         from jnius import autoclass  # type: ignore[import-not-found]
     except ImportError as exc:
-        raise RuntimeError(
-            "install mini-agent[web-fixed] for Lucene retrieval"
-        ) from exc
+        raise RuntimeError(_WEB_FIXED_HINT) from exc
     searcher = autoclass("io.anserini.search.SimpleSearcher")(str(index_path))
     searcher.set_bm25(0.9, 0.4)
     return searcher
@@ -347,9 +327,8 @@ def _lucene_document(value: Any) -> Mapping[str, Any]:
         raise InfrastructureError(
             "BrowseComp-Plus index document has invalid JSON"
         ) from exc
-    if not isinstance(document, Mapping) or not isinstance(
-        document.get("contents"), str
-    ):
+    contents = document.get("contents") if isinstance(document, Mapping) else None
+    if not isinstance(contents, str):
         raise InfrastructureError("BrowseComp-Plus index document has no contents")
     return document
 
@@ -366,19 +345,11 @@ class SerpAPIBackend:
         max_response_bytes: int = MAX_SERPAPI_RESPONSE_BYTES,
         page_reader: PageReader | None = None,
     ) -> None:
-        if (
-            isinstance(timeout_seconds, bool)
-            or not isinstance(timeout_seconds, (int, float))
-            or not math.isfinite(float(timeout_seconds))
-            or timeout_seconds <= 0
-            or not isinstance(max_page_bytes, int)
-            or isinstance(max_page_bytes, bool)
-            or max_page_bytes < 1
-            or not isinstance(max_response_bytes, int)
-            or isinstance(max_response_bytes, bool)
-            or max_response_bytes < 1
-        ):
-            raise ValueError("SerpAPI timeout and page-byte limits must be positive")
+        _require_finite_number(
+            timeout_seconds, "SerpAPI timeout_seconds", exclusive_minimum=0
+        )
+        _require_positive_int(max_page_bytes, "SerpAPI max_page_bytes")
+        _require_positive_int(max_response_bytes, "SerpAPI max_response_bytes")
         resolved_key = (
             api_key if api_key is not None else os.environ.get("SERPAPI_API_KEY", "")
         )
@@ -393,34 +364,21 @@ class SerpAPIBackend:
         self.max_page_bytes = max_page_bytes
         self.max_response_bytes = max_response_bytes
         self.page_reader = page_reader or HttpPageReader(
-            timeout_seconds=timeout_seconds,
-            max_page_bytes=max_page_bytes,
+            timeout_seconds=timeout_seconds, max_page_bytes=max_page_bytes
         )
         self._urls: set[str] = set()
 
     async def search(self, query: str, k: int = 5) -> Sequence[Mapping[str, Any]]:
-        if not isinstance(query, str) or not query.strip():
-            raise ProtocolError("SerpAPI query must be non-empty")
-        if not isinstance(k, int) or isinstance(k, bool) or k < 1:
-            raise ProtocolError("SerpAPI result count must be positive")
+        _require_str(query, "SerpAPI query", error=ProtocolError)
+        _require_positive_int(k, "SerpAPI result count", error=ProtocolError)
         try:
             async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                params = {"engine": "google", "q": query, "api_key": self.api_key}
                 async with client.stream(
-                    "GET",
-                    "https://serpapi.com/search.json",
-                    params={
-                        "engine": "google",
-                        "q": query,
-                        "api_key": self.api_key,
-                    },
+                    "GET", "https://serpapi.com/search.json", params=params
                 ) as response:
-                    if not 200 <= response.status_code < 300:
-                        raise InfrastructureError(
-                            f"SerpAPI returned HTTP {response.status_code}"
-                        )
-                    content = await read_bounded_body(
-                        response, self.max_response_bytes
-                    )
+                    _success_status(response.status_code, "SerpAPI")
+                    content = await read_bounded_body(response, self.max_response_bytes)
         except InfrastructureError:
             raise
         except ResponseBodyTooLarge as exc:
@@ -433,14 +391,12 @@ class SerpAPIBackend:
             payload = strict_json_loads(content)
         except ValueError as exc:
             raise InfrastructureError("SerpAPI returned invalid JSON") from exc
-        if not isinstance(payload, Mapping):
-            raise InfrastructureError("SerpAPI response must be an object")
+        _require_mapping(payload, "SerpAPI response", error=InfrastructureError)
         error = payload.get("error")
-        if error is not None:
-            if not isinstance(error, str):
-                raise InfrastructureError("SerpAPI returned a malformed API error")
-            if error:
-                raise InfrastructureError("SerpAPI reported an API error")
+        if error is not None and _require_str(
+            error, "SerpAPI API error", non_empty=False, error=InfrastructureError
+        ):
+            raise InfrastructureError("SerpAPI reported an API error")
         search_metadata = payload.get("search_metadata")
         if not isinstance(search_metadata, Mapping):
             raise InfrastructureError("SerpAPI returned malformed search_metadata")
@@ -463,41 +419,21 @@ class SerpAPIBackend:
             snippet = item.get("snippet", "")
             if not isinstance(title, str) or not isinstance(snippet, str):
                 raise InfrastructureError("SerpAPI result text fields must be strings")
-            results.append(
-                {
-                    "ref": url,
-                    "url": url,
-                    "title": title,
-                    "snippet": snippet,
-                }
-            )
+            results.append({"ref": url, "url": url, "title": title, "snippet": snippet})
             if len(results) == k:
                 break
         return results
 
     async def open(self, reference: str) -> Mapping[str, Any] | None:
         if reference not in self._urls:
-            raise ProtocolError(
-                "open accepts only a URL returned by this browser session"
-            )
+            raise ProtocolError("open accepts only a URL from this browser session")
         return await self.page_reader.open(reference)
 
     def export_reference_state(self) -> tuple[str, ...]:
         return tuple(sorted(self._urls))
 
     def replace_reference_state(self, references: Sequence[str]) -> None:
-        if not isinstance(references, Sequence) or isinstance(
-            references, (str, bytes)
-        ):
-            raise ProtocolError("browser backend reference state must be a sequence")
-        replacement: set[str] = set()
-        for reference in references:
-            if not isinstance(reference, str) or not reference:
-                raise ProtocolError(
-                    "browser backend reference state must contain non-empty strings"
-                )
-            replacement.add(reference)
-        self._urls = replacement
+        self._urls = set(_validated_reference_state(references))
 
     async def close(self) -> None:
         await self.page_reader.close()
@@ -521,16 +457,8 @@ class HttpPageReader:
         timeout_seconds: float = 30,
         max_page_bytes: int = 2 * 1024 * 1024,
     ) -> None:
-        if (
-            isinstance(timeout_seconds, bool)
-            or not isinstance(timeout_seconds, (int, float))
-            or not math.isfinite(float(timeout_seconds))
-            or timeout_seconds <= 0
-            or not isinstance(max_page_bytes, int)
-            or isinstance(max_page_bytes, bool)
-            or max_page_bytes < 1
-        ):
-            raise ValueError("HTTP timeout and page-byte limits must be positive")
+        _require_finite_number(timeout_seconds, "timeout_seconds", exclusive_minimum=0)
+        _require_positive_int(max_page_bytes, "max_page_bytes")
         self.timeout_seconds = timeout_seconds
         self.max_page_bytes = max_page_bytes
 
@@ -562,18 +490,8 @@ class HttpPageReader:
                                     "page exceeded the redirect limit"
                                 )
                             continue
-                        status = response.status_code
-                        if (
-                            not isinstance(status, int)
-                            or isinstance(status, bool)
-                            or not 200 <= status < 300
-                        ):
-                            raise InfrastructureError(
-                                f"page returned HTTP {status}"
-                            )
-                        body = await read_bounded_body(
-                            response, self.max_page_bytes
-                        )
+                        _success_status(response.status_code, "page")
+                        body = await read_bounded_body(response, self.max_page_bytes)
                         encoding = response.encoding or "utf-8"
                         content_type = response.headers.get("content-type", "")
                         final_url = str(response.url)
@@ -583,9 +501,7 @@ class HttpPageReader:
         except (InfrastructureError, ProtocolError):
             raise
         except ResponseBodyTooLarge as exc:
-            raise InfrastructureError(
-                "page exceeds the configured byte limit"
-            ) from exc
+            raise InfrastructureError("page exceeds the configured byte limit") from exc
         except (httpx.HTTPError, TypeError, ValueError) as exc:
             raise InfrastructureError("page request failed") from exc
         try:
@@ -599,10 +515,7 @@ class HttpPageReader:
         return None
 
     def provenance(self) -> Mapping[str, Any]:
-        return {
-            "reader": "httpx",
-            "max_page_bytes": self.max_page_bytes,
-        }
+        return {"reader": "httpx", "max_page_bytes": self.max_page_bytes}
 
 
 class PlaywrightPageReader:
@@ -614,19 +527,8 @@ class PlaywrightPageReader:
         timeout_seconds: float = 30,
         max_page_chars: int = 2 * 1024 * 1024,
     ) -> None:
-        if (
-            isinstance(timeout_seconds, bool)
-            or not isinstance(timeout_seconds, (int, float))
-            or not math.isfinite(float(timeout_seconds))
-            or timeout_seconds <= 0
-        ):
-            raise ValueError("timeout_seconds must be finite and positive")
-        if (
-            not isinstance(max_page_chars, int)
-            or isinstance(max_page_chars, bool)
-            or max_page_chars < 1
-        ):
-            raise ValueError("max_page_chars must be positive")
+        _require_finite_number(timeout_seconds, "timeout_seconds", exclusive_minimum=0)
+        _require_positive_int(max_page_chars, "max_page_chars")
         self.timeout_seconds = timeout_seconds
         self.max_page_chars = max_page_chars
         self._playwright: Any = None
@@ -671,15 +573,7 @@ class PlaywrightPageReader:
         except Exception as exc:
             raise InfrastructureError("Playwright page request failed") from exc
         if response is not None:
-            status = getattr(response, "status", None)
-            if (
-                not isinstance(status, int)
-                or isinstance(status, bool)
-                or not 200 <= status < 300
-            ):
-                raise InfrastructureError(
-                    "Playwright page returned an unsuccessful HTTP status"
-                )
+            _success_status(getattr(response, "status", None), "Playwright page")
         try:
             await _validate_public_url(page.url)
         except ProtocolError as exc:
@@ -706,20 +600,13 @@ class PlaywrightPageReader:
             or len(extracted["text"]) > self.max_page_chars
         ):
             raise InfrastructureError("Playwright returned malformed page text")
-        return {
-            "ref": url,
-            "url": page.url,
-            "title": extracted["title"],
-            "text": extracted["text"],
-        }
+        return {"ref": url, "url": page.url, "title": extracted["title"],
+                "text": extracted["text"]}
 
     async def close(self) -> None:
         error: BaseException | None = None
-        for attribute, method in (
-            ("_context", "close"),
-            ("_browser", "close"),
-            ("_playwright", "stop"),
-        ):
+        layers = (("_context", "close"), ("_browser", "close"), ("_playwright", "stop"))
+        for attribute, method in layers:
             resource = getattr(self, attribute)
             if resource is None:
                 continue
@@ -756,13 +643,10 @@ class BrowserSessionState:
     references: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        if not isinstance(self.backend_identity, str) or not self.backend_identity:
-            raise ValueError("browser state backend identity must be non-empty")
-        if not isinstance(self.references, tuple) or not all(
-            isinstance(reference, str) and reference
-            for reference in self.references
-        ):
-            raise ValueError("browser state references must be non-empty strings")
+        _require_str(self.backend_identity, "browser state backend identity")
+        _require_tuple_of(self.references, str, "browser state references")
+        for reference in self.references:
+            _require_str(reference, "browser state references")
 
 
 class BrowserEnvironment(BaseEnvironment):
@@ -778,24 +662,14 @@ class BrowserEnvironment(BaseEnvironment):
         tokenizer: SnippetTokenizer | None = None,
         allow_open: bool = True,
     ) -> None:
-        if not isinstance(top_k, int) or isinstance(top_k, bool) or top_k < 1:
-            raise ValueError("top_k must be a positive integer")
-        if max_observation_chars is not None and (
-            not isinstance(max_observation_chars, int)
-            or isinstance(max_observation_chars, bool)
-            or max_observation_chars < 128
-        ):
-            raise ValueError("max_observation_chars must be None or at least 128")
+        _require_positive_int(top_k, "top_k")
+        if max_observation_chars is not None:
+            _require_int(max_observation_chars, "max_observation_chars", minimum=128)
         if (snippet_tokens is None) != (tokenizer is None):
             raise ValueError("snippet_tokens and tokenizer must be provided together")
-        if snippet_tokens is not None and (
-            not isinstance(snippet_tokens, int)
-            or isinstance(snippet_tokens, bool)
-            or snippet_tokens < 1
-        ):
-            raise ValueError("snippet_tokens must be a positive integer")
-        if not isinstance(allow_open, bool):
-            raise ValueError("allow_open must be boolean")
+        if snippet_tokens is not None:
+            _require_positive_int(snippet_tokens, "snippet_tokens")
+        _require_bool(allow_open, "allow_open")
         for name in (("search", "open") if allow_open else ("search",)):
             if not callable(getattr(backend, name, None)):
                 raise ValueError(f"search backend must expose {name}")
@@ -838,9 +712,7 @@ class BrowserEnvironment(BaseEnvironment):
                 input_schema={
                     "type": "object",
                     "properties": properties,
-                    "required": (
-                        ["action"] if self.allow_open else ["action", "query"]
-                    ),
+                    "required": ["action"] if self.allow_open else ["action", "query"],
                     "additionalProperties": False,
                 },
             ),
@@ -852,13 +724,18 @@ class BrowserEnvironment(BaseEnvironment):
         if call.name != "browser":
             raise InvalidAction(f"unsupported web tool {call.name!r}")
         action = call.arguments.get("action")
+        if action not in ("search", "open"):
+            raise InvalidAction(f"unsupported browser action {action!r}")
+        if action == "open" and not self.allow_open:
+            raise InvalidAction("browser open is not enabled")
+        wanted, refused = ("query", "ref") if action == "search" else ("ref", "query")
+        argument = _nonempty(call.arguments.get(wanted), f"browser {action} {wanted}")
+        if refused in call.arguments:
+            raise InvalidAction(f"browser {action} does not accept {refused}")
         if action == "search":
-            query = _nonempty(call.arguments.get("query"), "browser search query")
-            if "ref" in call.arguments:
-                raise InvalidAction("browser search does not accept ref")
             self._counts["search"] += 1
             try:
-                results = await _await(self.backend.search(query, self.top_k))
+                results = await _await(self.backend.search(argument, self.top_k))
             except ProtocolError as exc:
                 raise InfrastructureError("search backend failed") from exc
             if not isinstance(results, Sequence) or isinstance(results, (str, bytes)):
@@ -868,18 +745,12 @@ class BrowserEnvironment(BaseEnvironment):
             rendered: list[dict[str, Any]] = []
             references: set[str] = set()
             for result in results[: self.top_k]:
-                if not isinstance(result, Mapping):
-                    raise InfrastructureError("search backend results must be objects")
-                raw_reference = result.get("ref", result.get("url"))
-                if (
-                    not isinstance(raw_reference, (str, int))
-                    or isinstance(raw_reference, bool)
-                    or not str(raw_reference)
-                ):
+                _require_mapping(result, "search result", error=InfrastructureError)
+                reference = _document_key(result.get("ref", result.get("url")))
+                if reference is None:
                     raise InfrastructureError(
                         "search backend returned a result without ref"
                     )
-                reference = str(raw_reference)
                 references.add(reference)
                 item = dict(result)
                 item["ref"] = reference
@@ -889,11 +760,11 @@ class BrowserEnvironment(BaseEnvironment):
                     # model-facing field when document opening is disabled.
                     item.pop("ref")
                 if "snippet" in item:
-                    if not isinstance(item["snippet"], str):
-                        raise InfrastructureError(
-                            "search result snippet must be a string"
-                        )
-                    item["snippet"] = self._truncate(item["snippet"])
+                    snippet = _require_str(
+                        item["snippet"], "search result snippet",
+                        non_empty=False, error=InfrastructureError,
+                    )
+                    item["snippet"] = self._truncate(snippet)
                 rendered.append(item)
             output = self._render(rendered)
             self._references.update(references)
@@ -902,35 +773,25 @@ class BrowserEnvironment(BaseEnvironment):
                 metadata={
                     "action": "search",
                     "result_count": len(rendered),
-                    "query_sha256": hashlib.sha256(query.encode()).hexdigest(),
+                    "query_sha256": hashlib.sha256(argument.encode()).hexdigest(),
                 },
             )
-        if action == "open":
-            if not self.allow_open:
-                raise InvalidAction("browser open is not enabled")
-            reference = _nonempty(call.arguments.get("ref"), "browser open ref")
-            if "query" in call.arguments:
-                raise InvalidAction("browser open does not accept query")
-            if reference not in self._references:
-                raise InvalidAction(
-                    "browser open ref was not returned by this session"
-                )
-            self._counts["open"] += 1
-            try:
-                document = await _await(self.backend.open(reference))
-            except ProtocolError as exc:
-                raise InfrastructureError("open backend failed") from exc
-            if document is None:
-                return ToolExecution(
-                    output=json.dumps({"error": "result is unavailable"}), is_error=True
-                )
-            if not isinstance(document, Mapping):
-                raise InfrastructureError("open backend result must be an object")
+        if argument not in self._references:
+            raise InvalidAction("browser open ref was not returned by this session")
+        self._counts["open"] += 1
+        try:
+            document = await _await(self.backend.open(argument))
+        except ProtocolError as exc:
+            raise InfrastructureError("open backend failed") from exc
+        if document is None:
             return ToolExecution(
-                output=self._render(dict(document)),
-                metadata={"action": "open", "ref": reference},
+                output=json.dumps({"error": "result is unavailable"}), is_error=True
             )
-        raise InvalidAction(f"unsupported browser action {action!r}")
+        _require_mapping(document, "open backend result", error=InfrastructureError)
+        return ToolExecution(
+            output=self._render(dict(document)),
+            metadata={"action": "open", "ref": argument},
+        )
 
     def accounting(self) -> Mapping[str, Any]:
         return {
@@ -970,9 +831,7 @@ class BrowserEnvironment(BaseEnvironment):
             return None
         canonical = json.dumps(
             _json_value(dict(hook()), "browser backend provenance"),
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
+            sort_keys=True, separators=(",", ":"), allow_nan=False,
         )
         digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
         return f"browser-backend:{digest}"
@@ -989,19 +848,6 @@ class BrowserEnvironment(BaseEnvironment):
             )
         return cast(SearchBackendStateTransfer, self.backend)
 
-    @staticmethod
-    def _validated_reference_state(value: Any) -> tuple[str, ...]:
-        if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
-            raise ProtocolError("browser backend reference state must be a sequence")
-        references = tuple(value)
-        if not all(
-            isinstance(reference, str) and reference for reference in references
-        ):
-            raise ProtocolError(
-                "browser backend reference state must contain non-empty strings"
-            )
-        return tuple(sorted(set(references)))
-
     async def export_state(self) -> BrowserSessionState | None:
         if self._closed:
             raise RuntimeError("browser environment is closed")
@@ -1017,15 +863,13 @@ class BrowserEnvironment(BaseEnvironment):
             raise ProtocolError("browser state has an incompatible type")
         identity = self._backend_identity()
         if identity is None or identity != state.backend_identity:
-            raise ProtocolError(
-                "browser state came from a different search backend"
-            )
+            raise ProtocolError("browser state came from a different search backend")
         transfer = self._backend_state_transfer()
         if transfer is None:
             self._references.update(state.references)
             return
 
-        backend_before = self._validated_reference_state(
+        backend_before = _validated_reference_state(
             await _await(transfer.export_reference_state())
         )
         wrapper_before = set(self._references)
@@ -1049,31 +893,25 @@ class BrowserEnvironment(BaseEnvironment):
             return
         close = getattr(self.backend, "close", None)
         if close is not None:
-            if not callable(close):
-                raise RuntimeError("search backend close must be callable")
+            _require_callable(close, "search backend close", error=RuntimeError)
             await _await(close())
         self._closed = True
 
     def _truncate(self, value: str) -> str:
         if self.snippet_tokens is not None:
             assert self.tokenizer is not None
-            tokens = list(
-                self.tokenizer.encode(
-                    value,
-                    add_special_tokens=False,
-                )
-            )
+            tokens = list(self.tokenizer.encode(value, add_special_tokens=False))
             if len(tokens) > self.snippet_tokens:
-                value = self.tokenizer.decode(
-                    tokens[: self.snippet_tokens], skip_special_tokens=True
+                value = _require_str(
+                    self.tokenizer.decode(
+                        tokens[: self.snippet_tokens], skip_special_tokens=True
+                    ),
+                    "tokenizer decode result",
+                    non_empty=False,
+                    error=InfrastructureError,
                 )
-                if not isinstance(value, str):
-                    raise InfrastructureError("tokenizer decode must return a string")
-        return (
-            value
-            if self.max_observation_chars is None
-            else value[: self.max_observation_chars]
-        )
+        limit = self.max_observation_chars
+        return value if limit is None else value[:limit]
 
     def _render(self, value: Any) -> str:
         try:
@@ -1083,41 +921,23 @@ class BrowserEnvironment(BaseEnvironment):
             )
         except (TypeError, ValueError) as exc:
             raise InfrastructureError("browser backend returned non-JSON data") from exc
-        if (
-            self.max_observation_chars is None
-            or len(rendered) <= self.max_observation_chars
-        ):
+        limit = self.max_observation_chars
+        if limit is None or len(rendered) <= limit:
             return rendered
-        max_observation_chars = self.max_observation_chars
         digest = hashlib.sha256(rendered.encode("utf-8")).hexdigest()
-        low = 0
-        high = max_observation_chars
+
+        def truncated(size: int) -> str:
+            payload = {"preview": rendered[:size], "sha256": digest, "truncated": True}
+            return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+        low, high = 0, limit
         while low < high:
             middle = (low + high + 1) // 2
-            candidate = json.dumps(
-                {
-                    "preview": rendered[:middle],
-                    "sha256": digest,
-                    "truncated": True,
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-            )
-            if len(candidate) <= max_observation_chars:
+            if len(truncated(middle)) <= limit:
                 low = middle
             else:
                 high = middle - 1
-        return json.dumps(
-            {
-                "preview": rendered[:low],
-                "sha256": digest,
-                "truncated": True,
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-        )
-
-
+        return truncated(low)
 
 
 async def _await(value: Any) -> Any:
@@ -1125,11 +945,39 @@ async def _await(value: Any) -> Any:
 
 
 def _nonempty(value: Any, name: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise InvalidAction(f"{name} must be a non-empty string")
-    if len(value.encode("utf-8")) > 16 * 1024:
+    text = _require_str(value, name, error=InvalidAction)
+    if len(text.encode("utf-8")) > 16 * 1024:
         raise InvalidAction(f"{name} exceeds 16384 bytes")
+    return text
+
+
+def _document_key(value: Any) -> str | None:
+    """Return a docid-like value as a non-empty string, or ``None`` if unusable."""
+
+    if not isinstance(value, (str, int)) or isinstance(value, bool):
+        return None
+    return str(value) or None
+
+
+def _success_status(value: Any, label: str) -> int:
+    """Return a 2xx HTTP status, rejecting anything else as infrastructure loss."""
+
+    if not isinstance(value, int) or isinstance(value, bool) or not 200 <= value < 300:
+        raise InfrastructureError(f"{label} returned unsuccessful HTTP status {value}")
     return value
+
+
+def _validated_reference_state(value: Any) -> tuple[str, ...]:
+    """Return sorted unique references from an untrusted backend state sequence."""
+
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        raise ProtocolError("browser backend reference state must be a sequence")
+    references = tuple(value)
+    if not all(isinstance(reference, str) and reference for reference in references):
+        raise ProtocolError(
+            "browser backend reference state must contain non-empty strings"
+        )
+    return tuple(sorted(set(references)))
 
 
 class _TextExtractor(HTMLParser):
@@ -1165,18 +1013,15 @@ def _html_to_text(value: str) -> str:
 
 async def _validate_public_url(value: str) -> None:
     if (
-        not isinstance(value, str)
-        or not value
+        not isinstance(value, str) or not value
         or len(value.encode("utf-8")) > 16 * 1024
         or any(ord(character) < 32 for character in value)
     ):
         raise ProtocolError("browser URL is invalid or too long")
     parsed = urlsplit(value)
     if (
-        parsed.scheme not in {"http", "https"}
-        or not parsed.hostname
-        or parsed.username is not None
-        or parsed.password is not None
+        parsed.scheme not in {"http", "https"} or not parsed.hostname
+        or parsed.username is not None or parsed.password is not None
     ):
         raise ProtocolError("browser URLs must be public HTTP(S) URLs")
     hostname = parsed.hostname.casefold().rstrip(".")
@@ -1188,9 +1033,7 @@ async def _validate_public_url(value: str) -> None:
         raise ProtocolError("browser URL has an invalid port") from exc
     if explicit_port is not None and explicit_port < 1:
         raise ProtocolError("browser URL has an invalid port")
-    port = explicit_port if explicit_port is not None else (
-        443 if parsed.scheme == "https" else 80
-    )
+    port = explicit_port or (443 if parsed.scheme == "https" else 80)
     try:
         records = await asyncio.to_thread(
             socket.getaddrinfo,
@@ -1208,9 +1051,7 @@ async def _validate_public_url(value: str) -> None:
 
 
 def directory_sha256(path: Path) -> str:
-    expanded = path.expanduser()
-    if expanded.is_symlink():
-        raise ValueError("Lucene index root must not be a symlink")
+    expanded = _require_no_symlink(path.expanduser(), "Lucene index root")
     path = expanded.resolve()
     if not path.is_dir():
         raise ValueError(f"Lucene index is not a directory: {path}")
@@ -1231,41 +1072,26 @@ def directory_sha256(path: Path) -> str:
         digest.update(len(relative).to_bytes(8, "big"))
         digest.update(relative)
         with item.open("rb") as stream:
-            before = os.fstat(stream.fileno())
-            digest.update(before.st_size.to_bytes(8, "big"))
+            before = _file_identity(os.fstat(stream.fileno()))
+            digest.update(before[2].to_bytes(8, "big"))
             while chunk := stream.read(1024 * 1024):
                 digest.update(chunk)
-            after = os.fstat(stream.fileno())
-        if (
-            before.st_dev,
-            before.st_ino,
-            before.st_size,
-            before.st_mtime_ns,
-        ) != (
-            after.st_dev,
-            after.st_ino,
-            after.st_size,
-            after.st_mtime_ns,
-        ):
+            after = _file_identity(os.fstat(stream.fileno()))
+        if before != after:
             raise RuntimeError(f"Lucene index changed while hashing: {item}")
-        identities[item] = (
-            after.st_dev,
-            after.st_ino,
-            after.st_size,
-            after.st_mtime_ns,
-        )
+        identities[item] = after
     if sorted(path.rglob("*")) != entries:
         raise RuntimeError("Lucene index changed while hashing")
     for item, identity in identities.items():
-        current = item.stat()
-        if identity != (
-            current.st_dev,
-            current.st_ino,
-            current.st_size,
-            current.st_mtime_ns,
-        ):
+        if identity != _file_identity(item.stat()):
             raise RuntimeError(f"Lucene index changed while hashing: {item}")
     return digest.hexdigest()
+
+
+def _file_identity(status: os.stat_result) -> tuple[int, int, int, int]:
+    """Return the device, inode, size, and mtime that must not move mid-hash."""
+
+    return (status.st_dev, status.st_ino, status.st_size, status.st_mtime_ns)
 
 
 def _file_sha256(path: Path) -> str:

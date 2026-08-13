@@ -14,18 +14,16 @@ import shutil
 import uuid
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Awaitable,
-    Callable,
-    Mapping,
-    NoReturn,
-    Sequence,
-)
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping, Sequence
 
 from ..environments.base import complete_in_thread
-from ..runtime import BudgetLedger, RunContext, TraceRecorder, redact_artifact
+from ..runtime import (
+    BudgetLedger,
+    RunContext,
+    TraceRecorder,
+    _sync_directory,
+    redact_artifact,
+)
 from ..specs import AgentSpecV1
 
 if TYPE_CHECKING:
@@ -34,7 +32,13 @@ from ..types import (
     BudgetLimits,
     Usage,
     _json_mapping,
-    _require_utf8,
+    _require_bool,
+    _require_finite_number,
+    _require_int,
+    _require_mapping,
+    _require_positive_int,
+    _require_text,
+    _require_tuple_of,
     strict_json_loads,
 )
 
@@ -46,17 +50,10 @@ class BenchmarkTask:
     data: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
-        if (
-            not isinstance(self.task_id, str)
-            or not self.task_id
-            or not isinstance(self.prompt, str)
-            or not self.prompt.strip()
-        ):
-            raise ValueError("benchmark task id and prompt must be non-empty")
+        _require_text(self.task_id, "benchmark task id")
+        _require_text(self.prompt, "benchmark task prompt")
         if "\x00" in self.task_id:
             raise ValueError("benchmark task id cannot contain NUL")
-        _require_utf8(self.task_id, "benchmark task id")
-        _require_utf8(self.prompt, "benchmark task prompt")
         object.__setattr__(
             self, "data", _json_mapping(self.data, "benchmark task data")
         )
@@ -72,31 +69,18 @@ class EvaluationOutcome:
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if not isinstance(self.task_id, str) or not self.task_id:
-            raise ValueError("evaluation task id must be non-empty")
+        _require_text(self.task_id, "evaluation task id")
         # "blocked" is reserved in the mini-agent-eval-v2 summary shape;
         # no shipped worker currently produces it.
         if self.status not in {"completed", "failed", "blocked"}:
             raise ValueError(f"invalid evaluation status {self.status!r}")
-        if not isinstance(self.answer, str):
-            raise ValueError("evaluation answer must be a string")
-        if self.score is not None and (
-            isinstance(self.score, bool)
-            or not isinstance(self.score, (int, float))
-            or not math.isfinite(float(self.score))
-        ):
-            raise ValueError("evaluation score must be finite or None")
-        if self.error is not None and not isinstance(self.error, str):
-            raise ValueError("evaluation error must be a string or None")
-        _require_utf8(self.task_id, "evaluation task id")
-        _require_utf8(self.status, "evaluation status")
-        _require_utf8(self.answer, "evaluation answer")
+        _require_text(self.answer, "evaluation answer", non_empty=False)
+        if self.score is not None:
+            _require_finite_number(self.score, "evaluation score")
         if self.error is not None:
-            _require_utf8(self.error, "evaluation error")
+            _require_text(self.error, "evaluation error", non_empty=False)
         object.__setattr__(
-            self,
-            "metadata",
-            _json_mapping(self.metadata, "evaluation metadata"),
+            self, "metadata", _json_mapping(self.metadata, "evaluation metadata")
         )
 
 
@@ -118,16 +102,8 @@ def harness_identity() -> Mapping[str, Any]:
     )
     for path in candidates:
         identity = immutable_file_identity(path, label="harness source")
-        files.append(
-            {
-                "path": path.relative_to(package).as_posix(),
-                "size_bytes": identity["size_bytes"],
-                "sha256": identity["sha256"],
-            }
-        )
-    encoded = json.dumps(
-        files, sort_keys=True, separators=(",", ":"), allow_nan=False
-    ).encode("utf-8")
+        files.append(_identity_entry(identity, path.relative_to(package).as_posix()))
+    encoded = _canonical_bytes(files)
     packages: dict[str, str | None] = {}
     for name in (
         "mini-agent",
@@ -171,17 +147,7 @@ def immutable_file_identity(path: Path, *, label: str = "asset") -> Mapping[str,
         for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b""):
             digest.update(chunk)
     after = resolved.stat()
-    if (
-        before.st_dev,
-        before.st_ino,
-        before.st_size,
-        before.st_mtime_ns,
-    ) != (
-        after.st_dev,
-        after.st_ino,
-        after.st_size,
-        after.st_mtime_ns,
-    ):
+    if _stat_key(before) != _stat_key(after):
         raise RuntimeError(f"{label} changed while hashing: {resolved}")
     return {
         "path": str(resolved),
@@ -219,33 +185,17 @@ def immutable_tree_identity(
             raise ValueError(f"{label} contains a non-regular file: {candidate}")
         identity = immutable_file_identity(candidate, label=label)
         total += int(identity["size_bytes"])
-        files.append(
-            {
-                "path": candidate.relative_to(root).as_posix(),
-                "size_bytes": identity["size_bytes"],
-                "sha256": identity["sha256"],
-            }
-        )
+        files.append(_identity_entry(identity, candidate.relative_to(root).as_posix()))
     after_paths = tuple(
-        item.relative_to(root).as_posix()
-        for item in sorted(
-            root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()
-        )
+        sorted(item.relative_to(root).as_posix() for item in root.rglob("*"))
     )
     after = root.stat()
     if (
-        before.st_dev,
-        before.st_ino,
-        before.st_mtime_ns,
-    ) != (
-        after.st_dev,
-        after.st_ino,
-        after.st_mtime_ns,
-    ) or observed_paths != after_paths:
+        _stat_key(before, size=False) != _stat_key(after, size=False)
+        or observed_paths != after_paths
+    ):
         raise RuntimeError(f"{label} changed while hashing: {root}")
-    encoded = json.dumps(
-        files, sort_keys=True, separators=(",", ":"), allow_nan=False
-    ).encode("utf-8")
+    encoded = _canonical_bytes(files)
     return {
         "path": str(root),
         "file_count": len(files),
@@ -271,8 +221,7 @@ def machine_image_identity(path: Path, *, label: str) -> Mapping[str, Any]:
         provenance = strict_json_loads(content)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"invalid {label} provenance JSON: {sidecar}") from exc
-    if not isinstance(provenance, Mapping):
-        raise ValueError(f"{label} provenance must be an object")
+    _require_mapping(provenance, f"{label} provenance")
     if provenance.get("final_image_sha256") != identity["sha256"]:
         raise ValueError(f"{label} provenance does not match the image: {sidecar}")
     identity["provenance"] = sidecar_identity
@@ -297,12 +246,7 @@ class EvaluationRunner:
     ) -> None:
         if not isinstance(benchmark, str) or not benchmark.strip() or not tasks:
             raise ValueError("benchmark and tasks must be non-empty")
-        if (
-            not isinstance(max_workers, int)
-            or isinstance(max_workers, bool)
-            or max_workers < 1
-        ):
-            raise ValueError("max_workers must be a positive integer")
+        _require_positive_int(max_workers, "max_workers")
         ids = [task.task_id for task in tasks]
         if len(ids) != len(set(ids)):
             raise ValueError("benchmark task ids must be unique")
@@ -310,12 +254,8 @@ class EvaluationRunner:
             raise ValueError("evaluation output must be a Path")
         if not isinstance(limits, BudgetLimits):
             raise ValueError("evaluation limits must be BudgetLimits")
-        if not isinstance(capture_content, bool):
-            raise ValueError("capture_content must be a boolean")
-        if not isinstance(secrets, tuple) or not all(
-            isinstance(value, str) for value in secrets
-        ):
-            raise ValueError("evaluation secrets must be a tuple of strings")
+        _require_bool(capture_content, "capture_content")
+        _require_tuple_of(secrets, str, "evaluation secrets")
         self.benchmark = benchmark
         self.tasks = tuple(tasks)
         self.output = output.expanduser().resolve()
@@ -358,13 +298,11 @@ class EvaluationRunner:
                     return
                 self._instances_root()
                 directory = self._instance(task.task_id)
-                if directory.is_symlink():
+                if directory.is_symlink() or (
+                    directory.exists() and not directory.is_dir()
+                ):
                     raise ValueError(
-                        f"benchmark instance path is a symlink: {directory}"
-                    )
-                if directory.exists() and not directory.is_dir():
-                    raise ValueError(
-                        f"benchmark instance path is not a directory: {directory}"
+                        f"benchmark instance path must be a directory: {directory}"
                     )
                 if directory.exists() and not self._valid_result(task.task_id):
                     self._validate_instance_path(directory)
@@ -390,13 +328,10 @@ class EvaluationRunner:
                         status="failed",
                         error=f"{type(exc).__name__}: {exc}",
                     )
-                metadata = {
-                    **dict(outcome.metadata),
-                    "accounting": ledger.snapshot(
-                        prefix=task_agent_prefix(task.task_id)
-                    ),
-                }
-                outcome = replace(outcome, metadata=metadata)
+                accounting = ledger.snapshot(prefix=task_agent_prefix(task.task_id))
+                outcome = replace(
+                    outcome, metadata={**outcome.metadata, "accounting": accounting}
+                )
                 redacted_outcome = redact_artifact(asdict(outcome), self.secrets)
                 atomic_json(directory / "result.json", redacted_outcome)
                 await trace.emit(
@@ -476,12 +411,7 @@ class EvaluationRunner:
                     "id": task.task_id,
                     "prompt_sha256": hashlib.sha256(task.prompt.encode()).hexdigest(),
                     "data_sha256": hashlib.sha256(
-                        json.dumps(
-                            task.data,
-                            sort_keys=True,
-                            separators=(",", ":"),
-                            allow_nan=False,
-                        ).encode("utf-8")
+                        _canonical_bytes(task.data)
                     ).hexdigest(),
                 }
                 for task in self.tasks
@@ -541,33 +471,25 @@ class EvaluationRunner:
         return read_committed_result(self._instance(task_id), task_id)
 
     def _restored_accounting(self) -> Mapping[str, Any]:
-        calls = 0
-        tool_calls = 0
-        output_bytes = 0
+        counts = dict.fromkeys(("model_calls", "tool_calls", "tool_output_bytes"), 0)
         usage = Usage()
         for task in self.tasks:
             if not self._valid_result(task.task_id):
                 continue
-            result = self._read_result(task.task_id)
-            metadata = result.get("metadata", {})
+            metadata = self._read_result(task.task_id).get("metadata", {})
             accounting = (
                 metadata.get("accounting", {}) if isinstance(metadata, Mapping) else {}
             )
-            if not isinstance(accounting, Mapping):
-                raise ValueError("resumed result has invalid accounting")
-            calls += _nonnegative_int(accounting.get("model_calls", 0))
-            tool_calls += _nonnegative_int(accounting.get("tool_calls", 0))
-            output_bytes += _nonnegative_int(accounting.get("tool_output_bytes", 0))
-            raw_usage = accounting.get("usage", {})
-            if not isinstance(raw_usage, Mapping):
-                raise ValueError("resumed result has invalid usage accounting")
+            _require_mapping(accounting, "resumed result accounting")
+            for key in counts:
+                counts[key] += _require_int(
+                    accounting.get(key, 0), f"resumed {key}", minimum=0
+                )
+            raw_usage = _require_mapping(
+                accounting.get("usage", {}), "resumed result usage accounting"
+            )
             usage = usage + Usage(**dict(raw_usage))
-        return {
-            "model_calls": calls,
-            "tool_calls": tool_calls,
-            "tool_output_bytes": output_bytes,
-            "usage": asdict(usage),
-        }
+        return {**counts, "usage": asdict(usage)}
 
     def _audit_resume_safety(self) -> None:
         """Refuse to repeat an external operation from an uncommitted task."""
@@ -595,16 +517,11 @@ class EvaluationRunner:
                 raise ValueError(f"resume trace line {number} is invalid") from exc
             if not isinstance(event, Mapping):
                 raise ValueError(f"resume trace line {number} is not an object")
-            if event.get("event") not in {
-                "model_call_started",
-                "tool_call_started",
-            }:
+            if event.get("event") not in {"model_call_started", "tool_call_started"}:
                 continue
             agent_id = event.get("agent_id")
             if not isinstance(agent_id, str):
-                raise ValueError(
-                    f"resume trace line {number} has an invalid agent id"
-                )
+                raise ValueError(f"resume trace line {number} has an invalid agent id")
             for prefix, task_id in pending_prefixes.items():
                 if agent_id == prefix or agent_id.startswith(prefix + "/"):
                     raise ValueError(
@@ -617,11 +534,10 @@ class EvaluationRunner:
         summary_path = self.output / "summary.json"
         if summary_path.is_file():
             summary = _read_json(summary_path)
-            elapsed = _nonnegative_number(summary.get("elapsed_seconds", 0.0))
-            active = _nonnegative_number(
-                summary.get("backend_active_union_seconds", 0.0)
+            return (
+                _nonnegative_number(summary.get("elapsed_seconds", 0.0)),
+                _nonnegative_number(summary.get("backend_active_union_seconds", 0.0)),
             )
-            return elapsed, active
         trace_path = self.output / "trace.jsonl"
         elapsed = 0.0
         starts: dict[str, list[float]] = {}
@@ -740,10 +656,8 @@ def task_agent_root(task_id: str) -> str:
 
 
 def atomic_json(path: Path, value: Any) -> None:
-    content = (
-        json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n"
-    ).encode()
-    atomic_bytes(path, content)
+    content = json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n"
+    atomic_bytes(path, content.encode())
 
 
 def read_committed_result(directory: Path, task_id: str) -> Mapping[str, Any]:
@@ -782,11 +696,7 @@ def atomic_bytes(path: Path, content: bytes) -> None:
         created.chmod(0o700)
     temporary = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
     try:
-        descriptor = os.open(
-            temporary,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-            0o600,
-        )
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "wb") as stream:
             stream.write(content)
             stream.flush()
@@ -798,18 +708,6 @@ def atomic_bytes(path: Path, content: bytes) -> None:
             _sync_directory(created.parent)
     finally:
         temporary.unlink(missing_ok=True)
-
-
-def _sync_directory(path: Path) -> None:
-    """Persist directory entries used as artifact commit boundaries."""
-
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-    flags |= getattr(os, "O_DIRECTORY", 0)
-    descriptor = os.open(path, flags)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
 
 
 def raise_after_cleanup(
@@ -833,7 +731,7 @@ def raise_after_cleanup(
                 f"{label} failed ({_error_text(operation_error)}); "
                 f"cleanup also failed ({_error_text(cleanup_error)})"
             ) from operation_error
-        _raise(operation_error)
+        raise operation_error
     if cleanup_error is not None:
         if isinstance(cleanup_error, asyncio.CancelledError):
             raise cleanup_error
@@ -850,29 +748,37 @@ def combine_errors(first: BaseException | None, second: BaseException) -> BaseEx
     return RuntimeError(f"{_error_text(first)}; {_error_text(second)}")
 
 
-def _raise(error: BaseException) -> NoReturn:
-    raise error
-
-
 def _error_text(error: BaseException) -> str:
     return f"{type(error).__name__}: {error}"
 
 
-def _nonnegative_int(value: Any) -> int:
-    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-        raise ValueError("accounting counts must be non-negative integers")
-    return value
+def _canonical_bytes(value: Any) -> bytes:
+    """Encode one artifact-identity value as deterministic UTF-8 JSON bytes."""
+
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")
+
+
+def _identity_entry(identity: Mapping[str, Any], relative: str) -> Mapping[str, Any]:
+    """Describe one hashed file by its path relative to the hashed root."""
+
+    return {
+        "path": relative,
+        "size_bytes": identity["size_bytes"],
+        "sha256": identity["sha256"],
+    }
+
+
+def _stat_key(info: os.stat_result, *, size: bool = True) -> tuple[int, ...]:
+    """Return the inode identity fields that must not move while hashing."""
+
+    key = (info.st_dev, info.st_ino, info.st_mtime_ns)
+    return key + (info.st_size,) if size else key
 
 
 def _nonnegative_number(value: Any) -> float:
-    if (
-        not isinstance(value, (int, float))
-        or isinstance(value, bool)
-        or not math.isfinite(float(value))
-        or value < 0
-    ):
-        raise ValueError("timing values must be finite and non-negative")
-    return float(value)
+    return _require_finite_number(value, "timing values", minimum=0)
 
 
 def _interval_union(intervals: Sequence[tuple[float, float]]) -> float:
@@ -886,10 +792,7 @@ def _interval_union(intervals: Sequence[tuple[float, float]]) -> float:
 
 
 def _read_json(path: Path) -> Mapping[str, Any]:
-    value = strict_json_loads(path.read_text(encoding="utf-8"))
-    if not isinstance(value, Mapping):
-        raise ValueError(f"JSON artifact must be an object: {path}")
-    return value
+    return _json_object_load(path.read_bytes(), path)
 
 
 def _json_object_load(raw: bytes, path: Path) -> Mapping[str, Any]:

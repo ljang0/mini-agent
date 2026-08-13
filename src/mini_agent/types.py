@@ -5,7 +5,144 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import dataclass, field
-from typing import Any, Mapping, NoReturn, Optional, Tuple
+from pathlib import Path
+from typing import Any, Callable, Mapping, NoReturn, Optional, Tuple
+
+
+def _require_str(
+    value: Any,
+    label: str,
+    *,
+    non_empty: bool = True,
+    stripped: bool = False,
+    error: type[Exception] = ValueError,
+) -> str:
+    """Return ``value`` when it is a string of the requested shape."""
+
+    if (
+        not isinstance(value, str)
+        or (non_empty and not value.strip())
+        or (stripped and value != value.strip())
+    ):
+        article = "a non-empty string" if non_empty else "a string"
+        raise error(f"{label} must be {article}")
+    return value
+
+
+def _require_bool(
+    value: Any, label: str, *, error: type[Exception] = ValueError
+) -> bool:
+    """Return ``value`` when it is a real boolean."""
+
+    if not isinstance(value, bool):
+        raise error(f"{label} must be a boolean")
+    return value
+
+
+def _require_int(
+    value: Any,
+    label: str,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+    error: type[Exception] = ValueError,
+) -> int:
+    """Return ``value`` when it is a bounded integer (never a ``bool``)."""
+
+    if (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or (minimum is not None and value < minimum)
+        or (maximum is not None and value > maximum)
+    ):
+        raise error(f"{label} must be {_int_requirement(minimum, maximum)}")
+    return value
+
+
+def _int_requirement(minimum: int | None, maximum: int | None) -> str:
+    if minimum is not None and maximum is not None:
+        return f"an integer between {minimum} and {maximum}"
+    if minimum == 1:
+        return "a positive integer"
+    if minimum == 0:
+        return "a non-negative integer"
+    if minimum is not None:
+        return f"an integer of at least {minimum}"
+    if maximum is not None:
+        return f"an integer of at most {maximum}"
+    return "an integer"
+
+
+def _require_positive_int(
+    value: Any, label: str, *, minimum: int = 1, error: type[Exception] = ValueError
+) -> int:
+    """Return ``value`` when it is an integer at or above ``minimum`` (default 1)."""
+
+    return _require_int(value, label, minimum=minimum, error=error)
+
+
+def _require_finite_number(
+    value: Any,
+    label: str,
+    *,
+    minimum: float | None = None,
+    exclusive_minimum: float | None = None,
+    error: type[Exception] = ValueError,
+) -> float:
+    """Return ``value`` as a float when it is a finite, bounded real number."""
+
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(float(value))
+        or (minimum is not None and value < minimum)
+        or (exclusive_minimum is not None and value <= exclusive_minimum)
+    ):
+        shape = _number_requirement(minimum, exclusive_minimum)
+        raise error(f"{label} must be {shape}")
+    return float(value)
+
+
+def _number_requirement(minimum: float | None, exclusive_minimum: float | None) -> str:
+    if exclusive_minimum == 0:
+        return "finite and positive"
+    if minimum == 0:
+        return "finite and non-negative"
+    if minimum is not None:
+        return f"finite and at least {minimum}"
+    if exclusive_minimum is not None:
+        return f"finite and above {exclusive_minimum}"
+    return "a finite number"
+
+
+def _require_mapping(
+    value: Any, label: str, *, error: type[Exception] = ValueError
+) -> Mapping[str, Any]:
+    """Return ``value`` when it is a mapping (a decoded JSON object)."""
+
+    if not isinstance(value, Mapping):
+        raise error(f"{label} must be an object")
+    return value
+
+
+def _require_callable(
+    value: Any, label: str, *, error: type[Exception] = ValueError
+) -> Callable[..., Any]:
+    """Return ``value`` when it is callable."""
+
+    if not callable(value):
+        raise error(f"{label} must be callable")
+    return value
+
+
+def _require_no_symlink(
+    path: Path, label: str, *, error: type[Exception] = ValueError
+) -> Path:
+    """Return ``path`` when it is not a symlink; symlinks escape owned trees."""
+
+    if path.is_symlink():
+        raise error(f"{label} must not be a symlink")
+    return path
 
 
 def strict_json_loads(value: str | bytes | bytearray) -> Any:
@@ -68,11 +205,56 @@ def _json_value(value: Any, label: str) -> Any:
 
 
 def _json_mapping(value: Any, label: str) -> dict[str, Any]:
-    if not isinstance(value, Mapping):
-        raise ValueError(f"{label} must be an object")
+    _require_mapping(value, label)
     copied = _json_value(value, label)
     assert isinstance(copied, dict)
     return copied
+
+
+def _require_text(
+    value: Any,
+    label: str,
+    *,
+    non_empty: bool = True,
+    stripped: bool = False,
+    error: type[Exception] = ValueError,
+) -> str:
+    """Return ``value`` when it is a UTF-8 encodable string of the wanted shape."""
+
+    return _require_utf8(
+        _require_str(
+            value, label, non_empty=non_empty, stripped=stripped, error=error
+        ),
+        label,
+    )
+
+
+def _require_image_url(value: Any, label: str) -> Optional[str]:
+    """Return an optional inline image data URL, rejecting other strings."""
+
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.startswith("data:image/"):
+        raise ValueError(f"{label} must be an image data URL")
+    return _require_utf8(value, label)
+
+
+def _require_tuple_of(
+    value: Any,
+    kind: type,
+    label: str,
+    *,
+    brief: bool = False,
+    error: type[Exception] = ValueError,
+) -> tuple[Any, ...]:
+    """Return ``value`` when it is a tuple whose items are all ``kind``."""
+
+    if not isinstance(value, tuple) or not all(
+        isinstance(item, kind) for item in value
+    ):
+        shape = "" if brief else "a tuple of "
+        raise error(f"{label} must be {shape}{kind.__name__} values")
+    return value
 
 
 class MiniAgentError(RuntimeError):
@@ -109,20 +291,14 @@ class ToolDefinition:
     kind: str = "function"
 
     def __post_init__(self) -> None:
-        if not isinstance(self.name, str) or not self.name.strip():
-            raise ValueError("tool name must be a non-empty string")
-        if not isinstance(self.description, str):
-            raise ValueError("tool description must be a string")
-        _require_utf8(self.name, "tool name")
-        _require_utf8(self.description, "tool description")
+        _require_text(self.name, "tool name")
+        _require_text(self.description, "tool description", non_empty=False)
+        _require_text(self.kind, "tool kind")
         object.__setattr__(
             self,
             "input_schema",
             _json_mapping(self.input_schema, "tool input_schema"),
         )
-        if not isinstance(self.kind, str) or not self.kind.strip():
-            raise ValueError("tool kind must be a non-empty string")
-        _require_utf8(self.kind, "tool kind")
 
 
 @dataclass(frozen=True)
@@ -133,20 +309,14 @@ class ToolCall:
     kind: str = "function"
 
     def __post_init__(self) -> None:
-        if not isinstance(self.call_id, str) or not self.call_id.strip():
-            raise ValueError("tool call_id must be a non-empty string")
-        if not isinstance(self.name, str) or not self.name.strip():
-            raise ValueError("tool name must be a non-empty string")
-        _require_utf8(self.call_id, "tool call_id")
-        _require_utf8(self.name, "tool name")
+        _require_text(self.call_id, "tool call_id")
+        _require_text(self.name, "tool name")
+        _require_text(self.kind, "tool call kind")
         object.__setattr__(
             self,
             "arguments",
             _json_mapping(self.arguments, "tool arguments"),
         )
-        if not isinstance(self.kind, str) or not self.kind.strip():
-            raise ValueError("tool call kind must be a non-empty string")
-        _require_utf8(self.kind, "tool call kind")
 
 
 @dataclass(frozen=True)
@@ -159,27 +329,12 @@ class ToolResult:
     image_data_url: Optional[str] = None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.call_id, str) or not self.call_id.strip():
-            raise ValueError("tool result call_id must be a non-empty string")
-        if not isinstance(self.name, str) or not self.name.strip():
-            raise ValueError("tool result name must be a non-empty string")
-        if not isinstance(self.output, str):
-            raise ValueError("tool result output must be a string")
-        _require_utf8(self.call_id, "tool result call_id")
-        _require_utf8(self.name, "tool result name")
-        _require_utf8(self.output, "tool result output")
-        if not isinstance(self.kind, str) or not self.kind.strip():
-            raise ValueError("tool result kind must be a non-empty string")
-        _require_utf8(self.kind, "tool result kind")
-        if not isinstance(self.is_error, bool):
-            raise ValueError("tool result is_error must be a boolean")
-        if self.image_data_url is not None and (
-            not isinstance(self.image_data_url, str)
-            or not self.image_data_url.startswith("data:image/")
-        ):
-            raise ValueError("image_data_url must be an image data URL")
-        if self.image_data_url is not None:
-            _require_utf8(self.image_data_url, "image_data_url")
+        _require_text(self.call_id, "tool result call_id")
+        _require_text(self.name, "tool result name")
+        _require_text(self.output, "tool result output", non_empty=False)
+        _require_text(self.kind, "tool result kind")
+        _require_bool(self.is_error, "tool result is_error")
+        _require_image_url(self.image_data_url, "image_data_url")
 
 
 @dataclass(frozen=True)
@@ -192,18 +347,9 @@ class ToolExecution:
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if not isinstance(self.output, str):
-            raise ValueError("tool execution output must be a string")
-        _require_utf8(self.output, "tool execution output")
-        if not isinstance(self.is_error, bool):
-            raise ValueError("tool execution is_error must be a boolean")
-        if self.image_data_url is not None and (
-            not isinstance(self.image_data_url, str)
-            or not self.image_data_url.startswith("data:image/")
-        ):
-            raise ValueError("image_data_url must be an image data URL")
-        if self.image_data_url is not None:
-            _require_utf8(self.image_data_url, "image_data_url")
+        _require_text(self.output, "tool execution output", non_empty=False)
+        _require_bool(self.is_error, "tool execution is_error")
+        _require_image_url(self.image_data_url, "image_data_url")
         object.__setattr__(
             self,
             "metadata",
@@ -228,21 +374,13 @@ class Usage:
             "cache_read_input_tokens",
             "cache_write_input_tokens",
         ):
-            value = getattr(self, name)
-            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-                raise ValueError(f"{name} must be a non-negative integer")
+            _require_int(getattr(self, name), name, minimum=0)
         if (
             self.cache_read_input_tokens + self.cache_write_input_tokens
             > self.input_tokens
         ):
             raise ValueError("cache input-token classes cannot exceed input_tokens")
-        if (
-            not isinstance(self.cost_usd, (int, float))
-            or isinstance(self.cost_usd, bool)
-            or not math.isfinite(self.cost_usd)
-            or self.cost_usd < 0
-        ):
-            raise ValueError("cost_usd must be finite and non-negative")
+        _require_finite_number(self.cost_usd, "cost_usd", minimum=0)
         if not isinstance(self.cost_known, bool) or not isinstance(self.complete, bool):
             raise ValueError("usage flags must be booleans")
 
@@ -278,9 +416,7 @@ class BudgetLimits:
             "max_tool_calls",
             "max_tool_output_bytes",
         ):
-            value = getattr(self, name)
-            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-                raise ValueError(f"{name} must be a positive integer")
+            _require_positive_int(getattr(self, name), name)
         for name in ("max_input_tokens", "max_output_tokens"):
             value = getattr(self, name)
             if value is not None and (
@@ -322,27 +458,11 @@ class Message:
             "tool",
         }:
             raise ValueError(f"unsupported message role {self.role!r}")
-        if not isinstance(self.content, str):
-            raise ValueError("message content must be a string")
-        _require_utf8(self.role, "message role")
-        _require_utf8(self.content, "message content")
-        if not isinstance(self.tool_calls, tuple) or not all(
-            isinstance(call, ToolCall) for call in self.tool_calls
-        ):
-            raise ValueError("message tool_calls must be a tuple of ToolCall values")
-        if not isinstance(self.tool_results, tuple) or not all(
-            isinstance(result, ToolResult) for result in self.tool_results
-        ):
-            raise ValueError(
-                "message tool_results must be a tuple of ToolResult values"
-            )
-        if self.image_data_url is not None and (
-            not isinstance(self.image_data_url, str)
-            or not self.image_data_url.startswith("data:image/")
-        ):
-            raise ValueError("message image_data_url must be an image data URL")
-        if self.image_data_url is not None:
-            _require_utf8(self.image_data_url, "message image_data_url")
+        _require_text(self.role, "message role")
+        _require_text(self.content, "message content", non_empty=False)
+        _require_tuple_of(self.tool_calls, ToolCall, "message tool_calls")
+        _require_tuple_of(self.tool_results, ToolResult, "message tool_results")
+        _require_image_url(self.image_data_url, "message image_data_url")
         object.__setattr__(
             self, "metadata", _json_mapping(self.metadata, "message metadata")
         )
@@ -358,17 +478,10 @@ class ModelResponse:
     retries: int = 0
 
     def __post_init__(self) -> None:
-        if not isinstance(self.text, str):
-            raise ValueError("model response text must be a string")
-        _require_utf8(self.text, "model response text")
+        _require_text(self.text, "model response text", non_empty=False)
         if not isinstance(self.usage, Usage):
             raise ValueError("model response usage must be Usage")
-        if not isinstance(self.tool_calls, tuple) or not all(
-            isinstance(call, ToolCall) for call in self.tool_calls
-        ):
-            raise ValueError(
-                "model response tool_calls must be a tuple of ToolCall values"
-            )
+        _require_tuple_of(self.tool_calls, ToolCall, "model response tool_calls")
         if self.resolved_model is not None and (
             not isinstance(self.resolved_model, str)
             or not self.resolved_model.strip()
@@ -379,14 +492,7 @@ class ModelResponse:
             )
         if self.resolved_model is not None:
             _require_utf8(self.resolved_model, "model response resolved_model")
-        if (
-            not isinstance(self.retries, int)
-            or isinstance(self.retries, bool)
-            or self.retries < 0
-        ):
-            raise ValueError(
-                "model response retries must be a non-negative integer"
-            )
+        _require_int(self.retries, "model response retries", minimum=0)
 
 
 @dataclass(frozen=True)
@@ -433,14 +539,10 @@ class ModelRequest:
             raise ValueError("model request input_images must be image data URLs")
         for image in self.input_images:
             _require_utf8(image, "model request input image")
-        if not isinstance(self.tools, tuple) or not all(
-            isinstance(tool, ToolDefinition) for tool in self.tools
-        ):
-            raise ValueError("model request tools must be ToolDefinition values")
-        if not isinstance(self.tool_results, tuple) or not all(
-            isinstance(result, ToolResult) for result in self.tool_results
-        ):
-            raise ValueError("model request tool_results must be ToolResult values")
+        _require_tuple_of(self.tools, ToolDefinition, "model request tools", brief=True)
+        _require_tuple_of(
+            self.tool_results, ToolResult, "model request tool_results", brief=True
+        )
 
 
 @dataclass(frozen=True)
@@ -452,18 +554,10 @@ class TraceEvent:
     data: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if not isinstance(self.event, str) or not self.event.strip():
-            raise ValueError("trace event must be a non-empty string")
-        if (
-            not isinstance(self.elapsed_seconds, (int, float))
-            or isinstance(self.elapsed_seconds, bool)
-            or not math.isfinite(float(self.elapsed_seconds))
-            or self.elapsed_seconds < 0
-        ):
-            raise ValueError("trace elapsed_seconds must be finite and non-negative")
+        _require_text(self.event, "trace event")
+        _require_finite_number(self.elapsed_seconds, "trace elapsed_seconds", minimum=0)
         if not isinstance(self.agent_id, str) or not isinstance(self.role, str):
             raise ValueError("trace agent_id and role must be strings")
-        _require_utf8(self.event, "trace event")
         _require_utf8(self.agent_id, "trace agent_id")
         _require_utf8(self.role, "trace role")
         object.__setattr__(
@@ -479,19 +573,9 @@ class AgentResult:
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if not isinstance(self.answer, str):
-            raise ValueError("agent result answer must be a string")
-        _require_utf8(self.answer, "agent result answer")
-        if not isinstance(self.messages, tuple) or not all(
-            isinstance(message, Message) for message in self.messages
-        ):
-            raise ValueError("agent result messages must be a tuple of Message values")
-        if (
-            not isinstance(self.steps, int)
-            or isinstance(self.steps, bool)
-            or self.steps < 1
-        ):
-            raise ValueError("agent result steps must be a positive integer")
+        _require_text(self.answer, "agent result answer", non_empty=False)
+        _require_tuple_of(self.messages, Message, "agent result messages")
+        _require_positive_int(self.steps, "agent result steps")
         object.__setattr__(
             self, "metadata", _json_mapping(self.metadata, "agent result metadata")
         )

@@ -15,7 +15,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterator, Mapping, Sequence
+from typing import Any, Callable, Iterator, Mapping, Sequence, TypeVar
 
 from . import __version__
 from ._hash import stable_file_sha256
@@ -39,7 +39,16 @@ from .providers import TokenPricing, _validate_endpoint
 from .runtime import RunContext, TraceRecorder, redact_artifact
 from .specs import AgentSpecV1
 from .storage import StorageLayout
-from .types import AgentResult, BudgetLimits, strict_json_loads
+from .types import (
+    AgentResult,
+    BudgetLimits,
+    _require_mapping,
+    _require_no_symlink,
+    _require_str,
+    strict_json_loads,
+)
+
+_Number = TypeVar("_Number", int, float)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -274,13 +283,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 value = resolved.translation_report(
                     multi_agent=args.multi_agent
                 ).as_dict()
-            print(
-                json.dumps(
-                    value,
-                    indent=2,
-                    sort_keys=True,
-                )
-            )
+            print(json.dumps(value, indent=2, sort_keys=True))
             return 0
         if args.command == "run":
             return asyncio.run(_run(args))
@@ -301,8 +304,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 async def _run(args: argparse.Namespace) -> int:
-    if not isinstance(args.task, str) or not args.task.strip():
-        raise ValueError("--task must be non-empty")
+    _require_str(args.task, "--task")
     _validate_runtime_credentials(args)
     _validate_topology_arguments(args)
     output, work, layout = _new_output(args, "run")
@@ -599,6 +601,16 @@ async def _evaluate(args: argparse.Namespace) -> int:
     )
     agent_spec = _resolved_agent_spec(args, domain, resolved_prompt)
     checkout_cwd: Path | None = None
+    common: dict[str, Any] = {
+        "model_factory": model_factory,
+        "system_prompt": resolved_prompt,
+        "max_steps": args.max_steps,
+        "agent_spec": agent_spec,
+        "multi_agent": args.multi_agent,
+        "max_active_agents": args.max_active_agents,
+        "max_total_agents": args.max_total_agents,
+        "per_agent_limits": _per_agent_limits(args),
+    }
 
     if benchmark == "swebench":
         from .benchmarks.swebench import (
@@ -626,10 +638,6 @@ async def _evaluate(args: argparse.Namespace) -> int:
                 task,
                 context,
                 directory,
-                model_factory=model_factory,
-                system_prompt=resolved_prompt,
-                max_steps=args.max_steps,
-                agent_spec=agent_spec,
                 runtime=args.runtime,
                 model_name=args.model,
                 scratch_root=work / "swebench",
@@ -638,10 +646,7 @@ async def _evaluate(args: argparse.Namespace) -> int:
                 apptainer_image_cache=layout.assets / "apptainer-images",
                 image_binding=image_bindings[task.task_id],
                 overlay_size_mib=args.overlay_size_mib,
-                multi_agent=args.multi_agent,
-                max_active_agents=args.max_active_agents,
-                max_total_agents=args.max_total_agents,
-                per_agent_limits=_per_agent_limits(args),
+                **common,
             )
 
     elif benchmark == "programbench":
@@ -678,16 +683,9 @@ async def _evaluate(args: argparse.Namespace) -> int:
                 task,
                 context,
                 directory,
-                model_factory=model_factory,
-                system_prompt=resolved_prompt,
-                max_steps=args.max_steps,
-                agent_spec=agent_spec,
                 container_runtime=tuple(args.container_runtime),
                 image_binding=image_bindings[task.task_id],
-                multi_agent=args.multi_agent,
-                max_active_agents=args.max_active_agents,
-                max_total_agents=args.max_total_agents,
-                per_agent_limits=_per_agent_limits(args),
+                **common,
             )
 
     elif benchmark in {"browsecomp", "browsecomp-plus"}:
@@ -715,15 +713,8 @@ async def _evaluate(args: argparse.Namespace) -> int:
                     context,
                     directory,
                     browser_factory=browser_factory,
-                    model_factory=model_factory,
-                    system_prompt=resolved_prompt,
-                    max_steps=args.max_steps,
-                    agent_spec=agent_spec,
-                    multi_agent=args.multi_agent,
-                    max_active_agents=args.max_active_agents,
-                    max_total_agents=args.max_total_agents,
                     model_name=args.model,
-                    per_agent_limits=_per_agent_limits(args),
+                    **common,
                 )
                 grader = grader_factory(task_agent_prefix(task.task_id) + "/grader")
                 score, raw = await grade_browsecomp(
@@ -774,13 +765,10 @@ async def _evaluate(args: argparse.Namespace) -> int:
                 validate_anserini_jar,
             )
 
-            observed_index_sha = directory_sha256(args.index.expanduser())
-            if (
-                args.index_sha256 is not None
-                and args.index_sha256.casefold() != observed_index_sha
-            ):
+            seen = directory_sha256(args.index.expanduser())
+            if args.index_sha256 is not None and args.index_sha256.casefold() != seen:
                 raise ValueError("--index-sha256 does not match the Lucene index")
-            args.index_sha256 = observed_index_sha
+            args.index_sha256 = seen
             _, args.anserini_jar_sha256 = validate_anserini_jar(args.anserini_jar)
             tokenizer = _load_tokenizer(args, require_revision=True)
             tasks = load_browsecomp_plus(dataset, limit=limit)
@@ -795,15 +783,8 @@ async def _evaluate(args: argparse.Namespace) -> int:
                     context,
                     directory,
                     browser_factory=browser_factory,
-                    model_factory=model_factory,
-                    system_prompt=resolved_prompt,
-                    max_steps=args.max_steps,
-                    agent_spec=agent_spec,
-                    multi_agent=args.multi_agent,
-                    max_active_agents=args.max_active_agents,
-                    max_total_agents=args.max_total_agents,
                     model_name=args.model,
-                    per_agent_limits=_per_agent_limits(args),
+                    **common,
                 )
 
     elif benchmark in {"osworld-v1", "osworld-v2"}:
@@ -825,8 +806,7 @@ async def _evaluate(args: argparse.Namespace) -> int:
             if not selected_image.is_file():
                 raise ValueError(
                     "OSWorld Docker evaluation requires a pre-provisioned "
-                    "Ubuntu.qcow2 via --path-to-vm or "
-                    f"{default_image}"
+                    f"Ubuntu.qcow2 via --path-to-vm or {default_image}"
                 )
             args.path_to_vm = str(selected_image.resolve())
         if args.runtime == "apptainer":
@@ -875,14 +855,7 @@ async def _evaluate(args: argparse.Namespace) -> int:
                 context,
                 directory,
                 desktop_factory=desktop_factory,
-                model_factory=model_factory,
-                system_prompt=resolved_prompt,
-                max_steps=args.max_steps,
-                agent_spec=agent_spec,
-                multi_agent=args.multi_agent,
-                max_active_agents=args.max_active_agents,
-                max_total_agents=args.max_total_agents,
-                per_agent_limits=_per_agent_limits(args),
+                **common,
             )
 
     else:
@@ -915,19 +888,10 @@ async def _evaluate(args: argparse.Namespace) -> int:
                 context,
                 directory,
                 backend_name=args.backend,
-                model_factory=model_factory,
-                system_prompt=resolved_prompt,
-                max_steps=args.max_steps,
-                agent_spec=agent_spec,
-                multi_agent=args.multi_agent,
-                max_active_agents=args.max_active_agents,
-                max_total_agents=args.max_total_agents,
-                per_agent_limits=_per_agent_limits(args),
+                **common,
             )
 
-    selected_worker = (
-        _progress_worker(worker, benchmark) if args.progress else worker
-    )
+    selected_worker = _progress_worker(worker, benchmark) if args.progress else worker
 
     limits = _limits(args)
     runner = EvaluationRunner(
@@ -1063,11 +1027,17 @@ class _TokenizersSnippetAdapter:
         )
 
 
+def _commit_hash(value: Any) -> str | None:
+    """Return the casefolded value when it names a full 40-character commit."""
+
+    if isinstance(value, str) and re.fullmatch(r"[0-9a-fA-F]{40}", value):
+        return value.casefold()
+    return None
+
+
 def _load_tokenizer(args: argparse.Namespace, *, require_revision: bool = False) -> Any:
     requested = args.snippet_tokenizer_revision
-    if require_revision and not (
-        isinstance(requested, str) and re.fullmatch(r"[0-9a-fA-F]{40}", requested)
-    ):
+    if require_revision and _commit_hash(requested) is None:
         raise ValueError(
             "BrowseComp-Plus evaluation requires "
             "--snippet-tokenizer-revision as a full 40-character commit"
@@ -1111,17 +1081,11 @@ def _load_tokenizer(args: argparse.Namespace, *, require_revision: bool = False)
             revision=requested,
         )
     )
+    snapshot = tokenizer_path.parent
     snapshot_revision = (
-        tokenizer_path.parent.name.casefold()
-        if tokenizer_path.parent.parent.name == "snapshots"
-        and re.fullmatch(r"[0-9a-fA-F]{40}", tokenizer_path.parent.name)
-        else None
+        _commit_hash(snapshot.name) if snapshot.parent.name == "snapshots" else None
     )
-    exact_requested = (
-        requested.casefold()
-        if isinstance(requested, str) and re.fullmatch(r"[0-9a-fA-F]{40}", requested)
-        else None
-    )
+    exact_requested = _commit_hash(requested)
     if (
         exact_requested is not None
         and snapshot_revision is not None
@@ -1227,15 +1191,11 @@ def _model_factory(
     return create
 
 
-def _grader_model_factory(
-    args: argparse.Namespace,
-) -> Callable[[str], BackendModel]:
+def _grader_model_factory(args: argparse.Namespace) -> Callable[[str], BackendModel]:
     return _model_factory(args, prefix="grader_")
 
 
-def _pricing(
-    args: argparse.Namespace, *, prefix: str = ""
-) -> TokenPricing | None:
+def _pricing(args: argparse.Namespace, *, prefix: str = "") -> TokenPricing | None:
     values = tuple(
         _provider_option(args, prefix, name)
         for name in (
@@ -1297,34 +1257,31 @@ def _new_output(
     args: argparse.Namespace, prefix: str
 ) -> tuple[Path, Path, StorageLayout]:
     output, work, layout = _output_paths(args, prefix)
-    if output.exists() and not output.is_dir():
-        raise ValueError(f"output is not a directory: {output}")
-    if work.exists() and not work.is_dir():
-        raise ValueError(f"scratch work path is not a directory: {work}")
-    if output.exists() and any(output.iterdir()):
-        raise ValueError(f"output is not empty: {output}")
-    if work.exists() and any(work.iterdir()):
-        raise ValueError(f"scratch work directory is not empty: {work}")
-    output.mkdir(parents=True, exist_ok=True, mode=0o700)
-    output.chmod(0o700)
-    work.mkdir(parents=True, exist_ok=True, mode=0o700)
-    work.chmod(0o700)
+    _require_empty(output, "output")
+    _require_empty(work, "scratch work directory")
+    _own_directory(output)
+    _own_directory(work)
     return output, work, layout
 
 
-def _evaluation_output(
-    args: argparse.Namespace,
-) -> tuple[Path, Path, StorageLayout]:
+def _evaluation_output(args: argparse.Namespace) -> tuple[Path, Path, StorageLayout]:
     output, work, layout = _output_paths(args, args.benchmark)
-    if output.exists() and not output.is_dir():
-        raise ValueError(f"output is not a directory: {output}")
-    if work.exists() and not work.is_dir():
-        raise ValueError(f"scratch work path is not a directory: {work}")
-    if not args.resume and work.exists() and any(work.iterdir()):
-        raise ValueError(f"scratch work directory is not empty: {work}")
-    work.mkdir(parents=True, exist_ok=True, mode=0o700)
-    work.chmod(0o700)
+    if not args.resume:
+        _require_empty(work, "scratch work directory")
+    _own_directory(work)
     return output, work, layout
+
+
+def _require_empty(path: Path, label: str) -> None:
+    """Reject a destination that already holds artifacts of an earlier run."""
+
+    if path.exists() and any(path.iterdir()):
+        raise ValueError(f"{label} is not empty: {path}")
+
+
+def _own_directory(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path.chmod(0o700)
 
 
 def _output_paths(
@@ -1344,21 +1301,22 @@ def _output_paths(
     work = layout.work(run_id)
     if output == work or output in work.parents or work in output.parents:
         raise ValueError("durable output and scratch work paths must not overlap")
+    for path, label in ((output, "output"), (work, "scratch work path")):
+        if path.exists() and not path.is_dir():
+            raise ValueError(f"{label} is not a directory: {path}")
     return output, work, layout
 
 
 def _configure_cua_runtime(qemu_cache: Path | None, work: Path) -> None:
     if qemu_cache is not None:
-        expanded = qemu_cache.expanduser()
-        if expanded.is_symlink():
-            raise ValueError("--qemu-cache must not be a symlink")
+        expanded = _require_no_symlink(qemu_cache.expanduser(), "--qemu-cache")
         resolved_cache = expanded.resolve()
         if resolved_cache.exists() and not resolved_cache.is_dir():
             raise ValueError("--qemu-cache must be a directory")
         os.environ["GYM_ANYTHING_QEMU_CACHE"] = str(resolved_cache)
-    qemu_work = work / "cua-speed-run-qemu"
-    if qemu_work.is_symlink():
-        raise ValueError("cua-speed-run QEMU work directory must not be a symlink")
+    qemu_work = _require_no_symlink(
+        work / "cua-speed-run-qemu", "cua-speed-run QEMU work directory"
+    )
     os.environ["GYM_ANYTHING_QEMU_WORK_DIR"] = str(qemu_work.resolve())
 
 
@@ -1409,13 +1367,9 @@ def _programbench_task_ids(task_list: Path | None) -> tuple[str, ...] | None:
 
 
 def _benchmark_domain(benchmark: str) -> str:
-    return (
-        "swe"
-        if benchmark in {"swebench", "programbench"}
-        else "web"
-        if benchmark in {"browsecomp", "browsecomp-plus"}
-        else "computer"
-    )
+    if benchmark in {"swebench", "programbench"}:
+        return "swe"
+    return "web" if benchmark in {"browsecomp", "browsecomp-plus"} else "computer"
 
 
 def _evaluation_config(
@@ -1592,9 +1546,7 @@ def _topology_config(args: argparse.Namespace) -> dict[str, Any]:
     return topology
 
 
-def _provider_config(
-    args: argparse.Namespace, *, prefix: str = ""
-) -> dict[str, Any]:
+def _provider_config(args: argparse.Namespace, *, prefix: str = "") -> dict[str, Any]:
     option = f"--{prefix.replace('_', '-')}base-url"
     _validate_cli_endpoint(_provider_option(args, prefix, "base_url"), option)
     body = _provider_body(_provider_option(args, prefix, "provider_body"))
@@ -1636,11 +1588,8 @@ def _grader_execution_config(args: argparse.Namespace) -> Mapping[str, Any] | No
     }
 
 
-def _provider_body(raw: str) -> Mapping[str, Any]:
-    value = strict_json_loads(raw)
-    if not isinstance(value, Mapping):
-        raise ValueError("--provider-body must decode to a JSON object")
-    sensitive = {
+_SENSITIVE_PROVIDER_NAMES = frozenset(
+    {
         "api_key",
         "api-key",
         "apikey",
@@ -1653,11 +1602,20 @@ def _provider_body(raw: str) -> Mapping[str, Any]:
         "token",
         "x-api-key",
     }
+)
+_SENSITIVE_HEADER_NAMES = _SENSITIVE_PROVIDER_NAMES | {
+    "anthropic-version",
+    "content-type",
+}
+
+
+def _provider_body(raw: str) -> Mapping[str, Any]:
+    value = _require_mapping(strict_json_loads(raw), "--provider-body")
 
     def inspect_value(item: Any) -> None:
         if isinstance(item, Mapping):
             for key, child in item.items():
-                if str(key).casefold() in sensitive:
+                if str(key).casefold() in _SENSITIVE_PROVIDER_NAMES:
                     raise ValueError(
                         "provider secrets belong in --api-key-env, not --provider-body"
                     )
@@ -1673,21 +1631,6 @@ def _provider_body(raw: str) -> Mapping[str, Any]:
 def _provider_headers(raw: Sequence[str]) -> Mapping[str, str] | None:
     if not raw:
         return None
-    sensitive = {
-        "api_key",
-        "api-key",
-        "apikey",
-        "access_token",
-        "authorization",
-        "cookie",
-        "password",
-        "proxy-authorization",
-        "secret",
-        "token",
-        "x-api-key",
-        "anthropic-version",
-        "content-type",
-    }
     headers: dict[str, str] = {}
     normalized_names: set[str] = set()
     for entry in raw:
@@ -1695,11 +1638,11 @@ def _provider_headers(raw: Sequence[str]) -> Mapping[str, str] | None:
         if not separator or not name.strip() or not value:
             raise ValueError("--provider-header entries must look like NAME=VALUE")
         name = name.strip()
-        if name.casefold() in sensitive:
+        normalized = name.casefold()
+        if normalized in _SENSITIVE_HEADER_NAMES:
             raise ValueError(
                 "provider credentials belong in --api-key-env, not --provider-header"
             )
-        normalized = name.casefold()
         if normalized in normalized_names:
             raise ValueError(f"--provider-header repeats {name!r}")
         normalized_names.add(normalized)
@@ -1746,10 +1689,8 @@ def _validate_runtime_credentials(args: argparse.Namespace) -> None:
             or "\x00" in value
         ):
             raise ValueError(f"{option} must be a non-empty model identifier")
-    if (
-        getattr(args, "grader_expected_provider_model", None) is not None
-        and not getattr(args, "grader_model", None)
-    ):
+    grader_expected = getattr(args, "grader_expected_provider_model", None)
+    if grader_expected is not None and not getattr(args, "grader_model", None):
         raise ValueError("--grader-expected-provider-model requires --grader-model")
     _require_model_credential(
         getattr(args, "model", None), getattr(args, "api_key_env", None)
@@ -1784,9 +1725,7 @@ def _require_model_credential(model: str | None, api_key_env: str | None) -> Non
         )
 
 
-def _header_identities(
-    headers: Mapping[str, str] | None,
-) -> list[Mapping[str, str]]:
+def _header_identities(headers: Mapping[str, str] | None) -> list[Mapping[str, str]]:
     """Bind non-secret provider header values without persisting their contents."""
 
     if headers is None:
@@ -1833,18 +1772,23 @@ def _working_directory(path: Path) -> Iterator[None]:
         os.chdir(previous)
 
 
-def _positive_int(value: str) -> int:
-    parsed = int(value)
-    if parsed < 1:
-        raise argparse.ArgumentTypeError("must be positive")
+def _bounded(
+    parsed: _Number, low: float, requirement: str, *, exclusive: bool = False
+) -> _Number:
+    """Return ``parsed`` when it clears ``low`` and is neither NaN nor infinite."""
+
+    ok = low < parsed if exclusive else low <= parsed
+    if not ok or parsed == float("inf"):
+        raise argparse.ArgumentTypeError(requirement)
     return parsed
+
+
+def _positive_int(value: str) -> int:
+    return _bounded(int(value), 1, "must be positive")
 
 
 def _nonnegative_int(value: str) -> int:
-    parsed = int(value)
-    if parsed < 0:
-        raise argparse.ArgumentTypeError("must be non-negative")
-    return parsed
+    return _bounded(int(value), 0, "must be non-negative")
 
 
 def _history_images(value: str) -> int | str:
@@ -1854,17 +1798,11 @@ def _history_images(value: str) -> int | str:
 
 
 def _positive_float(value: str) -> float:
-    parsed = float(value)
-    if not 0 < parsed < float("inf"):
-        raise argparse.ArgumentTypeError("must be finite and positive")
-    return parsed
+    return _bounded(float(value), 0, "must be finite and positive", exclusive=True)
 
 
 def _nonnegative_float(value: str) -> float:
-    parsed = float(value)
-    if not 0 <= parsed < float("inf"):
-        raise argparse.ArgumentTypeError("must be finite and non-negative")
-    return parsed
+    return _bounded(float(value), 0, "must be finite and non-negative")
 
 
 __all__ = ["build_parser", "main"]

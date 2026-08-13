@@ -7,7 +7,7 @@ from typing import Any, Mapping
 
 from .models import SUPPORTED_PROVIDERS, parse_model_spec, translation_losses_for
 from .specs import AgentSpecV1, TranslationReport
-from .types import BudgetLimits
+from .types import BudgetLimits, _require_bool, _require_str
 
 
 _PROMPTS = {
@@ -66,8 +66,7 @@ class Profile:
     def to_agent_spec(self, *, multi_agent: bool = False) -> AgentSpecV1:
         """Resolve this maintained profile to the stable provider-neutral spec."""
 
-        if not isinstance(multi_agent, bool):
-            raise ValueError("multi_agent must be boolean")
+        _require_bool(multi_agent, "multi_agent")
         tools: tuple[str, ...] = (_TOOLS[self.environment],)
         communication: tuple[str, ...] = ()
         if multi_agent:
@@ -110,16 +109,9 @@ def load_profile(
     *,
     model: str = "openai/test-model",
 ) -> Profile:
-    if (
-        not isinstance(application, str)
-        or not application
-        or application != application.strip()
-    ):
-        raise ValueError("application must be non-empty")
-    if not isinstance(profile, str) or not profile or profile != profile.strip():
-        raise ValueError("profile must be non-empty")
-    if not isinstance(model, str) or not model or model != model.strip():
-        raise ValueError("model must be non-empty")
+    for value, label in ((application, "application"), (profile, "profile")):
+        _require_str(value, label, stripped=True)
+    _require_str(model, "model", stripped=True)
     environment = {
         "cua": "computer",
         "computer-use": "computer",
@@ -151,8 +143,7 @@ def load_profile(
 
 
 def prompt_for(environment: str, *, multi_agent: bool = False) -> str:
-    if not isinstance(multi_agent, bool):
-        raise ValueError("multi_agent must be boolean")
+    _require_bool(multi_agent, "multi_agent")
     profile = load_profile(environment)
     return _resolved_prompt(profile.system_prompt, multi_agent=multi_agent)
 
