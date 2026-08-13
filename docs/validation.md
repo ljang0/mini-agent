@@ -27,7 +27,7 @@ provenance records may be retained under a user-owned durable data directory.
 
 ## Deterministic gates
 
-The frozen source passed **388 tests on CPython 3.12.5**, the only
+The frozen source passed **396 tests on CPython 3.12.5**, the only
 interpreter installed on the current node; the four-interpreter 3.10–3.13
 matrix remains enforced in CI. The suite covers full CLI evaluation paths for every benchmark
 (argparse through worker, spec binding, agent loop, and artifact
@@ -38,17 +38,23 @@ adoption; agent-spec binding enforcement; SWE isolation; bounded web and
 remote I/O; computer episode lifecycle; exact source and image identities;
 hidden evaluator boundaries; resume contracts; and official artifact schemas.
 
-This snapshot adds the pinned ProgramBench adapter and a
-validation-boilerplate flattening pass (`src/mini_agent` 20,902 → 19,430
-lines) on top of the v0.5.0 release snapshot
-(`a5506cfbaced8bfcb834c86a08794a1e03bbd5eaab670cbff3534f4e2ee08c66`). The
-flattening was verified to leave all agent-spec and translation-report
-fingerprints, the public export surface, and the byte-exact upstream prompt,
-grader, and probe literals unchanged.
+This snapshot sits on top of the v0.5.0 release
+(`a5506cfbaced8bfcb834c86a08794a1e03bbd5eaab670cbff3534f4e2ee08c66`) and adds
+the pinned ProgramBench adapter, a validation-boilerplate flattening pass, the
+benchmark-neutral `runtimes/` extraction (one bash environment over local,
+Docker, and Apptainer sandboxes), and the move of the storage and
+content-identity primitives out of `benchmarks/base.py` into `storage.py` and
+`_hash.py`. Every pass was verified to leave all agent-spec and
+translation-report fingerprints, the public export surface, the recorded digest
+formats, and the byte-exact upstream prompt, grader, and probe literals
+unchanged. The identity relocation exposed a latent `directory_sha256`
+regression that the suite did not catch; it is fixed, and
+`tests/test_digest_stability.py` now pins the byte value of every digest that
+reaches a durable artifact.
 
-The location-independent harness identity for this source snapshot covers 33
+The location-independent harness identity for this source snapshot covers 39
 package source files and is
-`eedaba050c60082c2993cbb010940592ddc07991cf758ef0fe62458598b32b2f`.
+`7b3a2115054b1852ab3a1581e4be6f4f31590ab2775653c5645734d68680260c`.
 
 The required commands pass:
 
@@ -77,7 +83,7 @@ paid model call. They were run during the reference audit, before the final
 source freeze. The computer evaluations bind their exact pre-freeze harness
 identity in saved manifests; the web artifacts bind their exact retrieval
 inputs and trace bytes. Later source hardening — including the audit/cleanup, ProgramBench, and
-flattening passes — is covered by the deterministic 388-test gate,
+flattening passes — is covered by the deterministic 396-test gate,
 not by retroactively relabelling these as final-source E2E runs. Scores of zero
 below are deliberate and say nothing about agent quality.
 
