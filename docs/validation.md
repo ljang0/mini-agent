@@ -1,6 +1,6 @@
 # Validation evidence
 
-This page records validation performed through 2026-08-12. The compact,
+This page records validation performed through 2026-08-13. The compact,
 machine-readable companion is
 [`validation-record.json`](validation-record.json). Image acquisition and
 provenance details are in [`machine-images.md`](machine-images.md).
@@ -27,9 +27,9 @@ provenance records may be retained under a user-owned durable data directory.
 
 ## Deterministic gates
 
-The frozen source passed **360 tests on each of CPython 3.10.20 and 3.12.5**,
-the two interpreters present on the audit node; the four-interpreter
-3.10–3.13 matrix remains enforced in CI. The suite covers full CLI evaluation paths for every benchmark
+The frozen source passed **388 tests on CPython 3.12.5**, the only
+interpreter installed on the current node; the four-interpreter 3.10–3.13
+matrix remains enforced in CI. The suite covers full CLI evaluation paths for every benchmark
 (argparse through worker, spec binding, agent loop, and artifact
 contracts, with faked model transports and machine planes); the agent
 loop invariants; provider codecs and bounded transport; shared budgets and trace
@@ -38,17 +38,17 @@ adoption; agent-spec binding enforcement; SWE isolation; bounded web and
 remote I/O; computer episode lifecycle; exact source and image identities;
 hidden evaluator boundaries; resume contracts; and official artifact schemas.
 
-This snapshot is the full-codebase audit/cleanup pass over the previously
-attested 27-file snapshot
-(`9b0d0ceb6e640fb195e767523eeb39c2a46b2b1f0d2a999da8f58ac2d819665a`): agent
-construction on every CLI run/eval path now goes through `AgentSpecV1.bind`,
-translation reports carry the provider codecs' declared losses, the lint gate
-enforces line length, dead code was removed, and the grading, doctor, and
-grader-probe subsystems moved out of the CLI into their own modules.
+This snapshot adds the pinned ProgramBench adapter and a
+validation-boilerplate flattening pass (`src/mini_agent` 20,902 → 19,430
+lines) on top of the v0.5.0 release snapshot
+(`a5506cfbaced8bfcb834c86a08794a1e03bbd5eaab670cbff3534f4e2ee08c66`). The
+flattening was verified to leave all agent-spec and translation-report
+fingerprints, the public export surface, and the byte-exact upstream prompt,
+grader, and probe literals unchanged.
 
-The location-independent harness identity for this source snapshot covers 32
+The location-independent harness identity for this source snapshot covers 33
 package source files and is
-`a5506cfbaced8bfcb834c86a08794a1e03bbd5eaab670cbff3534f4e2ee08c66`.
+`eedaba050c60082c2993cbb010940592ddc07991cf758ef0fe62458598b32b2f`.
 
 The required commands pass:
 
@@ -61,16 +61,14 @@ PYTHONPATH=src python3 -m mini_agent profile \
   --application web --profile default --model openai/test-model
 ```
 
-The test command was run with the installed 3.10 and 3.12 interpreters rather
-than the node's unqualified `python3`, which is Python 3.9 and below the
-declared Python 3.10 minimum. The latest static pass used Ruff 0.15.20 with
-`E501` enforced at 88 columns (per-file ignores cover only byte-exact upstream
-prompt literals and embedded runtime-script literals); compilation, Mypy, and
-the required profile command also passed. A local `python3 -m build` under
-`umask 0022` passed `twine check --strict`, and the wheel installed cleanly
-into a fresh CPython 3.12 venv with the console script, grading/doctor
-modules, and the packaged grader-probe resource verified; artifact hashes are
-in the validation record, and the checked artifacts were then removed.
+The test command was run with the installed 3.12 interpreter rather than the
+node's unqualified `python3`, which is Python 3.9 and below the declared
+Python 3.10 minimum. The latest static pass used Ruff 0.15.20 with `E501`
+enforced at 88 columns (per-file ignores cover only byte-exact upstream prompt
+literals and embedded runtime-script literals); compilation, Mypy, and the
+required profile command also passed. The distribution build and fresh-install
+checks were last run for the v0.5.0 release artifacts and have not been
+repeated since; CI runs them on every change.
 
 ## Reference-pass canaries
 
@@ -78,8 +76,8 @@ These canaries exercise real repository-owned environments without making a
 paid model call. They were run during the reference audit, before the final
 source freeze. The computer evaluations bind their exact pre-freeze harness
 identity in saved manifests; the web artifacts bind their exact retrieval
-inputs and trace bytes. Later source hardening — including the audit/cleanup pass —
-is covered by the deterministic 360-test gate,
+inputs and trace bytes. Later source hardening — including the audit/cleanup, ProgramBench, and
+flattening passes — is covered by the deterministic 388-test gate,
 not by retroactively relabelling these as final-source E2E runs. Scores of zero
 below are deliberate and say nothing about agent quality.
 

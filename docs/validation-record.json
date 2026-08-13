@@ -2,22 +2,22 @@
   "schema": "mini-agent-validation-record-v1",
   "attestation": {
     "kind": "self-attested",
-    "created_on": "2026-08-12",
+    "created_on": "2026-08-13",
     "scope": "source gates for the v0.5.0 public release (audit/cleanup plus OSS hardening passes), harness plumbing canaries, and machine-input provenance; not benchmark quality"
   },
   "source": {
-    "state": "single squashed v0.5.0 public release snapshot bound by frozen_harness_identity; developed atop a private iteration history",
+    "state": "post-0.5.0 working tree: ProgramBench adapter plus the validation-boilerplate flattening pass, bound by frozen_harness_identity",
     "frozen_harness_identity": {
       "schema": "mini-agent-harness-v1",
-      "source_file_count": 32,
-      "source_sha256": "a5506cfbaced8bfcb834c86a08794a1e03bbd5eaab670cbff3534f4e2ee08c66"
+      "source_file_count": 33,
+      "source_sha256": "eedaba050c60082c2993cbb010940592ddc07991cf758ef0fe62458598b32b2f"
     },
     "audit_pass": {
       "date": "2026-08-12",
-      "summary": "spec binding enforced on all CLI run/eval agent construction, codec translation losses declared and reported, E501 lint activated, dead code removed, grading/doctor/probe extracted from the CLI, shared checkout/hash/lifecycle helpers deduplicated, cua-speed-run step-budget exhaustion now runs the hidden checker, SWE-bench grader inventory count and byte totals asserted; the OSS pass added provider retry/backoff, bounded screenshot replay, credential preflight, the swe workspace guard, eval progress output, the quickstart/examples/library documentation, and the multi-mini-agent companion distribution",
+      "summary": "spec binding enforced on all CLI run/eval agent construction, codec translation losses declared and reported, E501 lint activated, dead code removed, grading/doctor/probe extracted from the CLI, shared checkout/hash/lifecycle helpers deduplicated, cua-speed-run step-budget exhaustion now runs the hidden checker, SWE-bench grader inventory count and byte totals asserted; the OSS pass added provider retry/backoff, bounded screenshot replay, credential preflight, the swe workspace guard, eval progress output, the quickstart/examples/library documentation, and the multi-mini-agent companion distribution; a later pass added the pinned ProgramBench adapter and flattened validation boilerplate onto shared type validators (src/mini_agent 20,902 -> 19,430 lines) with fingerprints, public API, and byte-exact upstream literals verified unchanged",
       "prior_frozen_identity": {
-        "source_file_count": 27,
-        "source_sha256": "9b0d0ceb6e640fb195e767523eeb39c2a46b2b1f0d2a999da8f58ac2d819665a"
+        "source_file_count": 32,
+        "source_sha256": "a5506cfbaced8bfcb834c86a08794a1e03bbd5eaab670cbff3534f4e2ee08c66"
       }
     },
     "canary_source_identity": "reference canaries predate the frozen source; exact computer identities are recorded per saved manifest"
@@ -26,12 +26,11 @@
     {
       "command": "PYTHONPATH=src python3 -m unittest discover -s tests -v",
       "interpreters": [
-        "CPython 3.10.20",
         "CPython 3.12.5"
       ],
-      "tests_per_interpreter": 360,
+      "tests_per_interpreter": 388,
       "status": "passed",
-      "note": "CPython 3.11 and 3.13 were not installed on the audit node; the four-interpreter matrix remains enforced in CI"
+      "note": "run on the only interpreter present on the current node; the four-interpreter 3.10-3.13 matrix remains enforced in CI"
     },
     {
       "command": "PYTHONPATH=src python3 -m compileall -q src tests",
@@ -53,15 +52,7 @@
     },
     {
       "command": "umask 0022 && python3 -m build && python3 -m twine check --strict dist/*",
-      "status": "passed",
-      "artifacts": {
-        "mini_agent_cmu_wheel_sha256": "884340e5d9119debfdc282120424477fd47662aa1c71aac7b940d31d651e1048",
-        "mini_agent_cmu_sdist_sha256": "9f90294c243b83aa65eb0096e82e63fcbc39a22847d0040a4df38e5be7e9eae2",
-        "multi_mini_agent_wheel_sha256": "7bb2af1cf4a4d706b8f7eda61cfa15032e8d8f5415701da596a018b1141bde7c",
-        "multi_mini_agent_sdist_sha256": "7e0d813f519574aaedc60105d1eec9144d5b0e605b459c2afed7f95d220cdc0c",
-        "note": "checked locally then removed; sdist hashes vary with archive timestamps; the distribution is named mini-agent-cmu"
-      },
-      "fresh_install_checks": "both 0.5.0 wheels installed into a clean CPython 3.12 venv; versions, console scripts, and the multi-agent spec surface verified"
+      "status": "not re-run after the ProgramBench and flattening passes"
     }
   ],
   "reference_pass_canaries": {
@@ -227,6 +218,7 @@
     }
   ],
   "limitations": [
+    "ProgramBench generation and official `programbench eval` scoring have not been executed against real Docker images or HuggingFace test blobs; the adapter is covered by deterministic offline tests only",
     "no model credential available for a fresh paid-provider run",
     "no SERPAPI_API_KEY; BrowseComp live search not run",
     "no Docker; official SWE-bench grader not run",
