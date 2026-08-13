@@ -6,6 +6,37 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Container runtimes are now benchmark-neutral infrastructure under
+  `src/mini_agent/runtimes/`: `base.py` (the `SandboxRuntime` protocol plus the
+  shared `ProcessResult` and argument validators), `local.py`, `docker.py`, and
+  `apptainer.py`. They contain no benchmark imports, image names, or task
+  identifiers; SWE-bench and ProgramBench pass all of that in as configuration.
+- `DockerSWEEnvironment`, `ApptainerSWEEnvironment`, and the local
+  `BashEnvironment` collapse into one `mini_agent.environments.bash
+  .BashEnvironment` over any `SandboxRuntime`. `environments/swe.py` and
+  `environments/swebench.py` are removed; import `BashEnvironment`,
+  `SWEPatchState`, and `SWEArchiveState` from `mini_agent.environments.bash`,
+  and `SWEbenchImageBinding`, `resolve_swebench_image_binding`,
+  `swebench_image_name`, `swebench_doctor`, `docker_swe_environment`, and
+  `apptainer_swe_environment` from `mini_agent.benchmarks.swebench`.
+- Local direct and isolated bash runs now go through `BashEnvironment.local()`
+  and `BashEnvironment.isolated()`; the raw constructor takes a runtime.
+- SWE environment provenance is consistent across backends. The Apptainer
+  environment now also reports `tools` and `patch_export`, and local runs also
+  report `base_commit`. No previously recorded key changed name or value.
+- Official SWE-bench grader-image verification runs in the grading process
+  through its own Docker SDK instead of an embedded 133-line program executed by
+  a separate `-I` interpreter. It still checks, before and after the grader
+  subprocess, that every task's mutable `:latest` tag resolves to the exact image
+  ID captured at generation, and still records the SDK version, module origin,
+  and package root. Its `engine_contract` provenance value changes from
+  `isolated-python-I:docker.from_env` to `in-process:docker.from_env`.
+- `swebench_grader_source_identity` no longer asserts a separate 591-file /
+  1,890,632-byte inventory. The pinned source digest already covers every path,
+  size, and content hash; the counts remain grade provenance.
+
 ### Added
 
 - ProgramBench adapter (`mini-agent eval --benchmark programbench`,

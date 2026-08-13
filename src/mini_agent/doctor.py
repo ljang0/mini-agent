@@ -52,7 +52,7 @@ async def _doctor(args: argparse.Namespace) -> int:
         okay = okay and storage_ok
     if "swebench" in targets:
         if args.runtime == "docker":
-            from .environments.swebench import swebench_doctor
+            from .benchmarks.swebench import swebench_doctor
 
             docker = await swebench_doctor(runtime=tuple(args.container_runtime))
             swe_report: Mapping[str, Any] = {
@@ -94,8 +94,8 @@ async def _doctor(args: argparse.Namespace) -> int:
 
 
 async def _apptainer_doctor(args: argparse.Namespace) -> Mapping[str, Any]:
-    from .environments.base import complete_in_thread
-    from .environments.swe import LocalProcessRunner
+    from ._lifecycle import complete_in_thread
+    from .runtimes.local import LocalProcessRunner
 
     executable = shutil.which(args.apptainer_executable)
     if executable is None:
@@ -318,7 +318,7 @@ async def _computer_doctor(args: argparse.Namespace) -> Mapping[str, Any]:
                     executable=args.apptainer_executable,
                 )
             else:
-                from .environments.swebench import swebench_doctor
+                from .benchmarks.swebench import swebench_doctor
 
                 docker = await swebench_doctor(runtime=tuple(args.container_runtime))
                 runtime = {

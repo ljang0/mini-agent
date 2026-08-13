@@ -655,6 +655,49 @@ def task_agent_root(task_id: str) -> str:
     return task_agent_prefix(task_id) + "/root"
 
 
+def owned_instance_artifacts(
+    output: Path, name: str, *, label: str
+) -> tuple[Path, Path, list[Path]]:
+    """Return an evaluation's own ``instances/*/<name>`` artifacts.
+
+    Official collectors must never follow a link out of the evaluation they
+    were pointed at, so the root, the ``instances`` directory, every instance
+    directory, and every artifact are each required to be non-symlink and
+    owned by this evaluation.
+    """
+
+    expanded_root = output.expanduser()
+    root = expanded_root.resolve()
+    instances = root / "instances"
+    if (
+        expanded_root.is_symlink()
+        or expanded_root.absolute() != root
+        or not root.is_dir()
+        or instances.is_symlink()
+        or not instances.is_dir()
+        or instances.resolve() != instances
+    ):
+        raise ValueError(
+            f"{label} evaluation and instances must be non-symlink directories"
+        )
+    artifacts: list[Path] = []
+    for path in sorted(instances.glob("*/" + name)):
+        parent = path.parent
+        if (
+            parent.parent != instances
+            or parent.is_symlink()
+            or not parent.is_dir()
+            or parent.resolve().parent != instances
+            or path.is_symlink()
+            or not path.is_file()
+        ):
+            raise ValueError(
+                f"{label} artifact must be an owned regular instance artifact"
+            )
+        artifacts.append(path)
+    return root, instances, artifacts
+
+
 def atomic_json(path: Path, value: Any) -> None:
     content = json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n"
     atomic_bytes(path, content.encode())

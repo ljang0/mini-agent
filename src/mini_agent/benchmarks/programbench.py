@@ -16,11 +16,10 @@ import sys
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, Sequence
 
-from ..environments.swebench import (
+from ..environments.bash import (
     DEFAULT_MAX_ARCHIVE_BYTES,
-    DockerSWEEnvironment,
+    BashEnvironment,
     SWEArchiveState,
-    SWEbenchImageBinding,
 )
 from ..models import Model
 from ..orchestrator import Orchestrator
@@ -38,6 +37,7 @@ from ..types import (
 )
 from .base import (
     BenchmarkTask,
+    owned_instance_artifacts,
     EvaluationOutcome,
     atomic_bytes,
     immutable_file_identity,
@@ -48,6 +48,7 @@ from .base import (
     task_agent_root,
 )
 from .checkout import git as _git, reject_untracked_execution_files
+from .swebench import SWEbenchImageBinding, docker_swe_environment
 
 
 PROGRAMBENCH_REVISION = "963063c9271cc40fa179977356782ea4582e0b0c"
@@ -326,9 +327,9 @@ async def run_programbench_task(
     if task.data.get("image_name") != programbench_image_name(instance_id):
         raise ValueError("ProgramBench task image does not match its instance id")
 
-    async def environment_for(agent_id: str) -> DockerSWEEnvironment:
+    async def environment_for(agent_id: str) -> BashEnvironment:
         del agent_id
-        return await DockerSWEEnvironment.create(
+        return await docker_swe_environment(
             task.data,
             image_binding=image_binding,
             runtime=container_runtime,
@@ -422,36 +423,14 @@ async def run_programbench_task(
 def collect_submissions(output: Path, destination: Path) -> int:
     """Build the exact `<run>/<instance_id>/submission.tar.gz` layout."""
 
-    expanded_root = output.expanduser()
-    root = expanded_root.resolve()
-    instances = root / "instances"
-    if (
-        expanded_root.is_symlink()
-        or expanded_root.absolute() != root
-        or not root.is_dir()
-        or instances.is_symlink()
-        or not instances.is_dir()
-        or instances.resolve() != instances
-    ):
-        raise ValueError(
-            "ProgramBench evaluation and instances must be non-symlink directories"
-        )
+    root, _, artifacts = owned_instance_artifacts(
+        output, PROGRAMBENCH_SUBMISSION_NAME, label="ProgramBench"
+    )
     target = _submission_collection_target(root, destination)
     records: list[tuple[str, bytes]] = []
     instance_ids: set[str] = set()
-    for path in sorted(instances.glob("*/" + PROGRAMBENCH_SUBMISSION_NAME)):
+    for path in artifacts:
         parent = path.parent
-        if (
-            parent.parent != instances
-            or parent.is_symlink()
-            or not parent.is_dir()
-            or parent.resolve().parent != instances
-            or path.is_symlink()
-            or not path.is_file()
-        ):
-            raise ValueError(
-                "ProgramBench submission must be an owned regular instance artifact"
-            )
         content = path.read_bytes()
         try:
             declared = strict_json_loads(

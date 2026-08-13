@@ -374,7 +374,7 @@ async def _run_swe(
     work: Path,
 ) -> tuple[str, Mapping[str, Any]]:
     system_prompt = spec.system_prompt
-    from .environments.swe import BashEnvironment, SWEPatchState
+    from .environments.bash import BashEnvironment, SWEPatchState
 
     if args.workspace is None:
         raise ValueError(
@@ -416,7 +416,7 @@ async def _run_swe(
             },
         }
 
-    environment = BashEnvironment(workspace)
+    environment = BashEnvironment.local(workspace)
     result = await _run_single_agent(
         environment,
         model_factory=model_factory,

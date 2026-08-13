@@ -1,30 +1,52 @@
-"""SWE-bench generation and official grader contracts."""
+"""SWE-bench adapter: image binding, task loading, generation, grader contracts.
+
+Container provisioning lives in :mod:`mini_agent.runtimes` and the bash tool in
+:mod:`mini_agent.environments.bash`; everything here is what makes a run
+*SWE-bench*: the official image-name rule, the pinned upstream revision, the
+per-task Git baseline, and the official grader's prediction/source contracts.
+"""
 
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata as metadata
+import importlib.util
 import json
 import os
 import re
 import shutil
-import stat
-import subprocess
 import sys
-import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, Sequence
 
-from ..environments.swe import SWEPatchState
-from ..environments.swebench import (
-    ApptainerSWEEnvironment,
-    DockerSWEEnvironment,
-    SWEBENCH_REVISION,
-    SWEbenchImageBinding,
-    resolve_swebench_image_binding,
+from ..environments.bash import (
+    DEFAULT_MAX_ARCHIVE_BYTES,
+    DEFAULT_MAX_PATCH_BYTES,
+    BashEnvironment,
+    SWEPatchState,
+    container_bash_environment,
 )
 from ..models import Model
 from ..orchestrator import Orchestrator
 from ..runtime import RunContext
+from ..runtimes.apptainer import ApptainerRuntime, apptainer_image_identity
+from ..runtimes.base import (
+    DEFAULT_MAX_OUTPUT_BYTES,
+    ProcessRunner,
+    positive_int,
+    positive_number,
+    require_argv,
+    require_ref,
+    require_workdir,
+    resolve_runner,
+)
+from ..runtimes.docker import (
+    DockerRuntime,
+    RuntimeDoctorReport,
+    docker_doctor,
+    docker_image_id,
+)
 from ..specs import AgentSpecV1
 from ..types import (
     BudgetLimits,
@@ -39,6 +61,7 @@ from ..types import (
 )
 from .base import (
     task_agent_builder,
+    owned_instance_artifacts,
     BenchmarkTask,
     EvaluationOutcome,
     atomic_bytes,
@@ -50,161 +73,36 @@ from .base import (
 )
 
 
+SWEBENCH_REVISION = "726c5461e2ef52d83cf1ea2107870a8bb3328d57"
+SWEBENCH_TAG = "v4.1.0"
 SWEBENCH_VERSION = "4.1.0"
+SWEBENCH_WORKDIR = "/testbed"
+SWEBENCH_BASH_ENV = "/root/.bashrc"
 SWEBENCH_SOURCE_SHA256 = (
     "63d4d3d0543de66520fa44f12badddaa810f708a0d780954684c24c7ce075cc8"
 )
-SWEBENCH_SOURCE_FILE_COUNT = 591
-SWEBENCH_SOURCE_SIZE_BYTES = 1_890_632
 ModelFactory = Callable[[str], Model | Awaitable[Model]]
-_SAFE_GRADER_COMPONENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,255}")
-_DOCKER_PROBE_MAX_BYTES = 4 * 1024 * 1024
-_DOCKER_PROBE_SOURCE = r"""
-import importlib.metadata as metadata
-import importlib.util
-import json
-import os
-import re
-import sys
 
-SCHEMA = "mini-agent-isolated-swebench-images-v1"
-REQUEST = sys.argv[1]
-OUTPUT = sys.argv[2]
-
-
-class ProbeError(Exception):
-    def __init__(self, code, image=""):
-        self.code = code
-        self.image = image
-
-
-def emit(value):
-    encoded = json.dumps(
-        value, sort_keys=True, separators=(",", ":"), allow_nan=False
-    ).encode("utf-8")
-    if len(encoded) > 3 * 1024 * 1024:
-        raise SystemExit(70)
-    descriptor = os.open(OUTPUT, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(descriptor, "wb") as stream:
-        stream.write(encoded)
-        stream.flush()
-        os.fsync(stream.fileno())
-
-
-def docker_identity():
-    try:
-        version = metadata.version("docker")
-    except metadata.PackageNotFoundError:
-        raise ProbeError("sdk")
-    spec = importlib.util.find_spec("docker")
-    if spec is None or not isinstance(spec.origin, str) or not spec.origin:
-        raise ProbeError("sdk")
-    locations = list(spec.submodule_search_locations or ())
-    if len(locations) != 1 or not isinstance(locations[0], str):
-        raise ProbeError("sdk")
-    origin = os.path.abspath(spec.origin)
-    package_root = os.path.abspath(locations[0])
-    if (
-        os.path.basename(origin) != "__init__.py"
-        or os.path.islink(origin)
-        or os.path.islink(package_root)
-        or os.path.realpath(origin) != origin
-        or os.path.realpath(package_root) != package_root
-        or os.path.dirname(origin) != package_root
-        or not os.path.isfile(origin)
-        or not os.path.isdir(package_root)
-    ):
-        raise ProbeError("sdk")
-    return version, origin, package_root
-
-
-client = None
-failure = None
-result = None
-try:
-    with open(REQUEST, "rb") as stream:
-        request = json.load(stream)
-    version, origin, package_root = docker_identity()
-    import docker
-
-    module_file = getattr(docker, "__file__", None)
-    module_version = getattr(docker, "__version__", None)
-    if (
-        not isinstance(module_file, str)
-        or os.path.realpath(module_file) != origin
-        or module_version != version
-    ):
-        raise ProbeError("sdk")
-    try:
-        client = docker.from_env(
-            environment=request["environment"], timeout=request["timeout_seconds"]
-        )
-    except BaseException:
-        raise ProbeError("connect")
-    observed_images = []
-    for item in request["images"]:
-        image_name = item["grader_image"]
-        try:
-            image = client.images.get(image_name)
-        except BaseException:
-            raise ProbeError("unavailable", image_name)
-        observed = getattr(image, "id", None)
-        if not isinstance(observed, str):
-            raise ProbeError("invalid_id", image_name)
-        observed = observed.strip().casefold()
-        if re.fullmatch(r"sha256:[0-9a-f]{64}", observed) is None:
-            raise ProbeError("invalid_id", image_name)
-        if observed != item["expected_image_id"]:
-            raise ProbeError("changed", image_name)
-        observed_images.append(
-            {"grader_image": image_name, "image_id": observed}
-        )
-    result = {
-        "schema": SCHEMA,
-        "ok": True,
-        "python": {
-            "executable": os.path.abspath(sys.executable),
-            "prefix": os.path.abspath(sys.prefix),
-            "base_prefix": os.path.abspath(sys.base_prefix),
-        },
-        "docker_sdk": {
-            "version": version,
-            "origin": origin,
-            "package_root": package_root,
-        },
-        "images": observed_images,
-    }
-except ProbeError as error:
-    failure = {"code": error.code, "image": error.image}
-except BaseException:
-    failure = {"code": "runtime", "image": ""}
-if client is not None:
-    try:
-        client.close()
-    except BaseException:
-        if failure is None:
-            failure = {"code": "cleanup", "image": ""}
-if failure is not None:
-    result = {
-        "schema": SCHEMA,
-        "ok": False,
-        "error": failure["code"],
-        "image": failure["image"],
-    }
-emit(result)
-"""
-
-
-_INVALID_IDENTITY = "isolated SWE-bench grader image identity is invalid"
-_INVALID_SDK = "isolated SWE-bench Docker SDK identity is invalid"
-_INVALID_SOURCE = "official SWE-bench package source tree is invalid"
-_INVALID_VERIFY = "isolated SWE-bench grader image verification failed"
-_UNSAFE_ENTRY = "official SWE-bench package contains an unsafe {kind}"
-_PROBE_IMAGE_ERRORS = {
-    "unavailable": "is unavailable",
-    "invalid_id": "returned an invalid image ID",
-    "changed": "changed identity",
+_CONTAINER_NAME_PREFIX = "mini-agent-swe-"
+_APPTAINER_ROOT_PREFIX = "mini-agent-swe-apptainer-"
+_CONTAINER_ENV = ("HOME=/root", "PAGER=cat", "MANPAGER=cat", "TQDM_DISABLE=1")
+_CONTAINER_LABELS = ("mini-agent.swebench=true",)
+_DOCKER_EXEC_ENV = {"BASH_ENV": SWEBENCH_BASH_ENV}
+_APPTAINER_EXEC_ENV = {
+    "PAGER": "cat",
+    "MANPAGER": "cat",
+    "TQDM_DISABLE": "1",
+    "BASH_ENV": SWEBENCH_BASH_ENV,
 }
+_APPTAINER_TOOL_DESCRIPTION = (
+    "Run one bash command in the persistent SWE-bench /testbed workspace. "
+    "Each call starts a fresh shell."
+)
+_IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}")
+_SAFE_GRADER_COMPONENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,255}")
+_INVALID_SDK = "SWE-bench grader Docker SDK identity is invalid"
+_INVALID_SOURCE = "official SWE-bench package source tree is invalid"
+_UNSAFE_ENTRY = "official SWE-bench package contains an unsafe {kind}"
 
 
 def _require_grader_component(value: Any, label: str) -> str:
@@ -231,284 +129,308 @@ def _sha256(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
-def swebench_grader_image_name(instance_id: Any) -> str:
-    """Return the exact default v4.1.0 remote image tag for one task."""
+def _instance_id(instance: Mapping[str, Any]) -> str:
+    value = instance.get("instance_id")
+    if not isinstance(value, str) or not value:
+        raise ValueError("SWE-bench instance requires instance_id")
+    return value
 
-    resolved = _require_grader_component(instance_id, "SWE-bench instance_id")
-    key = f"sweb.eval.x86_64.{resolved.casefold()}:latest"
-    return f"swebench/{key}".replace("__", "_1776_")
+
+def _expected_base_commit(instance: Mapping[str, Any]) -> str | None:
+    value = instance.get("base_commit")
+    if value is None:
+        return None
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-fA-F]{40}", value):
+        raise ValueError("SWE-bench base_commit must be a full Git commit")
+    return value.casefold()
 
 
-def verify_swebench_grader_images(
-    generation_manifest: Mapping[str, Any],
+def _benchmark_identity(value: Mapping[str, Any] | None) -> Mapping[str, str]:
+    if value is None:
+        return {
+            "benchmark": "swe_bench",
+            "benchmark_revision": SWEBENCH_REVISION,
+            "benchmark_tag": SWEBENCH_TAG,
+        }
+    if not isinstance(value, Mapping) or not value:
+        raise ValueError("container benchmark identity must be a non-empty object")
+    message = "container benchmark identity must contain strings"
+    return {
+        require_ref(name, message): require_ref(item, message)
+        for name, item in value.items()
+    }
+
+
+def swebench_image_name(instance: Mapping[str, Any]) -> str:
+    explicit = instance.get("image_name") or instance.get("docker_image")
+    if explicit is not None:
+        if not isinstance(explicit, str) or not explicit or explicit.startswith("-"):
+            raise ValueError("SWE-bench image name must be a non-empty Docker image")
+        if "\x00" in explicit:
+            raise ValueError("SWE-bench image name contains a NUL byte")
+        return explicit
+    docker_id = _instance_id(instance).replace("__", "_1776_").lower()
+    return f"docker.io/swebench/sweb.eval.x86_64.{docker_id}:latest"
+
+
+@dataclass(frozen=True)
+class SWEbenchImageBinding:
+    """Immutable image selected for one SWE-bench task.
+
+    ``requested`` is retained for auditability. ``execution_ref`` is the exact
+    Docker image ID or local SIF selected during preflight and is intentionally
+    omitted from the location-independent manifest identity.
+    """
+
+    runtime: str
+    requested: str
+    identity: str
+    execution_ref: str
+
+    def __post_init__(self) -> None:
+        if self.runtime not in {"docker", "apptainer"}:
+            raise ValueError("SWE-bench image binding runtime is invalid")
+        require_ref(
+            self.requested, "SWE-bench requested image is invalid", no_dash=True
+        )
+        if not isinstance(self.execution_ref, str) or not self.execution_ref:
+            raise ValueError("SWE-bench image execution reference is invalid")
+        if not _IMAGE_ID.fullmatch(self.identity):
+            raise ValueError("SWE-bench image identity must be a SHA-256 digest")
+        if self.runtime == "docker" and self.execution_ref != self.identity:
+            raise ValueError("Docker must execute the resolved image ID")
+        if self.runtime == "apptainer" and not Path(self.execution_ref).is_absolute():
+            raise ValueError("Apptainer must execute an absolute local image path")
+
+    def manifest_identity(self) -> Mapping[str, str]:
+        return {
+            "runtime": self.runtime,
+            "requested": self.requested,
+            "identity": self.identity,
+        }
+
+
+def _apptainer_source(instance: Mapping[str, Any], image: str | None) -> str:
+    if image is not None and not isinstance(image, str):
+        raise ValueError("Apptainer image must be a string or None")
+    requested = image or "docker://" + swebench_image_name(instance).removeprefix(
+        "docker.io/"
+    )
+    return require_ref(requested, "Apptainer image reference is invalid", no_dash=True)
+
+
+async def resolve_swebench_image_binding(
+    instance: Mapping[str, Any],
     *,
-    python_executable: str,
-    grader_environment: Mapping[str, str],
+    runtime: str,
+    container_runtime: Sequence[str] = ("docker",),
+    apptainer_executable: str = "apptainer",
+    apptainer_image_cache: Path | None = None,
+    runner: ProcessRunner | None = None,
     timeout_seconds: float = 60.0,
-) -> Mapping[str, Any]:
-    """Inspect tags through the exact Docker SDK/daemon used by the grader."""
+    max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES,
+) -> SWEbenchImageBinding:
+    """Resolve a mutable task image reference to bytes before inference."""
 
-    _require_mapping(generation_manifest, "SWE-bench generation manifest")
-    config = generation_manifest.get("config")
-    adapter = config.get("adapter") if isinstance(config, Mapping) else None
-    if not isinstance(adapter, Mapping) or adapter.get("runtime") != "docker":
-        raise ValueError(
-            "official SWE-bench grading requires Docker generation image bindings"
+    from ..runtimes.apptainer import materialize_apptainer_image
+
+    _require_mapping(instance, "SWE-bench instance")
+    if runtime not in {"docker", "apptainer"}:
+        raise ValueError("SWE-bench runtime must be docker or apptainer")
+    resolved_timeout = positive_number(timeout_seconds, "timeout_seconds")
+    resolved_output = positive_int(max_output_bytes, "max_output_bytes")
+    process_runner = resolve_runner(runner)
+    requested = swebench_image_name(instance)
+    if runtime == "docker":
+        image_id = await docker_image_id(
+            requested,
+            runtime=require_argv(container_runtime, "container runtime"),
+            runner=process_runner,
+            timeout_seconds=resolved_timeout,
+            max_output_bytes=resolved_output,
+            pull_if_missing=True,
         )
-    recorded_runtime = adapter.get("container_runtime")
-    if (
-        not isinstance(recorded_runtime, list)
-        or not recorded_runtime
-        or not all(_plain_string(item) for item in recorded_runtime)
-    ):
-        raise ValueError("SWE-bench generation container runtime is invalid")
-    if not isinstance(grader_environment, Mapping) or not all(
-        _plain_string(name) and isinstance(value, str) and "\x00" not in value
-        for name, value in grader_environment.items()
-    ):
-        raise ValueError("SWE-bench grader environment must contain strings")
-    environment = dict(grader_environment)
-    if not environment.get("DOCKER_HOST"):
-        raise ValueError(
-            "SWE-bench grading requires an explicit DOCKER_HOST so image "
-            "verification and the upstream grader address the same engine"
+        return SWEbenchImageBinding(
+            runtime="docker",
+            requested=requested,
+            identity=image_id,
+            execution_ref=image_id,
         )
-    if environment.get("DOCKER_TLS_VERIFY") is not None and not environment.get(
-        "DOCKER_CERT_PATH"
-    ):
-        raise ValueError(
-            "DOCKER_TLS_VERIFY requires an explicit DOCKER_CERT_PATH for exact "
-            "SWE-bench grader-engine binding"
-        )
-    bindings = adapter.get("image_bindings")
-    tasks = generation_manifest.get("tasks")
-    if not isinstance(bindings, Mapping) or not isinstance(tasks, list) or not tasks:
-        raise ValueError("SWE-bench generation manifest has no Docker image bindings")
-    task_ids: list[str] = []
-    for task in tasks:
-        _require_mapping(task, "SWE-bench generation task")
-        task_ids.append(
-            _require_grader_component(task.get("id"), "SWE-bench generation task id")
-        )
-    if len(task_ids) != len(set(task_ids)) or set(bindings) != set(task_ids):
-        raise ValueError(
-            "SWE-bench Docker image bindings must exactly cover generation tasks"
-        )
-    _require_finite_number(
-        timeout_seconds, "SWE-bench image verification timeout", exclusive_minimum=0
+
+    require_ref(apptainer_executable, "Apptainer executable must be non-empty")
+    source = "docker://" + requested.removeprefix("docker.io/")
+    selected = await materialize_apptainer_image(
+        source,
+        executable=apptainer_executable,
+        runner=process_runner,
+        cache=apptainer_image_cache,
+        timeout_seconds=max(resolved_timeout, 1800.0),
+        max_output_bytes=resolved_output,
+    )
+    return SWEbenchImageBinding(
+        runtime="apptainer",
+        requested=source,
+        identity=await apptainer_image_identity(selected),
+        execution_ref=str(Path(selected).expanduser().resolve()),
     )
 
-    expected_images: list[tuple[str, str, str]] = []
-    for instance_id in sorted(task_ids):
-        binding = bindings[instance_id]
-        if (
-            not isinstance(binding, Mapping)
-            or set(binding) != {"runtime", "requested", "identity"}
-            or binding.get("runtime") != "docker"
-            or not isinstance(binding.get("requested"), str)
-            or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(binding.get("identity")))
-        ):
-            raise ValueError(
-                f"SWE-bench task {instance_id!r} has an invalid Docker image binding"
-            )
-        grader_image = swebench_grader_image_name(instance_id)
-        expected_images.append((instance_id, grader_image, str(binding["identity"])))
 
-    if not _plain_string(python_executable):
-        raise ValueError("SWE-bench grader Python executable is invalid")
-    executable_value = shutil.which(python_executable)
-    try:
-        current_python = executable_value is not None and os.path.samefile(
-            executable_value, sys.executable
-        )
-    except OSError:
-        current_python = False
-    if not current_python:
+async def swebench_doctor(
+    *,
+    runtime: Sequence[str] = ("docker",),
+    image: str | None = None,
+    runner: ProcessRunner | None = None,
+    timeout_seconds: float = 30.0,
+    max_output_bytes: int = 64 * 1024,
+    require_rootless: bool = True,
+) -> RuntimeDoctorReport:
+    """Probe the container runtime an SWE-bench Docker run requires."""
+
+    return await docker_doctor(
+        runtime=runtime,
+        image=image,
+        runner=runner,
+        timeout_seconds=timeout_seconds,
+        max_output_bytes=max_output_bytes,
+        require_rootless=require_rootless,
+    )
+
+
+async def docker_swe_environment(
+    instance: Mapping[str, Any],
+    *,
+    image_binding: SWEbenchImageBinding | None = None,
+    runtime: Sequence[str] = ("docker",),
+    platform: str | None = None,
+    timeout_seconds: float = 60.0,
+    max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES,
+    max_patch_bytes: int = DEFAULT_MAX_PATCH_BYTES,
+    max_archive_bytes: int = DEFAULT_MAX_ARCHIVE_BYTES,
+    workdir: str = SWEBENCH_WORKDIR,
+    network_disabled: bool = False,
+    require_git_baseline: bool = True,
+    benchmark_identity: Mapping[str, Any] | None = None,
+    runner: ProcessRunner | None = None,
+) -> BashEnvironment:
+    """One bash tool in a persistent rootless SWE-bench instance container."""
+
+    _require_mapping(instance, "SWE-bench instance")
+    _require_bool(network_disabled, "network_disabled")
+    _require_bool(require_git_baseline, "require_git_baseline")
+    resolved_workdir = require_workdir(workdir)
+    resolved_identity = _benchmark_identity(benchmark_identity)
+    resolved_runtime = require_argv(runtime, "container runtime")
+    resolved_timeout = positive_number(timeout_seconds, "timeout_seconds")
+    resolved_output = positive_int(max_output_bytes, "max_output_bytes")
+    image = swebench_image_name(instance)
+    expected_base_commit = _expected_base_commit(instance)
+    if expected_base_commit is not None and not require_git_baseline:
         raise ValueError(
-            "SWE-bench image verification requires the current grader Python"
+            "a task base_commit cannot be verified without a Git baseline"
         )
-    assert executable_value is not None
-    # Preserve the virtual-environment spelling: resolving this symlink would
-    # execute the base interpreter with a different installed package set.
-    executable = Path(executable_value).absolute()
-
-    request_value = {
-        "schema": "mini-agent-isolated-swebench-images-request-v1",
-        "environment": environment,
-        "timeout_seconds": float(timeout_seconds),
-        "images": [
-            {"grader_image": grader_image, "expected_image_id": expected}
-            for _, grader_image, expected in expected_images
-        ],
-    }
-    request_encoded = _canonical_bytes(request_value)
-    if len(request_encoded) > _DOCKER_PROBE_MAX_BYTES:
-        raise ValueError("SWE-bench image verification request is too large")
-    with tempfile.TemporaryDirectory(prefix="mini-agent-swebench-images-") as temporary:
-        probe_root = Path(temporary)
-        probe_root.chmod(0o700)
-        request_path = probe_root / "request.json"
-        output_path = probe_root / "identity.json"
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-        descriptor = os.open(request_path, flags, 0o600)
-        try:
-            with os.fdopen(descriptor, "wb", closefd=False) as stream:
-                stream.write(request_encoded)
-                stream.flush()
-                os.fsync(stream.fileno())
-        finally:
-            os.close(descriptor)
-        try:
-            completed = subprocess.run(
-                (
-                    str(executable),
-                    "-I",
-                    "-c",
-                    _DOCKER_PROBE_SOURCE,
-                    str(request_path),
-                    str(output_path),
-                ),
-                cwd=probe_root,
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                env=environment,
-                timeout=float(timeout_seconds),
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise RuntimeError(_INVALID_VERIFY) from exc
-        if completed.returncode != 0:
-            raise RuntimeError(_INVALID_VERIFY)
-        value = _read_docker_probe_output(output_path)
-
-    if value.get("schema") != "mini-agent-isolated-swebench-images-v1":
-        raise RuntimeError(_INVALID_IDENTITY)
-    if value.get("ok") is not True:
-        code = value.get("error")
-        image = value.get("image")
-        if not isinstance(image, str) or image not in {
-            item[1] for item in expected_images
-        }:
-            image = ""
-        if code == "connect":
-            raise RuntimeError(
-                "could not connect to the official SWE-bench grader Docker engine"
-            )
-        if code == "cleanup":
-            raise RuntimeError("SWE-bench grader Docker client cleanup failed")
-        detail = _PROBE_IMAGE_ERRORS.get(str(code))
-        if image and detail is not None:
-            raise RuntimeError(f"official SWE-bench grader image {image!r} {detail}")
-        raise RuntimeError(_INVALID_IDENTITY)
-    if set(value) != {"schema", "ok", "python", "docker_sdk", "images"}:
-        raise RuntimeError(_INVALID_IDENTITY)
-    if value.get("python") != {
-        "executable": str(executable),
-        "prefix": str(Path(sys.prefix).absolute()),
-        "base_prefix": str(Path(sys.base_prefix).absolute()),
-    }:
-        raise RuntimeError("isolated SWE-bench grader Python identity is invalid")
-    docker_sdk = value.get("docker_sdk")
-    observed_images = value.get("images")
-    sdk_keys = ("version", "origin", "package_root")
-    if (
-        not isinstance(docker_sdk, Mapping)
-        or set(docker_sdk) != set(sdk_keys)
-        or not all(isinstance(docker_sdk[key], str) for key in sdk_keys)
-        or not docker_sdk["version"]
-    ):
-        raise RuntimeError(_INVALID_SDK)
-    docker_version = str(docker_sdk["version"])
-    origin_path = Path(str(docker_sdk["origin"]))
-    root_path = Path(str(docker_sdk["package_root"]))
-    try:
-        valid_sdk_paths = (
-            origin_path.is_absolute()
-            and root_path.is_absolute()
-            and origin_path.resolve(strict=True) == origin_path
-            and root_path.resolve(strict=True) == root_path
-            and origin_path.parent == root_path
-            and origin_path.name == "__init__.py"
-            and origin_path.is_file()
-            and root_path.is_dir()
+    instance_id = _instance_id(instance)
+    process_runner = resolve_runner(runner)
+    if image_binding is None:
+        image_id = await docker_image_id(
+            image,
+            runtime=resolved_runtime,
+            runner=process_runner,
+            timeout_seconds=resolved_timeout,
+            max_output_bytes=resolved_output,
+            pull_if_missing=True,
         )
-    except OSError:
-        valid_sdk_paths = False
-    if not valid_sdk_paths:
-        raise RuntimeError(_INVALID_SDK)
-    if not isinstance(observed_images, list) or len(observed_images) != len(
-        expected_images
-    ):
-        raise RuntimeError(_INVALID_IDENTITY)
-    verified: list[Mapping[str, str]] = []
-    for observed_value, expected_value in zip(observed_images, expected_images):
-        instance_id, grader_image, expected = expected_value
-        if observed_value != {"grader_image": grader_image, "image_id": expected}:
-            raise RuntimeError(_INVALID_IDENTITY)
-        binding = bindings[instance_id]
-        assert isinstance(binding, Mapping)
-        verified.append(
-            {
-                "instance_id": instance_id,
-                "grader_image": grader_image,
-                "generation_requested": str(binding["requested"]),
-                "image_id": expected,
-            }
-        )
+    elif image_binding.runtime != "docker":
+        raise ValueError("Docker received a non-Docker image binding")
+    elif image_binding.requested != image:
+        raise ValueError("Docker image binding does not match the task image")
+    else:
+        image_id = image_binding.identity
+    sandbox = await DockerRuntime.start(
+        image=image,
+        image_id=image_id,
+        runtime=resolved_runtime,
+        runner=process_runner,
+        name_label=instance_id,
+        name_prefix=_CONTAINER_NAME_PREFIX,
+        workdir=resolved_workdir,
+        exec_env=_DOCKER_EXEC_ENV,
+        container_env=_CONTAINER_ENV,
+        labels=_CONTAINER_LABELS,
+        platform=platform,
+        network_disabled=network_disabled,
+        timeout_seconds=resolved_timeout,
+        max_output_bytes=resolved_output,
+    )
+    return await container_bash_environment(
+        sandbox,
+        require_git_baseline=require_git_baseline,
+        expected_base_commit=expected_base_commit,
+        base_identity_prefix=image_id,
+        tool_description=(
+            f"Run one bash command in the persistent {resolved_workdir} "
+            "workspace. Each call starts a new shell."
+        ),
+        provenance_extra=resolved_identity,
+        destroy_on_timeout=True,
+        timeout_seconds=resolved_timeout,
+        max_output_bytes=resolved_output,
+        max_patch_bytes=max_patch_bytes,
+        max_archive_bytes=max_archive_bytes,
+    )
 
-    return {
-        "engine_contract": "isolated-python-I:docker.from_env",
-        "docker_sdk_version": docker_version,
-        "docker_sdk": {
-            "version": docker_version,
-            "origin": str(origin_path),
-            "package_root": str(root_path),
-        },
-        "environment_sha256": _sha256(_canonical_bytes(environment)),
-        "generation_container_runtime": list(recorded_runtime),
-        "images": verified,
-    }
 
+async def apptainer_swe_environment(
+    instance: Mapping[str, Any],
+    *,
+    image: str | None = None,
+    image_binding: SWEbenchImageBinding | None = None,
+    executable: str = "apptainer",
+    scratch_root: Path | None = None,
+    image_cache: Path | None = None,
+    overlay_size_mib: int = 16 * 1024,
+    timeout_seconds: float = 60,
+    max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES,
+    max_patch_bytes: int = DEFAULT_MAX_PATCH_BYTES,
+    runner: ProcessRunner | None = None,
+) -> BashEnvironment:
+    """One bash tool in a private Apptainer fakeroot overlay over the task SIF."""
 
-def _read_docker_probe_output(path: Path) -> Mapping[str, Any]:
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        descriptor = os.open(path, flags)
-    except OSError as exc:
-        raise RuntimeError(
-            "isolated SWE-bench grader image verification produced no identity"
-        ) from exc
-    try:
-        status = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(status.st_mode)
-            or status.st_nlink != 1
-            or status.st_uid != os.geteuid()
-            or stat.S_IMODE(status.st_mode) & 0o077
-            or status.st_size < 1
-            or status.st_size > _DOCKER_PROBE_MAX_BYTES
-        ):
-            raise RuntimeError(_INVALID_IDENTITY)
-        chunks: list[bytes] = []
-        remaining = _DOCKER_PROBE_MAX_BYTES + 1
-        while remaining:
-            chunk = os.read(descriptor, min(remaining, 65536))
-            if not chunk:
-                break
-            chunks.append(chunk)
-            remaining -= len(chunk)
-        encoded = b"".join(chunks)
-    finally:
-        os.close(descriptor)
-    if len(encoded) != status.st_size:
-        raise RuntimeError("isolated SWE-bench grader image identity changed")
-    try:
-        value = strict_json_loads(encoded.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
-        raise RuntimeError(_INVALID_IDENTITY) from exc
-    if not isinstance(value, Mapping):
-        raise RuntimeError(_INVALID_IDENTITY)
-    return value
+    _require_mapping(instance, "SWE-bench instance")
+    require_ref(executable, "Apptainer executable must be non-empty")
+    requested = _apptainer_source(instance, image)
+    expected_base_commit = _expected_base_commit(instance)
+    if image_binding is not None:
+        if image_binding.runtime != "apptainer":
+            raise ValueError("Apptainer received a non-Apptainer image binding")
+        if image_binding.requested != requested:
+            raise ValueError("Apptainer image binding does not match the task image")
+    sandbox = await ApptainerRuntime.start(
+        image=requested if image_binding is None else image_binding.execution_ref,
+        image_source=requested,
+        materialize=image_binding is None,
+        expected_identity=None if image_binding is None else image_binding.identity,
+        executable=executable,
+        runner=runner,
+        workdir=SWEBENCH_WORKDIR,
+        exec_env=_APPTAINER_EXEC_ENV,
+        scratch_root=scratch_root,
+        image_cache=image_cache,
+        root_prefix=_APPTAINER_ROOT_PREFIX,
+        overlay_size_mib=overlay_size_mib,
+        timeout_seconds=timeout_seconds,
+        max_output_bytes=max_output_bytes,
+    )
+    return await container_bash_environment(
+        sandbox,
+        expected_base_commit=expected_base_commit,
+        base_identity_prefix=sandbox.image_identity,
+        tool_description=_APPTAINER_TOOL_DESCRIPTION,
+        provenance_extra=_benchmark_identity(None),
+        startup_label="Apptainer SWE setup",
+        timeout_seconds=timeout_seconds,
+        max_output_bytes=max_output_bytes,
+        max_patch_bytes=max_patch_bytes,
+    )
 
 
 def load_swebench(path: Path, *, limit: int | None = None) -> tuple[BenchmarkTask, ...]:
@@ -630,10 +552,10 @@ async def run_swebench_task(
     async def environment_for(agent_id: str) -> Any:
         del agent_id
         if runtime == "docker":
-            return await DockerSWEEnvironment.create(
+            return await docker_swe_environment(
                 task.data, image_binding=image_binding, runtime=container_runtime
             )
-        return await ApptainerSWEEnvironment.create(
+        return await apptainer_swe_environment(
             task.data,
             image_binding=image_binding,
             executable=apptainer_executable,
@@ -665,7 +587,7 @@ async def run_swebench_task(
         if not isinstance(root_state, SWEPatchState):
             raise RuntimeError("root SWE agent produced no patch state")
         patch = root_state.patch
-        metadata: Mapping[str, Any] = {
+        metadata_value: Mapping[str, Any] = {
             "mode": "multi",
             "runtime": runtime,
             "agents": {
@@ -683,12 +605,12 @@ async def run_swebench_task(
         operation_error: BaseException | None = None
         result = None
         patch = b""
-        metadata = {}
+        metadata_value = {}
         try:
             agent = await agent_for(root_id, environment, context)
             result = await agent.run(task.prompt)
             patch = await environment.export_patch()
-            metadata = {
+            metadata_value = {
                 "mode": "single",
                 "runtime": runtime,
                 "environment": dict(environment.provenance()),
@@ -710,7 +632,7 @@ async def run_swebench_task(
     }
     atomic_json(directory / "prediction.json", prediction)
     artifact_metadata = {
-        **metadata,
+        **metadata_value,
         "patch_bytes": len(patch),
         "patch_sha256": _sha256(patch),
         "prediction_sha256": _sha256((directory / "prediction.json").read_bytes()),
@@ -718,6 +640,219 @@ async def run_swebench_task(
     return EvaluationOutcome(
         task.task_id, "completed", answer=result.answer, metadata=artifact_metadata
     )
+
+
+def swebench_grader_image_name(instance_id: Any) -> str:
+    """Return the exact default v4.1.0 remote image tag for one task."""
+
+    resolved = _require_grader_component(instance_id, "SWE-bench instance_id")
+    key = f"sweb.eval.x86_64.{resolved.casefold()}:latest"
+    return f"swebench/{key}".replace("__", "_1776_")
+
+
+def _grader_image_expectations(
+    generation_manifest: Mapping[str, Any],
+) -> tuple[list[str], list[tuple[str, str, str, str]]]:
+    """Return the recorded runtime and every task's exact expected image ID."""
+
+    _require_mapping(generation_manifest, "SWE-bench generation manifest")
+    config = generation_manifest.get("config")
+    adapter = config.get("adapter") if isinstance(config, Mapping) else None
+    if not isinstance(adapter, Mapping) or adapter.get("runtime") != "docker":
+        raise ValueError(
+            "official SWE-bench grading requires Docker generation image bindings"
+        )
+    recorded_runtime = adapter.get("container_runtime")
+    if (
+        not isinstance(recorded_runtime, list)
+        or not recorded_runtime
+        or not all(_plain_string(item) for item in recorded_runtime)
+    ):
+        raise ValueError("SWE-bench generation container runtime is invalid")
+    bindings = adapter.get("image_bindings")
+    tasks = generation_manifest.get("tasks")
+    if not isinstance(bindings, Mapping) or not isinstance(tasks, list) or not tasks:
+        raise ValueError("SWE-bench generation manifest has no Docker image bindings")
+    task_ids: list[str] = []
+    for task in tasks:
+        _require_mapping(task, "SWE-bench generation task")
+        task_ids.append(
+            _require_grader_component(task.get("id"), "SWE-bench generation task id")
+        )
+    if len(task_ids) != len(set(task_ids)) or set(bindings) != set(task_ids):
+        raise ValueError(
+            "SWE-bench Docker image bindings must exactly cover generation tasks"
+        )
+    expected: list[tuple[str, str, str, str]] = []
+    for instance_id in sorted(task_ids):
+        binding = bindings[instance_id]
+        if (
+            not isinstance(binding, Mapping)
+            or set(binding) != {"runtime", "requested", "identity"}
+            or binding.get("runtime") != "docker"
+            or not isinstance(binding.get("requested"), str)
+            or not _IMAGE_ID.fullmatch(str(binding.get("identity")))
+        ):
+            raise ValueError(
+                f"SWE-bench task {instance_id!r} has an invalid Docker image binding"
+            )
+        expected.append(
+            (
+                instance_id,
+                swebench_grader_image_name(instance_id),
+                str(binding["requested"]),
+                str(binding["identity"]),
+            )
+        )
+    return list(recorded_runtime), expected
+
+
+def _grader_environment(grader_environment: Mapping[str, str]) -> dict[str, str]:
+    """Require an explicit, single-engine Docker environment for grading."""
+
+    if not isinstance(grader_environment, Mapping) or not all(
+        _plain_string(name) and isinstance(value, str) and "\x00" not in value
+        for name, value in grader_environment.items()
+    ):
+        raise ValueError("SWE-bench grader environment must contain strings")
+    environment = dict(grader_environment)
+    if not environment.get("DOCKER_HOST"):
+        raise ValueError(
+            "SWE-bench grading requires an explicit DOCKER_HOST so image "
+            "verification and the upstream grader address the same engine"
+        )
+    if environment.get("DOCKER_TLS_VERIFY") is not None and not environment.get(
+        "DOCKER_CERT_PATH"
+    ):
+        raise ValueError(
+            "DOCKER_TLS_VERIFY requires an explicit DOCKER_CERT_PATH for exact "
+            "SWE-bench grader-engine binding"
+        )
+    return environment
+
+
+def _require_current_grader_python(python_executable: Any) -> None:
+    """Refuse to verify images on behalf of a different interpreter."""
+
+    if not _plain_string(python_executable):
+        raise ValueError("SWE-bench grader Python executable is invalid")
+    resolved = shutil.which(python_executable)
+    try:
+        current = resolved is not None and os.path.samefile(resolved, sys.executable)
+    except OSError:
+        current = False
+    if not current:
+        raise ValueError(
+            "SWE-bench image verification requires the current grader Python"
+        )
+
+
+def _docker_sdk_identity() -> tuple[str, str, str]:
+    """Return the installed Docker SDK version and its exact package paths."""
+
+    try:
+        version = metadata.version("docker")
+    except metadata.PackageNotFoundError as exc:
+        raise RuntimeError(_INVALID_SDK) from exc
+    spec = importlib.util.find_spec("docker")
+    locations = list(getattr(spec, "submodule_search_locations", None) or ())
+    if spec is None or not _plain_string(spec.origin) or len(locations) != 1:
+        raise RuntimeError(_INVALID_SDK)
+    origin = os.path.abspath(str(spec.origin))
+    package_root = os.path.abspath(str(locations[0]))
+    if (
+        not version
+        or os.path.basename(origin) != "__init__.py"
+        or os.path.islink(origin)
+        or os.path.islink(package_root)
+        or os.path.realpath(origin) != origin
+        or os.path.realpath(package_root) != package_root
+        or os.path.dirname(origin) != package_root
+        or not os.path.isfile(origin)
+        or not os.path.isdir(package_root)
+    ):
+        raise RuntimeError(_INVALID_SDK)
+    return version, origin, package_root
+
+
+def verify_swebench_grader_images(
+    generation_manifest: Mapping[str, Any],
+    *,
+    python_executable: str,
+    grader_environment: Mapping[str, str],
+    timeout_seconds: float = 60.0,
+) -> Mapping[str, Any]:
+    """Prove every mutable ``:latest`` grader tag still resolves to generation bytes.
+
+    Called before and after the upstream grader subprocess, so a tag that is
+    re-pointed mid-run is caught even though grading itself is opaque.
+    """
+
+    recorded_runtime, expected = _grader_image_expectations(generation_manifest)
+    environment = _grader_environment(grader_environment)
+    _require_current_grader_python(python_executable)
+    _require_finite_number(
+        timeout_seconds, "SWE-bench image verification timeout", exclusive_minimum=0
+    )
+    version, origin, package_root = _docker_sdk_identity()
+    import docker  # type: ignore[import-untyped]
+
+    if (
+        os.path.realpath(str(getattr(docker, "__file__", ""))) != origin
+        or getattr(docker, "__version__", None) != version
+    ):
+        raise RuntimeError(_INVALID_SDK)
+    try:
+        client = docker.from_env(
+            environment=environment, timeout=float(timeout_seconds)
+        )
+    except BaseException as exc:
+        raise RuntimeError(
+            "could not connect to the official SWE-bench grader Docker engine"
+        ) from exc
+    verified: list[Mapping[str, str]] = []
+    try:
+        for instance_id, grader_image, requested, image_id in expected:
+            try:
+                observed = client.images.get(grader_image).id
+            except BaseException as exc:
+                raise RuntimeError(
+                    f"official SWE-bench grader image {grader_image!r} is unavailable"
+                ) from exc
+            if not isinstance(observed, str) or not _IMAGE_ID.fullmatch(
+                observed.strip().casefold()
+            ):
+                raise RuntimeError(
+                    f"official SWE-bench grader image {grader_image!r} "
+                    "returned an invalid image ID"
+                )
+            if observed.strip().casefold() != image_id:
+                raise RuntimeError(
+                    f"official SWE-bench grader image {grader_image!r} "
+                    "changed identity"
+                )
+            verified.append(
+                {
+                    "instance_id": instance_id,
+                    "grader_image": grader_image,
+                    "generation_requested": requested,
+                    "image_id": image_id,
+                }
+            )
+    finally:
+        client.close()
+    return {
+        "engine_contract": "in-process:docker.from_env",
+        "docker_sdk_version": version,
+        "docker_sdk": {
+            "version": version,
+            "origin": origin,
+            "package_root": package_root,
+        },
+        "environment_sha256": _sha256(_canonical_bytes(environment)),
+        "generation_container_runtime": recorded_runtime,
+        "images": verified,
+    }
 
 
 def official_grader_argv(
@@ -800,13 +935,10 @@ def swebench_grader_source_identity(source_root: Path) -> Mapping[str, Any]:
                 "sha256": identity["sha256"],
             }
         )
+    # The digest covers every path, size, and content hash, so a separate file
+    # count and total-size assertion could only ever fail with it.
     source_sha256 = _sha256(_canonical_bytes(files))
-    size_bytes = sum(int(item["size_bytes"]) for item in files)
-    if (
-        source_sha256 != SWEBENCH_SOURCE_SHA256
-        or len(files) != SWEBENCH_SOURCE_FILE_COUNT
-        or size_bytes != SWEBENCH_SOURCE_SIZE_BYTES
-    ):
+    if source_sha256 != SWEBENCH_SOURCE_SHA256:
         raise RuntimeError(
             "installed SWE-bench package does not match pinned v4.1.0 source"
         )
@@ -816,7 +948,7 @@ def swebench_grader_source_identity(source_root: Path) -> Mapping[str, Any]:
         "revision": SWEBENCH_REVISION,
         "source_root": str(root),
         "source_file_count": len(files),
-        "source_size_bytes": size_bytes,
+        "source_size_bytes": sum(int(item["size_bytes"]) for item in files),
         "source_sha256": source_sha256,
     }
 
@@ -824,36 +956,13 @@ def swebench_grader_source_identity(source_root: Path) -> Mapping[str, Any]:
 def collect_predictions(output: Path, destination: Path) -> int:
     """Build the exact SWE-bench JSONL prediction input from task artifacts."""
 
-    expanded_root = output.expanduser()
-    root = expanded_root.resolve()
-    instances = root / "instances"
-    if (
-        expanded_root.is_symlink()
-        or expanded_root.absolute() != root
-        or not root.is_dir()
-        or instances.is_symlink()
-        or not instances.is_dir()
-        or instances.resolve() != instances
-    ):
-        raise ValueError(
-            "SWE-bench evaluation and instances must be non-symlink directories"
-        )
+    root, _, artifacts = owned_instance_artifacts(
+        output, "prediction.json", label="SWE-bench"
+    )
     target = _prediction_collection_target(root, destination)
     records: list[dict[str, str]] = []
     instance_ids: set[str] = set()
-    for path in sorted(instances.glob("*/prediction.json")):
-        parent = path.parent
-        if (
-            parent.parent != instances
-            or parent.is_symlink()
-            or not parent.is_dir()
-            or parent.resolve().parent != instances
-            or path.is_symlink()
-            or not path.is_file()
-        ):
-            raise ValueError(
-                "SWE-bench prediction must be an owned regular instance artifact"
-            )
+    for path in artifacts:
         value = strict_json_loads(path.read_text(encoding="utf-8"))
         if not isinstance(value, Mapping):
             raise ValueError(f"invalid SWE-bench prediction: {path}")
@@ -877,11 +986,11 @@ def collect_predictions(output: Path, destination: Path) -> int:
             ) from exc
         if result.get("status") != "completed":
             raise ValueError(f"SWE-bench prediction result is not completed: {path}")
-        metadata = result.get("metadata")
+        metadata_value = result.get("metadata")
         digest = _sha256(path.read_bytes())
         if (
-            not isinstance(metadata, Mapping)
-            or metadata.get("prediction_sha256") != digest
+            not isinstance(metadata_value, Mapping)
+            or metadata_value.get("prediction_sha256") != digest
         ):
             raise ValueError(f"SWE-bench prediction hash does not match: {path}")
         instance_ids.add(instance_id)
@@ -969,16 +1078,25 @@ def inspect_swebench_grade_inputs(
 
 
 __all__ = [
-    "SWEBENCH_VERSION",
+    "SWEBENCH_BASH_ENV",
     "SWEBENCH_REVISION",
     "SWEBENCH_SOURCE_SHA256",
+    "SWEBENCH_TAG",
+    "SWEBENCH_VERSION",
+    "SWEBENCH_WORKDIR",
+    "SWEbenchImageBinding",
+    "apptainer_swe_environment",
     "collect_predictions",
+    "docker_swe_environment",
     "inspect_swebench_grade_inputs",
     "load_swebench",
     "official_grader_argv",
     "prepare_swebench_image_bindings",
+    "resolve_swebench_image_binding",
     "run_swebench_task",
-    "swebench_grader_source_identity",
+    "swebench_doctor",
     "swebench_grader_image_name",
+    "swebench_grader_source_identity",
+    "swebench_image_name",
     "verify_swebench_grader_images",
 ]

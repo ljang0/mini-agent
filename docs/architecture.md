@@ -24,21 +24,29 @@ every declared tool call in order, and stops on final text or an explicit limit.
 
 ## Boundaries
 
-The repository has five layers:
+The repository has six layers:
 
 1. `types.py`, `agent.py`: provider-neutral messages, tools, usage, and loop.
 2. `providers.py`, `models.py`: request/response translation and continuation
    state for OpenAI Responses, OpenAI-compatible Chat Completions
    (full-transcript replay, selected with `--protocol chat-completions`),
    Anthropic Messages, and an explicit-endpoint Meta adapter.
-3. `environments/`: one narrow model-facing tool per domain.
-4. `orchestrator.py`: optional recursive scheduling through one communication
+3. `runtimes/`: benchmark-neutral execution sandboxes. `base.py` defines the
+   `SandboxRuntime` protocol and the shared `ProcessResult`/argument
+   validators; `local.py`, `docker.py`, and `apptainer.py` implement it for a
+   host process, a rootless Docker container, and a fakeroot Apptainer overlay.
+   A runtime owns only provisioning, one command execution, and file copy. It
+   imports no benchmark module and encodes no benchmark image name, task
+   identifier, or path — those arrive as configuration.
+4. `environments/`: one narrow model-facing tool per domain.
+5. `orchestrator.py`: optional recursive scheduling through one communication
    tool, without a second agent class.
-5. `benchmarks/`, `cli.py`, `grading.py`, `doctor.py`, `storage.py`: task
+6. `benchmarks/`, `cli.py`, `grading.py`, `doctor.py`, `storage.py`: task
    loading, hidden evaluation, manifests, artifacts, official-grader
    orchestration, environment doctors, and operator controls. Shared
    micro-modules keep single concerns in one place: `_http.py` (bounded
-   response reads), `_hash.py` (stable file hashing),
+   response reads), `_hash.py` (stable file hashing), `_lifecycle.py`
+   (blocking-cleanup completion and cleanup-error reporting),
    `benchmarks/checkout.py` (Git checkout inspection), and
    `_grader_probe.py` (the isolated grader-runtime probe source, a real
    module so it sits under the lint/type gate).
@@ -51,10 +59,11 @@ no benchmark result implies reproduction of a training recipe.
 
 ### SWE
 
-`BashEnvironment` exposes only `bash(command)`. Each command gets a fresh shell;
-filesystem state persists. Neither direct nor multi-agent local execution is a
-security boundary: both run as the current user with host filesystem and network
-access. Direct mode edits the selected workspace.
+One `BashEnvironment` (`environments/bash.py`) serves every SWE backend by
+sitting on a `SandboxRuntime`. It exposes only `bash(command)`. Each command gets
+a fresh shell; filesystem state persists. Neither direct nor multi-agent local
+execution is a security boundary: both run as the current user with host
+filesystem and network access. Direct mode edits the selected workspace.
 
 State-isolated local workers receive private copies, private `HOME` directories, a Git
 baseline, bounded process output, process-group timeouts, binary patch export,
@@ -63,8 +72,13 @@ the copy and private `HOME` do not restrict access to the rest of the host.
 
 SWE-bench workers use either an independent persistent rootless Docker container
 without host credential mounts or an independent Apptainer fakeroot overlay.
-The resulting patch is captured before cleanup. Docker timeouts destroy the
-container so a remote child cannot remain running.
+Both are started from an exact image ID or a re-hashed local SIF, never a
+mutable tag, and the image's clean `HEAD` — plus the task's `base_commit`
+ancestry when the dataset declares one — is verified before inference. The
+resulting patch is captured before cleanup. Docker timeouts destroy the
+container so a remote child cannot remain running. An image without an
+inspectable Git tree exports its whole workspace as a gzip tar archive instead;
+that is the ProgramBench cleanroom contract.
 
 ### Web
 

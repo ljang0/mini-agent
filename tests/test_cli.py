@@ -1239,7 +1239,7 @@ class CLITests(unittest.TestCase):
                 return_value=factory,
             ),
             patch(
-                "mini_agent.environments.swebench.swebench_doctor",
+                "mini_agent.benchmarks.swebench.swebench_doctor",
                 new=AsyncMock(return_value=doctor),
             ),
             contextlib.redirect_stdout(stdout),
@@ -2337,7 +2337,7 @@ class CLIEvalEndToEndTests(unittest.TestCase):
     def test_swebench_eval_completes_end_to_end(self) -> None:
         from test_benchmarks import FakeSWEEnvironment
 
-        from mini_agent.environments.swebench import SWEbenchImageBinding
+        from mini_agent.benchmarks.swebench import SWEbenchImageBinding
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -2369,7 +2369,7 @@ class CLIEvalEndToEndTests(unittest.TestCase):
                     AsyncMock(return_value={task.task_id: binding}),
                 ),
                 patch(
-                    "mini_agent.benchmarks.swebench.DockerSWEEnvironment.create",
+                    "mini_agent.benchmarks.swebench.docker_swe_environment",
                     AsyncMock(side_effect=lambda *a, **k: FakeSWEEnvironment()),
                 ),
                 patch(
@@ -2409,7 +2409,7 @@ class CLIEvalEndToEndTests(unittest.TestCase):
         )
 
         from mini_agent.benchmarks.programbench import PROGRAMBENCH_REVISION
-        from mini_agent.environments.swebench import SWEbenchImageBinding
+        from mini_agent.benchmarks.swebench import SWEbenchImageBinding
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -2432,7 +2432,7 @@ class CLIEvalEndToEndTests(unittest.TestCase):
                     AsyncMock(return_value={task_id: binding}),
                 ),
                 patch(
-                    "mini_agent.benchmarks.programbench.DockerSWEEnvironment.create",
+                    "mini_agent.benchmarks.programbench.docker_swe_environment",
                     AsyncMock(
                         side_effect=lambda *a, **k: FakeProgramBenchEnvironment()
                     ),

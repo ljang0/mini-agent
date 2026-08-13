@@ -7,7 +7,7 @@ import hashlib
 import json
 import os
 import stat
-import subprocess
+import importlib
 import sys
 import tempfile
 import types
@@ -15,7 +15,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping, Sequence
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, patch
 
 from mini_agent.agent import MiniAgent
 from mini_agent.benchmarks.base import (
@@ -68,6 +68,7 @@ from mini_agent.benchmarks.programbench import (
 )
 from mini_agent.benchmarks.swebench import (
     SWEBENCH_SOURCE_SHA256,
+    SWEbenchImageBinding,
     collect_predictions,
     inspect_swebench_grade_inputs,
     load_swebench,
@@ -89,7 +90,6 @@ from mini_agent.benchmarks.web import (
 )
 from mini_agent.environments.base import BaseEnvironment
 from mini_agent.environments.cua import CUAEnvironment, CUASpeedRunAdapterClient
-from mini_agent.environments.swebench import SWEbenchImageBinding
 from mini_agent.environments.web import BrowserEnvironment, JsonlSearchBackend
 from mini_agent.grading import _verify_grade_prompt_binding
 from mini_agent.models import ScriptedModel
@@ -1046,6 +1046,7 @@ class SWEBenchmarkTests(unittest.IsolatedAsyncioTestCase):
     def test_official_grader_images_are_exact_docker_generation_bindings(self) -> None:
         task_id = "Repo__Project-1"
         image_id = "sha256:" + "a" * 64
+        grader_image = swebench_grader_image_name(task_id)
         manifest = {
             "config": {
                 "adapter": {
@@ -1063,136 +1064,121 @@ class SWEBenchmarkTests(unittest.IsolatedAsyncioTestCase):
             "tasks": [{"id": task_id}],
         }
         self.assertEqual(
-            swebench_grader_image_name(task_id),
-            "swebench/sweb.eval.x86_64.repo_1776_project-1:latest",
+            grader_image, "swebench/sweb.eval.x86_64.repo_1776_project-1:latest"
         )
         environment = {
             "DOCKER_HOST": "unix:///fixture-docker.sock",
             "HOME": "/private-grade",
             "PYTHONDONTWRITEBYTECODE": "1",
         }
+        # A real importable package, so the SDK identity check runs unmocked.
+        fixture = (
+            "__version__ = \"7.fixture\"\n"
+            "observed = {}\n"
+            "sessions = []\n"
+            "\n"
+            "class _Images:\n"
+            "    def get(self, name):\n"
+            "        return type(\"Image\", (), {\"id\": observed[name]})()\n"
+            "\n"
+            "class _Client:\n"
+            "    def __init__(self, environment, timeout):\n"
+            "        self.images = _Images()\n"
+            "        self.closed = False\n"
+            "        sessions.append(self)\n"
+            "        self.environment = environment\n"
+            "        self.timeout = timeout\n"
+            "\n"
+            "    def close(self):\n"
+            "        self.closed = True\n"
+            "\n"
+            "def from_env(environment=None, timeout=None):\n"
+            "    return _Client(environment, timeout)\n"
+        )
         with tempfile.TemporaryDirectory() as temporary:
-            docker_root = Path(temporary) / "docker"
-            docker_root.mkdir()
-            docker_origin = docker_root / "__init__.py"
-            docker_origin.write_text("# isolated fixture\n")
+            root = Path(temporary).resolve()
+            (root / "docker").mkdir()
+            (root / "docker" / "__init__.py").write_text(fixture)
+            sys.path.insert(0, str(root))
+            sys.modules.pop("docker", None)
+            importlib.invalidate_caches()
+            try:
+                with patch(
+                    "mini_agent.benchmarks.swebench.metadata.version",
+                    return_value="7.fixture",
+                ):
+                    import docker as docker_fixture
 
-            def run_probe(
-                argv: Sequence[str], **kwargs: Any
-            ) -> SimpleNamespace:
-                request = json.loads(Path(argv[4]).read_text())
-                observed = [
-                    {
-                        "grader_image": item["grader_image"],
-                        "image_id": item["expected_image_id"],
-                    }
-                    for item in request["images"]
-                ]
-                output = Path(argv[5])
-                output.write_text(
-                    json.dumps(
-                        {
-                            "schema": "mini-agent-isolated-swebench-images-v1",
-                            "ok": True,
-                            "python": {
-                                "executable": str(Path(sys.executable).absolute()),
-                                "prefix": str(Path(sys.prefix).absolute()),
-                                "base_prefix": str(Path(sys.base_prefix).absolute()),
-                            },
-                            "docker_sdk": {
-                                "version": "7.fixture",
-                                "origin": str(docker_origin.resolve()),
-                                "package_root": str(docker_root.resolve()),
-                            },
-                            "images": observed,
-                        }
+                    docker_fixture.observed[grader_image] = image_id
+                    identity = verify_swebench_grader_images(
+                        manifest,
+                        python_executable=sys.executable,
+                        grader_environment=environment,
                     )
-                )
-                output.chmod(0o600)
-                return SimpleNamespace(returncode=0)
+                    self.assertEqual(identity["images"][0]["image_id"], image_id)
+                    self.assertEqual(
+                        identity["images"][0]["grader_image"], grader_image
+                    )
+                    self.assertEqual(
+                        identity["engine_contract"], "in-process:docker.from_env"
+                    )
+                    self.assertEqual(identity["docker_sdk_version"], "7.fixture")
+                    self.assertEqual(
+                        identity["docker_sdk"]["origin"],
+                        str(root / "docker" / "__init__.py"),
+                    )
+                    self.assertEqual(
+                        identity["generation_container_runtime"],
+                        ["/artifact-controlled-runtime"],
+                    )
+                    session = docker_fixture.sessions[-1]
+                    self.assertEqual(session.environment, environment)
+                    self.assertEqual(session.timeout, 60.0)
+                    self.assertTrue(session.closed)
 
-            parent_from_env = Mock(
-                side_effect=AssertionError("parent Docker SDK must not be used")
-            )
-            with (
-                patch.dict(
-                    sys.modules,
-                    {
-                        "docker": SimpleNamespace(
-                            __version__="parent-shadow",
-                            from_env=parent_from_env,
+                    docker_fixture.observed[grader_image] = "sha256:" + "b" * 64
+                    with self.assertRaisesRegex(RuntimeError, "changed identity"):
+                        verify_swebench_grader_images(
+                            manifest,
+                            python_executable=sys.executable,
+                            grader_environment=environment,
                         )
-                    },
-                ),
-                patch(
-                    "mini_agent.benchmarks.swebench.subprocess.run",
-                    side_effect=run_probe,
-                ) as invoked,
-            ):
-                identity = verify_swebench_grader_images(
-                    manifest,
-                    python_executable=sys.executable,
-                    grader_environment=environment,
-                )
-            parent_from_env.assert_not_called()
-        self.assertEqual(identity["images"][0]["image_id"], image_id)
-        self.assertEqual(
-            identity["engine_contract"], "isolated-python-I:docker.from_env"
-        )
-        self.assertEqual(identity["docker_sdk_version"], "7.fixture")
-        self.assertEqual(
-            identity["generation_container_runtime"],
-            ["/artifact-controlled-runtime"],
-        )
-        child_argv = invoked.call_args.args[0]
-        child_kwargs = invoked.call_args.kwargs
-        self.assertEqual(tuple(child_argv[1:3]), ("-I", "-c"))
-        self.assertEqual(child_kwargs["env"], environment)
-        self.assertIs(child_kwargs["stdout"], subprocess.DEVNULL)
-        self.assertIs(child_kwargs["stderr"], subprocess.DEVNULL)
 
-        def changed_probe(argv: Sequence[str], **_kwargs: Any) -> SimpleNamespace:
-            request = json.loads(Path(argv[4]).read_text())
-            output = Path(argv[5])
-            output.write_text(
-                json.dumps(
-                    {
-                        "schema": "mini-agent-isolated-swebench-images-v1",
-                        "ok": False,
-                        "error": "changed",
-                        "image": request["images"][0]["grader_image"],
-                    }
-                )
-            )
-            output.chmod(0o600)
-            return SimpleNamespace(returncode=0)
+                    del docker_fixture.observed[grader_image]
+                    with self.assertRaisesRegex(RuntimeError, "is unavailable"):
+                        verify_swebench_grader_images(
+                            manifest,
+                            python_executable=sys.executable,
+                            grader_environment=environment,
+                        )
 
-        with patch(
-            "mini_agent.benchmarks.swebench.subprocess.run",
-            side_effect=changed_probe,
-        ):
-            with self.assertRaisesRegex(RuntimeError, "changed identity"):
-                verify_swebench_grader_images(
-                    manifest,
-                    python_executable=sys.executable,
-                    grader_environment=environment,
-                )
+                    manifest["config"]["adapter"]["runtime"] = "apptainer"
+                    with self.assertRaisesRegex(
+                        ValueError, "requires Docker generation"
+                    ):
+                        verify_swebench_grader_images(
+                            manifest,
+                            python_executable=sys.executable,
+                            grader_environment=environment,
+                        )
 
-        manifest["config"]["adapter"]["runtime"] = "apptainer"
-        with self.assertRaisesRegex(ValueError, "requires Docker generation"):
-            identity = verify_swebench_grader_images(
-                manifest,
-                python_executable=sys.executable,
-                grader_environment=environment,
-            )
-
-        manifest["config"]["adapter"]["runtime"] = "docker"
-        with self.assertRaisesRegex(ValueError, "explicit DOCKER_HOST"):
-            verify_swebench_grader_images(
-                manifest,
-                python_executable=sys.executable,
-                grader_environment={"HOME": "/private-grade"},
-            )
+                    manifest["config"]["adapter"]["runtime"] = "docker"
+                    with self.assertRaisesRegex(ValueError, "explicit DOCKER_HOST"):
+                        verify_swebench_grader_images(
+                            manifest,
+                            python_executable=sys.executable,
+                            grader_environment={"HOME": "/private-grade"},
+                        )
+                    with self.assertRaisesRegex(ValueError, "current grader Python"):
+                        verify_swebench_grader_images(
+                            manifest,
+                            python_executable="/nonexistent-grader-python",
+                            grader_environment=environment,
+                        )
+            finally:
+                sys.path.remove(str(root))
+                sys.modules.pop("docker", None)
+                importlib.invalidate_caches()
 
     def test_grader_source_identity_rejects_mutated_imported_package(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1231,14 +1217,6 @@ class SWEBenchmarkTests(unittest.IsolatedAsyncioTestCase):
                 patch(
                     "mini_agent.benchmarks.swebench.SWEBENCH_SOURCE_SHA256",
                     expected,
-                ),
-                patch(
-                    "mini_agent.benchmarks.swebench.SWEBENCH_SOURCE_FILE_COUNT",
-                    len(files),
-                ),
-                patch(
-                    "mini_agent.benchmarks.swebench.SWEBENCH_SOURCE_SIZE_BYTES",
-                    sum(item["size_bytes"] for item in files),
                 ),
             ):
                 identity = swebench_grader_source_identity(package.resolve())
@@ -1396,7 +1374,7 @@ class SWEBenchmarkTests(unittest.IsolatedAsyncioTestCase):
                 execution_ref="sha256:" + "a" * 64,
             )
             with patch(
-                "mini_agent.benchmarks.swebench.DockerSWEEnvironment.create",
+                "mini_agent.benchmarks.swebench.docker_swe_environment",
                 AsyncMock(return_value=environment),
             ) as create:
                 outcome = await run_swebench_task(
@@ -1505,7 +1483,7 @@ class SWEBenchmarkTests(unittest.IsolatedAsyncioTestCase):
         with (
             tempfile.TemporaryDirectory() as temporary,
             patch(
-                "mini_agent.benchmarks.swebench.DockerSWEEnvironment.create",
+                "mini_agent.benchmarks.swebench.docker_swe_environment",
                 AsyncMock(return_value=environment),
             ),
         ):
@@ -1728,7 +1706,7 @@ class ProgramBenchTests(unittest.IsolatedAsyncioTestCase):
                 },
             )
             with patch(
-                "mini_agent.benchmarks.programbench.DockerSWEEnvironment.create",
+                "mini_agent.benchmarks.programbench.docker_swe_environment",
                 AsyncMock(return_value=environment),
             ) as create:
                 outcome = await run_programbench_task(

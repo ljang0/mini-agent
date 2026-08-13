@@ -56,7 +56,14 @@ each exact upstream tag must resolve through `docker.from_env()` to the full
 Docker image ID captured before inference. Verification receives the exact
 allowlisted environment used by upstream, including an explicit `DOCKER_HOST`,
 so both calls address one engine. Those mappings and the Docker SDK version are
-grade provenance. The runtime argv stored in an evaluation artifact is never
+grade provenance. Be precise about what that verification is: it runs in the
+grading process using this process's Docker SDK, not in a separate `-I`
+interpreter as it did previously. It still proves the tag-to-image-ID mapping
+against the recorded generation bindings, and it still binds the installed SDK's
+version, module origin, and package root into grade provenance; it no longer
+proves that a *distinct* interpreter with an independently resolved SDK observed
+the same mapping. A grading process whose own `docker` import is already
+compromised can no longer be caught by this check. The runtime argv stored in an evaluation artifact is never
 executed and is retained only as inert generation provenance. Apptainer
 generation remains useful for agent execution on this
 node, but official grading of that run is rejected until OCI-to-SIF equivalence
@@ -67,9 +74,13 @@ The `v4.1.0` release is not published as version 4.1.0 on PyPI. Install an exact
 editable checkout of the pinned commit: a wheel built from the tag omits 500
 tracked `swebench/resources` YAML files used by the evaluator and is rejected.
 At grading time the adapter verifies the imported package tree against the
-pinned inventory — exactly 591 files, 1,890,632 bytes, source digest
-`63d4d3d0543de66520fa44f12badddaa810f708a0d780954684c24c7ce075cc8` — and
-rechecks it immediately before and after the subprocess. Upstream does not
+pinned source digest
+`63d4d3d0543de66520fa44f12badddaa810f708a0d780954684c24c7ce075cc8` — a hash over
+every relative path, size, and content hash in the tree — and rechecks it
+immediately before and after the subprocess. The file count and total byte size
+are still recorded as grade provenance, but they are no longer asserted
+separately: the digest covers them, so a separate inventory assertion could only
+ever fail alongside it. Upstream does not
 publish a dependency lock for this tag, so installed dependency versions remain
 runtime provenance rather than a claim of a fully locked environment.
 
