@@ -42,6 +42,8 @@ SWEBENCH_REVISION = "726c5461e2ef52d83cf1ea2107870a8bb3328d57"
 SWEBENCH_TAG = "v4.1.0"
 SWEBENCH_WORKDIR = "/testbed"
 SWEBENCH_BASH_ENV = "/root/.bashrc"
+DEFAULT_MAX_ARCHIVE_BYTES = 256 * 1024 * 1024
+_ARCHIVE_CONTAINER_PATH = "/tmp/mini-agent-workspace.tar.gz"
 _SAFE_CONTAINER_PART = re.compile(r"[^a-z0-9_.-]+")
 _OWNED_DOCKER = object()
 _OWNED_APPTAINER = object()
@@ -84,6 +86,55 @@ def _docker_security_is_rootless(output: str) -> bool:
     return isinstance(value, list) and any(
         item == "name=rootless" for item in value if isinstance(item, str)
     )
+
+
+@dataclass(frozen=True)
+class SWEArchiveState:
+    """Whole-workspace state for images without an inspectable Git baseline."""
+
+    base_identity: str
+    archive: bytes
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.base_identity, str) or not self.base_identity:
+            raise ValueError("SWE archive base identity must be non-empty")
+        if not isinstance(self.archive, bytes):
+            raise ValueError("SWE archive must be bytes")
+
+
+def _benchmark_identity(value: Mapping[str, Any] | None) -> Mapping[str, str]:
+    if value is None:
+        return {
+            "benchmark": "swe_bench",
+            "benchmark_revision": SWEBENCH_REVISION,
+            "benchmark_tag": SWEBENCH_TAG,
+        }
+    if not isinstance(value, Mapping) or not value:
+        raise ValueError("container benchmark identity must be a non-empty object")
+    resolved: dict[str, str] = {}
+    for name, item in value.items():
+        if (
+            not isinstance(name, str)
+            or not name
+            or not isinstance(item, str)
+            or not item
+            or "\x00" in name
+            or "\x00" in item
+        ):
+            raise ValueError("container benchmark identity must contain strings")
+        resolved[name] = item
+    return resolved
+
+
+def _container_workdir(value: Any) -> str:
+    if (
+        not isinstance(value, str)
+        or not value.startswith("/")
+        or "\x00" in value
+        or value.strip() != value
+    ):
+        raise ValueError("container workdir must be an absolute path")
+    return value
 
 
 @dataclass(frozen=True)
@@ -247,13 +298,16 @@ def _container_name(instance_id: str) -> str:
 
 
 def _docker_exec_argv(
-    runtime: Sequence[str], container_name: str, command: str
+    runtime: Sequence[str],
+    container_name: str,
+    command: str,
+    workdir: str = SWEBENCH_WORKDIR,
 ) -> tuple[str, ...]:
     return (
         *runtime,
         "exec",
         "--workdir",
-        SWEBENCH_WORKDIR,
+        workdir,
         "--env",
         f"BASH_ENV={SWEBENCH_BASH_ENV}",
         container_name,
@@ -448,11 +502,15 @@ class DockerSWEEnvironment(BaseEnvironment):
         image_id: str,
         runtime: Sequence[str],
         runner: ProcessRunner,
-        base_commit: str,
+        base_commit: str | None,
         platform: str | None = None,
         timeout_seconds: float = 60.0,
         max_output_bytes: int = 256 * 1024,
         max_patch_bytes: int = DEFAULT_MAX_PATCH_BYTES,
+        max_archive_bytes: int = DEFAULT_MAX_ARCHIVE_BYTES,
+        workdir: str = SWEBENCH_WORKDIR,
+        network_disabled: bool = False,
+        benchmark_identity: Mapping[str, Any] | None = None,
         _ownership_token: object | None = None,
     ) -> None:
         if _ownership_token is not _OWNED_DOCKER:
@@ -467,8 +525,10 @@ class DockerSWEEnvironment(BaseEnvironment):
             raise ValueError("Docker container name is not mini-agent owned")
         if not isinstance(image_id, str) or not image_id.strip():
             raise ValueError("Docker image identity must be non-empty")
-        if not re.fullmatch(r"[0-9a-f]{40}", base_commit):
+        if base_commit is not None and not re.fullmatch(r"[0-9a-f]{40}", base_commit):
             raise ValueError("SWE-bench base commit must be a full Git commit")
+        if not isinstance(network_disabled, bool):
+            raise ValueError("network_disabled must be boolean")
         resolved_runtime = _runtime_argv(runtime, "container runtime")
         if not callable(getattr(runner, "run", None)):
             raise ValueError("runner must expose run")
@@ -492,6 +552,10 @@ class DockerSWEEnvironment(BaseEnvironment):
         self.timeout_seconds = resolved_timeout
         self.max_output_bytes = resolved_output
         self.max_patch_bytes = resolved_patch
+        self.max_archive_bytes = _positive_int(max_archive_bytes, "max_archive_bytes")
+        self.workdir = _container_workdir(workdir)
+        self.network_disabled = network_disabled
+        self.benchmark_identity = _benchmark_identity(benchmark_identity)
         self._closed = False
 
     @classmethod
@@ -505,10 +569,21 @@ class DockerSWEEnvironment(BaseEnvironment):
         timeout_seconds: float = 60.0,
         max_output_bytes: int = 256 * 1024,
         max_patch_bytes: int = DEFAULT_MAX_PATCH_BYTES,
+        max_archive_bytes: int = DEFAULT_MAX_ARCHIVE_BYTES,
+        workdir: str = SWEBENCH_WORKDIR,
+        network_disabled: bool = False,
+        require_git_baseline: bool = True,
+        benchmark_identity: Mapping[str, Any] | None = None,
         runner: ProcessRunner | None = None,
     ) -> "DockerSWEEnvironment":
         if not isinstance(instance, Mapping):
             raise ValueError("SWE-bench instance must be an object")
+        if not isinstance(network_disabled, bool) or not isinstance(
+            require_git_baseline, bool
+        ):
+            raise ValueError("network_disabled and require_git_baseline must be bool")
+        resolved_workdir = _container_workdir(workdir)
+        resolved_identity = _benchmark_identity(benchmark_identity)
         resolved_runtime = _runtime_argv(runtime, "container runtime")
         if platform is not None and (
             not isinstance(platform, str)
@@ -520,8 +595,13 @@ class DockerSWEEnvironment(BaseEnvironment):
         resolved_timeout = _positive_number(timeout_seconds, "timeout_seconds")
         resolved_output = _positive_int(max_output_bytes, "max_output_bytes")
         resolved_patch = _positive_int(max_patch_bytes, "max_patch_bytes")
+        resolved_archive = _positive_int(max_archive_bytes, "max_archive_bytes")
         image = swebench_image_name(instance)
         expected_base_commit = _expected_base_commit(instance)
+        if expected_base_commit is not None and not require_git_baseline:
+            raise ValueError(
+                "a task base_commit cannot be verified without a Git baseline"
+            )
         instance_id = instance.get("instance_id")
         if not isinstance(instance_id, str) or not instance_id:
             raise ValueError("SWE-bench instance requires instance_id")
@@ -567,7 +647,7 @@ class DockerSWEEnvironment(BaseEnvironment):
             "--name",
             name,
             "--workdir",
-            SWEBENCH_WORKDIR,
+            resolved_workdir,
             "--label",
             "mini-agent.swebench=true",
             "--env",
@@ -579,6 +659,8 @@ class DockerSWEEnvironment(BaseEnvironment):
             "--env",
             "TQDM_DISABLE=1",
         ]
+        if network_disabled:
+            argv.extend(("--network", "none"))
         if platform is not None:
             argv.extend(("--platform", platform))
         argv.extend((image_id, "sleep", "infinity"))
@@ -607,41 +689,46 @@ class DockerSWEEnvironment(BaseEnvironment):
                 raise RuntimeError(
                     "running SWE-bench container image does not match its binding"
                 )
-            baseline = await process_runner.run(
-                _docker_exec_argv(
-                    resolved_runtime,
-                    name,
-                    "git rev-parse HEAD && "
-                    "test -z \"$(git status --porcelain=v1 --untracked-files=all)\"",
-                ),
-                timeout_seconds=resolved_timeout,
-                max_output_bytes=resolved_output,
-            )
-            base_commit = baseline.text().strip().casefold()
-            if (
-                baseline.timed_out
-                or baseline.returncode != 0
-                or not re.fullmatch(r"[0-9a-f]{40}", base_commit)
-            ):
-                raise RuntimeError(
-                    "SWE-bench image has no usable Git baseline: "
-                    + baseline.text()
-                )
-            if expected_base_commit is not None:
-                ancestry = await process_runner.run(
+            base_commit: str | None = None
+            if require_git_baseline:
+                baseline = await process_runner.run(
                     _docker_exec_argv(
                         resolved_runtime,
                         name,
-                        "git merge-base --is-ancestor "
-                        f"{expected_base_commit} {base_commit}",
+                        "git rev-parse HEAD && "
+                        "test -z \"$(git status --porcelain=v1 "
+                        "--untracked-files=all)\"",
+                        resolved_workdir,
                     ),
                     timeout_seconds=resolved_timeout,
                     max_output_bytes=resolved_output,
                 )
-                if ancestry.timed_out or ancestry.returncode != 0:
+                base_commit = baseline.text().strip().casefold()
+                if (
+                    baseline.timed_out
+                    or baseline.returncode != 0
+                    or not re.fullmatch(r"[0-9a-f]{40}", base_commit)
+                ):
                     raise RuntimeError(
-                        "SWE-bench image does not contain task base_commit"
+                        "SWE-bench image has no usable Git baseline: "
+                        + baseline.text()
                     )
+                if expected_base_commit is not None:
+                    ancestry = await process_runner.run(
+                        _docker_exec_argv(
+                            resolved_runtime,
+                            name,
+                            "git merge-base --is-ancestor "
+                            f"{expected_base_commit} {base_commit}",
+                            resolved_workdir,
+                        ),
+                        timeout_seconds=resolved_timeout,
+                        max_output_bytes=resolved_output,
+                    )
+                    if ancestry.timed_out or ancestry.returncode != 0:
+                        raise RuntimeError(
+                            "SWE-bench image does not contain task base_commit"
+                        )
             return cls(
                 image=image,
                 container_name=name,
@@ -653,6 +740,10 @@ class DockerSWEEnvironment(BaseEnvironment):
                 timeout_seconds=resolved_timeout,
                 max_output_bytes=resolved_output,
                 max_patch_bytes=resolved_patch,
+                max_archive_bytes=resolved_archive,
+                workdir=resolved_workdir,
+                network_disabled=network_disabled,
+                benchmark_identity=resolved_identity,
                 _ownership_token=_OWNED_DOCKER,
             )
         except BaseException as operation_error:
@@ -680,7 +771,7 @@ class DockerSWEEnvironment(BaseEnvironment):
             ToolDefinition(
                 name="bash",
                 description=(
-                    "Run one bash command in the persistent SWE-bench /testbed "
+                    f"Run one bash command in the persistent {self.workdir} "
                     "workspace. Each call starts a new shell."
                 ),
                 input_schema={
@@ -698,7 +789,9 @@ class DockerSWEEnvironment(BaseEnvironment):
         if self._closed:
             raise RuntimeError("SWE-bench environment is closed")
         return await self.runner.run(
-            _docker_exec_argv(self.runtime, self.container_name, command),
+            _docker_exec_argv(
+                self.runtime, self.container_name, command, self.workdir
+            ),
             timeout_seconds=self.timeout_seconds,
             max_output_bytes=max_output_bytes or self.max_output_bytes,
         )
@@ -734,6 +827,11 @@ class DockerSWEEnvironment(BaseEnvironment):
         )
 
     async def export_patch(self, destination: Path | None = None) -> bytes:
+        if self.base_commit is None:
+            raise RuntimeError(
+                "this container has no Git baseline; export_archive() is the "
+                "only workspace export"
+            )
         # Do not force-add ignored build artifacts baked into official images.
         # Only tracked changes and ordinary untracked files belong to the agent.
         staged = await self._exec("git add --all -- .")
@@ -757,12 +855,79 @@ class DockerSWEEnvironment(BaseEnvironment):
             await complete_in_thread(_atomic_write, target, patch.output)
         return patch.output
 
-    async def export_state(self) -> SWEPatchState:
+    async def export_archive(self, destination: Path | None = None) -> bytes:
+        """Export the whole workspace tree as one gzip tar archive."""
+
+        created = await self._exec(
+            f"rm -f {_ARCHIVE_CONTAINER_PATH} && "
+            f"tar -czf {_ARCHIVE_CONTAINER_PATH} -C {self.workdir} . && "
+            f"stat -c %s {_ARCHIVE_CONTAINER_PATH}"
+        )
+        if created.timed_out or created.returncode != 0:
+            raise RuntimeError(
+                "could not archive the container workspace: " + created.text()
+            )
+        reported = created.text().strip().rsplit("\n", 1)[-1].strip()
+        if not reported.isdigit() or int(reported) > self.max_archive_bytes:
+            raise RuntimeError(
+                "container workspace archive exceeded the configured "
+                f"{self.max_archive_bytes}-byte limit"
+            )
+        root = Path(tempfile.mkdtemp(prefix="mini-agent-swe-archive-"))
+        operation_error: BaseException | None = None
+        content = b""
+        try:
+            local = root / "workspace.tar.gz"
+            copied = await self.runner.run(
+                (
+                    *self.runtime,
+                    "cp",
+                    f"{self.container_name}:{_ARCHIVE_CONTAINER_PATH}",
+                    str(local),
+                ),
+                timeout_seconds=max(self.timeout_seconds, 300.0),
+                max_output_bytes=self.max_output_bytes,
+            )
+            if copied.timed_out or copied.returncode != 0:
+                raise RuntimeError(
+                    "could not copy the container workspace archive: "
+                    + copied.text()
+                )
+            content = await complete_in_thread(local.read_bytes)
+            if len(content) > self.max_archive_bytes:
+                raise RuntimeError(
+                    "container workspace archive exceeded the configured "
+                    f"{self.max_archive_bytes}-byte limit"
+                )
+            if destination is not None:
+                await complete_in_thread(
+                    _atomic_write, _patch_destination(destination), content
+                )
+        except BaseException as exc:
+            operation_error = exc
+        cleanup_error: BaseException | None = None
+        try:
+            await complete_in_thread(shutil.rmtree, root)
+        except BaseException as exc:
+            cleanup_error = exc
+        raise_lifecycle_errors(
+            "container workspace archive", operation_error, cleanup_error
+        )
+        return content
+
+    async def export_state(self) -> SWEPatchState | SWEArchiveState:
+        if self.base_commit is None:
+            return SWEArchiveState(
+                f"{self.image_id}@{self.workdir}", await self.export_archive()
+            )
         return SWEPatchState(
             f"{self.image_id}@{self.base_commit}", await self.export_patch()
         )
 
     async def adopt_state(self, state: Any) -> None:
+        if self.base_commit is None:
+            await self._adopt_archive_state(state)
+            return
         if (
             not isinstance(state, SWEPatchState)
             or state.base_identity != f"{self.image_id}@{self.base_commit}"
@@ -811,6 +976,56 @@ class DockerSWEEnvironment(BaseEnvironment):
             cleanup_error = combine_lifecycle_errors(cleanup_error, exc)
         raise_lifecycle_errors("SWE state adoption", operation_error, cleanup_error)
 
+    async def _adopt_archive_state(self, state: Any) -> None:
+        if (
+            not isinstance(state, SWEArchiveState)
+            or state.base_identity != f"{self.image_id}@{self.workdir}"
+        ):
+            raise ProtocolError("SWE state came from a different container image")
+        if len(state.archive) > self.max_archive_bytes:
+            raise ProtocolError("SWE state exceeds the workspace archive limit")
+        root = Path(tempfile.mkdtemp(prefix="mini-agent-swe-adopt-"))
+        target = root / "target.tar.gz"
+        prior = root / "prior.tar.gz"
+        operation_error: BaseException | None = None
+        rollback_error: BaseException | None = None
+        mutated = False
+        try:
+            await complete_in_thread(_atomic_write, prior, await self.export_archive())
+            await complete_in_thread(_atomic_write, target, state.archive)
+            mutated = True
+            await self._replace_workspace(target, "mini-agent-target.tar.gz")
+        except BaseException as exc:
+            operation_error = exc
+        if operation_error is not None and mutated:
+            try:
+                await self._replace_workspace(prior, "mini-agent-prior.tar.gz")
+            except BaseException as exc:
+                rollback_error = exc
+        cleanup_error: BaseException | None = rollback_error
+        try:
+            await complete_in_thread(shutil.rmtree, root)
+        except FileNotFoundError:
+            pass
+        except BaseException as exc:
+            cleanup_error = combine_lifecycle_errors(cleanup_error, exc)
+        raise_lifecycle_errors("SWE state adoption", operation_error, cleanup_error)
+
+    async def _replace_workspace(self, source: Path, name: str) -> None:
+        copied = await self.runner.run(
+            (*self.runtime, "cp", str(source), f"{self.container_name}:/tmp/{name}"),
+            timeout_seconds=max(self.timeout_seconds, 300.0),
+            max_output_bytes=self.max_output_bytes,
+        )
+        if copied.timed_out or copied.returncode != 0:
+            raise ProtocolError("SWE state could not be copied: " + copied.text())
+        applied = await self._exec(
+            f"find {self.workdir} -mindepth 1 -delete && "
+            f"tar -xzf /tmp/{name} -C {self.workdir} && rm -f /tmp/{name}"
+        )
+        if applied.timed_out or applied.returncode != 0:
+            raise ProtocolError("SWE state could not be applied: " + applied.text())
+
     async def _reset(self) -> None:
         # Keep ignored build products supplied by the benchmark image. They are
         # part of its runtime, even though they are not part of the git tree.
@@ -845,9 +1060,7 @@ class DockerSWEEnvironment(BaseEnvironment):
     def provenance(self) -> dict[str, object]:
         return {
             "application": "swe",
-            "benchmark": "swe_bench",
-            "benchmark_revision": SWEBENCH_REVISION,
-            "benchmark_tag": SWEBENCH_TAG,
+            **self.benchmark_identity,
             "tools": ["bash"],
             "container_runtime": list(self.runtime),
             "container_image": self.image,
@@ -855,9 +1068,14 @@ class DockerSWEEnvironment(BaseEnvironment):
             "container_platform": self.platform,
             "base_commit": self.base_commit,
             "rootless_daemon_required": True,
-            "workdir": SWEBENCH_WORKDIR,
+            "network_disabled": self.network_disabled,
+            "workdir": self.workdir,
             "host_credentials_mounted": False,
-            "patch_export": "git_diff_binary",
+            "patch_export": (
+                "git_diff_binary"
+                if self.base_commit is not None
+                else "workspace_tar_gz"
+            ),
         }
 
     def resource_identity(self) -> str:
@@ -1361,7 +1579,9 @@ def _sha256_file(path: Path) -> str:
 
 __all__ = [
     "ApptainerSWEEnvironment",
+    "DEFAULT_MAX_ARCHIVE_BYTES",
     "DockerSWEEnvironment",
+    "SWEArchiveState",
     "SWEBENCH_REVISION",
     "SWEBENCH_TAG",
     "SWEBENCH_WORKDIR",

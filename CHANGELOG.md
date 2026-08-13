@@ -4,6 +4,26 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/) with a 0.x compatibility caveat.
 
+## [Unreleased]
+
+### Added
+
+- ProgramBench adapter (`mini-agent eval --benchmark programbench`,
+  `mini-agent grade --benchmark programbench`) pinned to
+  `facebookresearch/ProgramBench` commit
+  `963063c9271cc40fa179977356782ea4582e0b0c` / version `1.2.4`. Tasks load from
+  the pinned checkout, the per-task `task_cleanroom_v6` image is bound by full
+  image ID, and hidden `tests.json` is only ever hashed into provenance.
+- Offline generation: the ProgramBench agent container runs with
+  `--network none`, as upstream requires, and its whole `/workspace` tree is
+  exported as `submission.tar.gz` into the official
+  `<run>/<instance_id>/submission.tar.gz` layout. No score is assigned locally;
+  `mini-agent grade` invokes the official `programbench eval` CLI.
+- `DockerSWEEnvironment` options for that path — `network_disabled`, `workdir`,
+  `require_git_baseline`, `benchmark_identity`, `max_archive_bytes` — plus
+  `export_archive()` and archive-based state export/adoption (`SWEArchiveState`)
+  for images without an inspectable Git baseline.
+
 ## [0.5.0] - 2026-08-12
 
 First public release.

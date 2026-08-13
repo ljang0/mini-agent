@@ -202,6 +202,98 @@ def _grade(args: argparse.Namespace) -> int:
 
         verify_grader_assets_before = verify_swebench_grader_assets_before
         verify_grader_assets_after = verify_swebench_grader_assets_after
+    elif args.benchmark == "programbench":
+        from .benchmarks.programbench import (
+            PROGRAMBENCH_IMAGE_TAG,
+            PROGRAMBENCH_REVISION,
+            PROGRAMBENCH_VERSION,
+            collect_submissions,
+            inspect_programbench_checkout,
+            inspect_programbench_grade_inputs,
+            official_programbench_grader_argv,
+        )
+
+        checkout = _required_path(args.checkout, "--checkout")
+        run_directory = evaluation / "official_run"
+        for protected, label in (
+            (evaluation / "instances", "evaluation instances"),
+            (run_directory, "collected ProgramBench submissions"),
+            (checkout, "ProgramBench checkout"),
+        ):
+            _reject_grade_output_overlap(grade_output, protected, label)
+        collect_submissions(evaluation, run_directory)
+        source_inputs = inspect_programbench_grade_inputs(
+            run_directory=run_directory, checkout=checkout
+        )
+        _verify_grade_prompt_binding(generation_manifest, source_inputs)
+        _create_private_grade_output(grade_output)
+        snapshot_run = grade_output / "inputs" / "programbench" / "run"
+        _snapshot_grade_tree(
+            run_directory,
+            snapshot_run,
+            source_inputs["runs"],
+            label="ProgramBench submissions",
+        )
+        inputs = {
+            **inspect_programbench_grade_inputs(
+                run_directory=snapshot_run, checkout=checkout
+            ),
+            "sources": source_inputs,
+        }
+        _verify_grade_prompt_binding(generation_manifest, inputs)
+        eval_dir = _grade_eval_directory(grade_output, args.eval_dir)
+        eval_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        argv = official_programbench_grader_argv(
+            run_directory=snapshot_run,
+            output=eval_dir,
+            python_executable=str(isolated_runtime["python_executable"]),
+            workers=args.max_workers,
+        )
+        grader_checkout = inspect_programbench_checkout(checkout)
+        grader = {
+            "project": "ProgramBench",
+            "revision": PROGRAMBENCH_REVISION,
+            "version": runtime["packages"]["programbench"],
+            "image_tag": PROGRAMBENCH_IMAGE_TAG,
+            "checkout": grader_checkout,
+            "package_root": str(
+                _isolated_module_root(isolated_runtime, "programbench")
+            ),
+        }
+        if grader_checkout["version"] != PROGRAMBENCH_VERSION:
+            raise ValueError(
+                f"official ProgramBench grading requires {PROGRAMBENCH_VERSION}"
+            )
+
+        def verify_programbench_grader_assets() -> Mapping[str, Any]:
+            observed_runtime = _grader_runtime_identity(
+                args.python_executable,
+                args.benchmark,
+                grader_environment=grader_environment,
+            )
+            if observed_runtime != isolated_runtime:
+                raise RuntimeError(
+                    "ProgramBench grader runtime changed during grading"
+                )
+            observed_checkout = inspect_programbench_checkout(checkout)
+            if observed_checkout != grader_checkout:
+                raise RuntimeError(
+                    "ProgramBench grader checkout changed during grading"
+                )
+            revalidated_argv = official_programbench_grader_argv(
+                run_directory=snapshot_run,
+                output=eval_dir,
+                python_executable=str(observed_runtime["python_executable"]),
+                workers=args.max_workers,
+            )
+            if revalidated_argv != argv:
+                raise RuntimeError(
+                    "ProgramBench grader command changed during grading"
+                )
+            return {"runtime": observed_runtime, "checkout": observed_checkout}
+
+        verify_grader_assets_before = verify_programbench_grader_assets
+        verify_grader_assets_after = verify_programbench_grader_assets
     else:
         from .benchmarks.web import (
             collect_browsecomp_plus_runs,
@@ -502,6 +594,8 @@ def _grader_runtime_identity(
     executable = _current_python_executable(python_executable)
     if benchmark == "swebench":
         required = {"swebench": "4.1.0"}
+    elif benchmark == "programbench":
+        required = {"programbench": "1.2.4"}
     elif benchmark == "browsecomp-plus":
         required = {"numpy": "1.26.4", "tqdm": "4.67.1", "vllm": "0.9.0.1"}
     else:
@@ -685,10 +779,14 @@ def _official_grader_environment(
         "SSL_CERT_FILE",
         "TZ",
     }
-    if benchmark == "swebench":
+    if benchmark in {"swebench", "programbench"}:
         # The upstream harness uses Docker's normal client environment. These
         # values are an intentional authority grant, unlike solver credentials.
         allowed.update({"DOCKER_CERT_PATH", "DOCKER_HOST", "DOCKER_TLS_VERIFY"})
+        if benchmark == "programbench":
+            # The official evaluator downloads per-branch test blobs from
+            # HuggingFace on demand; HOME below keeps that cache private.
+            allowed.update({"HF_ENDPOINT", "HF_TOKEN", "HTTPS_PROXY", "NO_PROXY"})
     elif benchmark == "browsecomp-plus":
         # Device selection is useful on shared GPU nodes and does not grant a
         # grader access to provider, cloud, browser, or computer-use services.
@@ -708,7 +806,9 @@ def _official_grader_environment(
             "PYTHONDONTWRITEBYTECODE": "1",
         }
     )
-    if benchmark == "swebench" and not environment.get("DOCKER_HOST"):
+    if benchmark in {"swebench", "programbench"} and not environment.get(
+        "DOCKER_HOST"
+    ):
         # An explicit endpoint prevents Docker SDK context lookup from consulting
         # a different HOME/config than the isolated upstream grader process.
         environment["DOCKER_HOST"] = "unix:///var/run/docker.sock"
@@ -1045,7 +1145,7 @@ def _verify_grade_prompt_binding(
             )
         ):
             raise ValueError(
-                "official SWE-bench grader dataset does not match evaluation task data"
+                "official grader task data does not match evaluation task data"
             )
 
 

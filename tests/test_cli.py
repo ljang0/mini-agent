@@ -47,11 +47,10 @@ from mini_agent.types import ModelResponse, ToolCall, ToolDefinition
 
 
 def _fixture_grader_runtime(root: Path, benchmark: str) -> dict[str, Any]:
-    packages = (
-        {"swebench": "4.1.0"}
-        if benchmark == "swebench"
-        else {"numpy": "1.26.4", "tqdm": "4.67.1", "vllm": "0.9.0.1"}
-    )
+    packages = {
+        "swebench": {"swebench": "4.1.0"},
+        "programbench": {"programbench": "1.2.4"},
+    }.get(benchmark, {"numpy": "1.26.4", "tqdm": "4.67.1", "vllm": "0.9.0.1"})
     modules: dict[str, dict[str, str]] = {}
     for name in packages:
         package_root = root / "isolated" / name
@@ -327,6 +326,127 @@ class CLITests(unittest.TestCase):
             self.assertEqual(
                 completion["result_sha256"],
                 hashlib.sha256((grade / "result.json").read_bytes()).hexdigest(),
+            )
+
+    def test_programbench_grade_binds_the_checkout_and_official_eval(self) -> None:
+        from test_benchmarks import (
+            programbench_fixture_checkout,
+            programbench_fixture_git,
+        )
+
+        from mini_agent.benchmarks.programbench import (
+            PROGRAMBENCH_REVISION,
+            load_programbench,
+        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            evaluation = root / "evaluation"
+            grade = root / "grade"
+            checkout = programbench_fixture_checkout(root)
+            run_git = programbench_fixture_git(checkout.resolve())
+            with patch(
+                "mini_agent.benchmarks.programbench._git", side_effect=run_git
+            ):
+                task = load_programbench(checkout)[0]
+            _write_evaluation_manifest(
+                evaluation,
+                "programbench",
+                [(task.task_id, task.prompt, dict(task.data))],
+            )
+            instance = evaluation / "instances" / "one"
+            instance.mkdir(parents=True)
+            archive = b"submission-archive"
+            (instance / "submission.tar.gz").write_bytes(archive)
+            _commit_fixture_result(
+                instance,
+                task.task_id,
+                {"submission_sha256": hashlib.sha256(archive).hexdigest()},
+            )
+            invoked: dict[str, Any] = {}
+
+            def run_grader(
+                argv: Sequence[str],
+                *,
+                cwd: Path,
+                check: bool,
+                stdout: Any,
+                stderr: Any,
+                env: Mapping[str, str],
+            ) -> SimpleNamespace:
+                invoked.update({"argv": tuple(argv), "cwd": cwd, "env": env})
+                stdout.write(b"official output\n")
+                stderr.write(b"")
+                target = Path(argv[argv.index("--output") + 1])
+                report = target / "run" / task.task_id
+                report.mkdir(parents=True)
+                (report / f"{task.task_id}.eval.json").write_text('{"score": 1.0}\n')
+                return SimpleNamespace(returncode=0)
+
+            stdout = io.StringIO()
+            with (
+                patch.dict(os.environ, {"OPENAI_API_KEY": "solver-secret"}),
+                patch(
+                    "mini_agent.benchmarks.programbench._git", side_effect=run_git
+                ),
+                patch(
+                    "mini_agent.grading._grader_runtime_identity",
+                    return_value=_fixture_grader_runtime(root, "programbench"),
+                ),
+                patch(
+                    "mini_agent.cli.harness_identity",
+                    return_value={"schema": "fixture"},
+                ),
+                patch("mini_agent.grading.subprocess.run", side_effect=run_grader),
+                contextlib.redirect_stdout(stdout),
+            ):
+                code = main(
+                    [
+                        "grade",
+                        "--benchmark",
+                        "programbench",
+                        "--evaluation",
+                        str(evaluation),
+                        "--output",
+                        str(grade),
+                        "--checkout",
+                        str(checkout),
+                    ]
+                )
+
+            self.assertEqual(code, 0, stdout.getvalue())
+            argv = invoked["argv"]
+            self.assertEqual(argv[1:3], ("-I", "-c"))
+            self.assertIn("programbench.cli.main", argv[3])
+            self.assertEqual(argv[4], "eval")
+            snapshot = Path(argv[5])
+            self.assertTrue(snapshot.is_relative_to(grade / "inputs"))
+            self.assertEqual(
+                (snapshot / task.task_id / "submission.tar.gz").read_bytes(),
+                archive,
+            )
+            eval_output = Path(argv[argv.index("--output") + 1])
+            self.assertTrue(eval_output.is_relative_to(grade))
+            self.assertFalse(eval_output.is_relative_to(grade / "inputs"))
+            self.assertNotIn("OPENAI_API_KEY", invoked["env"])
+            self.assertEqual(invoked["env"]["HOME"], str(grade.resolve()))
+            manifest = json.loads((grade / "manifest.json").read_text())
+            self.assertEqual(manifest["grader"]["revision"], PROGRAMBENCH_REVISION)
+            self.assertEqual(manifest["grader"]["version"], "1.2.4")
+            self.assertEqual(manifest["grader"]["image_tag"], "task_cleanroom_v6")
+            self.assertEqual(
+                manifest["inputs"]["submission_sha256"][task.task_id],
+                hashlib.sha256(archive).hexdigest(),
+            )
+            result = json.loads((grade / "result.json").read_text())
+            self.assertEqual(result["returncode"], 0)
+            self.assertIn(
+                f"official_evals/run/{task.task_id}/{task.task_id}.eval.json",
+                [item["path"] for item in result["artifacts"]["files"]],
+            )
+            self.assertEqual(
+                result["verified_grader_assets"]["checkout"]["revision"],
+                PROGRAMBENCH_REVISION,
             )
 
     def test_swebench_grade_does_not_commit_mutated_grader_source(self) -> None:
@@ -2280,6 +2400,87 @@ class CLIEvalEndToEndTests(unittest.TestCase):
             self.assertEqual(
                 json.loads(predictions[0])["instance_id"], "repo__issue-1"
             )
+
+    def test_programbench_eval_completes_end_to_end(self) -> None:
+        from test_benchmarks import (
+            FakeProgramBenchEnvironment,
+            programbench_fixture_checkout,
+            programbench_fixture_git,
+        )
+
+        from mini_agent.benchmarks.programbench import PROGRAMBENCH_REVISION
+        from mini_agent.environments.swebench import SWEbenchImageBinding
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            checkout = programbench_fixture_checkout(root)
+            task_id = "org__tool.abc1234"
+            binding = SWEbenchImageBinding(
+                runtime="docker",
+                requested="programbench/org_1776_tool.abc1234:task_cleanroom_v6",
+                identity="sha256:" + "a" * 64,
+                execution_ref="sha256:" + "a" * 64,
+            )
+            stdout = io.StringIO()
+            with (
+                patch(
+                    "mini_agent.benchmarks.programbench._git",
+                    side_effect=programbench_fixture_git(checkout.resolve()),
+                ),
+                patch(
+                    "mini_agent.benchmarks.swebench.prepare_swebench_image_bindings",
+                    AsyncMock(return_value={task_id: binding}),
+                ),
+                patch(
+                    "mini_agent.benchmarks.programbench.DockerSWEEnvironment.create",
+                    AsyncMock(
+                        side_effect=lambda *a, **k: FakeProgramBenchEnvironment()
+                    ),
+                ),
+                patch(
+                    "mini_agent.cli.build_model",
+                    side_effect=lambda *a, **k: ScriptedModel(
+                        [ModelResponse("done")]
+                    ),
+                ),
+                contextlib.redirect_stdout(stdout),
+            ):
+                code = main(
+                    [
+                        "eval",
+                        "--benchmark",
+                        "programbench",
+                        "--model",
+                        "openai/test",
+                        "--checkout",
+                        str(checkout),
+                        *self._storage_args(root),
+                    ]
+                )
+            self.assertEqual(code, 0, stdout.getvalue())
+            output = root / "output"
+            result = self._assert_completed(output, task_id)
+            self.assertIsNone(result["score"])
+            self.assertEqual(
+                result["metadata"]["scoring"], "official-programbench-eval-only"
+            )
+            submission = output / "official_run" / task_id / "submission.tar.gz"
+            self.assertEqual(submission.read_bytes(), b"submission-archive")
+            manifest = json.loads((output / "manifest.json").read_text())
+            adapter = manifest["config"]["adapter"]
+            self.assertEqual(adapter["agent_network"], "none")
+            self.assertEqual(adapter["image_tag"], "task_cleanroom_v6")
+            self.assertEqual(adapter["scoring"], "official-programbench-eval-only")
+            self.assertEqual(adapter["checkout"]["revision"], PROGRAMBENCH_REVISION)
+            self.assertEqual(
+                adapter["image_bindings"][task_id]["identity"],
+                "sha256:" + "a" * 64,
+            )
+            self.assertRegex(manifest["fingerprint"], r"^[0-9a-f]{64}$")
+            self.assertNotIn("test_never_visible", json.dumps(manifest))
+            summary = json.loads((output / "summary.json").read_text())
+            self.assertEqual(summary["submissions"], 1)
+            self.assertIsNone(summary["mean_score"])
 
     def test_browsecomp_eval_scores_end_to_end(self) -> None:
         from mini_agent.benchmarks.base import BenchmarkTask

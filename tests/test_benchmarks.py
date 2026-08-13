@@ -56,6 +56,16 @@ from mini_agent.benchmarks.osworld import (
     load_osworld,
     run_osworld_task,
 )
+from mini_agent.benchmarks.programbench import (
+    PROGRAMBENCH_REVISION,
+    collect_submissions,
+    inspect_programbench_checkout,
+    inspect_programbench_grade_inputs,
+    load_programbench,
+    official_programbench_grader_argv,
+    programbench_image_name,
+    run_programbench_task,
+)
 from mini_agent.benchmarks.swebench import (
     SWEBENCH_SOURCE_SHA256,
     collect_predictions,
@@ -81,6 +91,7 @@ from mini_agent.environments.base import BaseEnvironment
 from mini_agent.environments.cua import CUAEnvironment, CUASpeedRunAdapterClient
 from mini_agent.environments.swebench import SWEbenchImageBinding
 from mini_agent.environments.web import BrowserEnvironment, JsonlSearchBackend
+from mini_agent.grading import _verify_grade_prompt_binding
 from mini_agent.models import ScriptedModel
 from mini_agent.runtime import RunContext, TraceRecorder
 from mini_agent.types import (
@@ -1510,6 +1521,381 @@ class SWEBenchmarkTests(unittest.IsolatedAsyncioTestCase):
                     max_steps=1,
                     runtime="docker",
                     model_name="scripted/model",
+                )
+
+
+HIDDEN_TEST_MARKER = "tests.test_secret.test_never_visible"
+PROGRAMBENCH_TESTS_JSON = json.dumps(
+    {
+        "branches": {
+            "79b69dd3fd98": {
+                "ignored": False,
+                "tests": [HIDDEN_TEST_MARKER],
+            }
+        }
+    },
+    indent=2,
+    sort_keys=True,
+)
+
+
+class FakeProgramBenchEnvironment(BaseEnvironment):
+    def __init__(self, archive: bytes = b"submission-archive") -> None:
+        self.archive = archive
+        self.closed = False
+
+    def tools(self) -> Sequence[ToolDefinition]:
+        return (ToolDefinition("bash"),)
+
+    async def execute(self, action: ToolCall) -> ToolExecution:
+        return ToolExecution("ok")
+
+    async def export_archive(self) -> bytes:
+        return self.archive
+
+    def provenance(self) -> Mapping[str, Any]:
+        return {"benchmark": "programbench", "network_disabled": True}
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def programbench_fixture_checkout(
+    root: Path, instance_ids: Sequence[str] = ("org__tool.abc1234",)
+) -> Path:
+    checkout = root / "ProgramBench"
+    tasks = checkout / "src" / "programbench" / "data" / "tasks"
+    tasks.mkdir(parents=True)
+    (checkout / "pyproject.toml").write_text(
+        '[project]\nname = "programbench"\nversion = "1.2.4"\n\n'
+        "[tool.ruff]\nline-length = 120\n",
+        encoding="utf-8",
+    )
+    for instance_id in instance_ids:
+        directory = tasks / instance_id
+        directory.mkdir()
+        (directory / "task.yaml").write_text(
+            f"repository: example/{instance_id}\n"
+            f"commit: {'a' * 40}\n"
+            "language: rs\n"
+            "difficulty: easy\n"
+            "eval_clean_hashes:\n"
+            f"- {'b' * 64}\n",
+            encoding="utf-8",
+        )
+        (directory / "tests.json").write_text(
+            PROGRAMBENCH_TESTS_JSON, encoding="utf-8"
+        )
+    return checkout
+
+
+def programbench_fixture_git(
+    checkout: Path,
+    *,
+    revision: str = PROGRAMBENCH_REVISION,
+    untracked: str = "",
+) -> Any:
+    def run_git(path: Path, *arguments: str) -> str:
+        if path != checkout:
+            raise AssertionError((path, arguments))
+        if arguments == ("rev-parse", "HEAD"):
+            return revision
+        if arguments[:2] == ("status", "--porcelain"):
+            return ""
+        if arguments[:2] == ("ls-files", "--others"):
+            return untracked
+        raise AssertionError(arguments)
+
+    return run_git
+
+
+class ProgramBenchTests(unittest.IsolatedAsyncioTestCase):
+    def test_task_loading_keeps_hidden_tests_out_of_agent_material(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            checkout = programbench_fixture_checkout(
+                root, ("org__tool.abc1234", "other__thing.def5678")
+            )
+            with patch(
+                "mini_agent.benchmarks.programbench._git",
+                side_effect=programbench_fixture_git(checkout.resolve()),
+            ):
+                tasks = load_programbench(checkout)
+                selected = load_programbench(
+                    checkout, task_ids=["other__thing.def5678"]
+                )
+                limited = load_programbench(checkout, limit=1)
+            self.assertEqual(
+                [task.task_id for task in tasks],
+                ["org__tool.abc1234", "other__thing.def5678"],
+            )
+            self.assertEqual(
+                [task.task_id for task in selected], ["other__thing.def5678"]
+            )
+            self.assertEqual([task.task_id for task in limited], ["org__tool.abc1234"])
+            task = tasks[0]
+            visible = task.prompt + json.dumps(dict(task.data), sort_keys=True)
+            self.assertNotIn(HIDDEN_TEST_MARKER, visible)
+            self.assertNotIn("branches", visible)
+            self.assertIn("/workspace/compile.sh", task.prompt)
+            self.assertIn("/workspace/executable", task.prompt)
+            self.assertIn("no internet access", task.prompt)
+            self.assertEqual(
+                task.data["hidden_tests_sha256"],
+                hashlib.sha256(PROGRAMBENCH_TESTS_JSON.encode("utf-8")).hexdigest(),
+            )
+            self.assertEqual(
+                task.data["image_name"],
+                "programbench/org_1776_tool.abc1234:task_cleanroom_v6",
+            )
+            with patch(
+                "mini_agent.benchmarks.programbench._git",
+                side_effect=programbench_fixture_git(checkout.resolve()),
+            ):
+                with self.assertRaisesRegex(ValueError, "not in the checkout"):
+                    load_programbench(checkout, task_ids=["absent__task.0000000"])
+
+    def test_image_name_applies_the_upstream_instance_id_rule(self) -> None:
+        self.assertEqual(
+            programbench_image_name("ffmpeg__ffmpeg.360a402"),
+            "programbench/ffmpeg_1776_ffmpeg.360a402:task_cleanroom_v6",
+        )
+        for rejected in ("Repo__Issue", "../escape", "", "-leading"):
+            with self.assertRaisesRegex(ValueError, "path-safe component"):
+                programbench_image_name(rejected)
+
+    def test_checkout_inspection_binds_revision_version_and_untracked_files(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            checkout = programbench_fixture_checkout(root)
+            resolved = checkout.resolve()
+            with patch(
+                "mini_agent.benchmarks.programbench._git",
+                side_effect=programbench_fixture_git(resolved),
+            ):
+                identity = inspect_programbench_checkout(checkout)
+            self.assertEqual(identity["revision"], PROGRAMBENCH_REVISION)
+            self.assertEqual(identity["version"], "1.2.4")
+            self.assertEqual(identity["image_tag"], "task_cleanroom_v6")
+
+            with patch(
+                "mini_agent.benchmarks.programbench._git",
+                side_effect=programbench_fixture_git(resolved, revision="f" * 40),
+            ):
+                with self.assertRaisesRegex(ValueError, PROGRAMBENCH_REVISION):
+                    inspect_programbench_checkout(checkout)
+
+            injected = checkout / "sitecustomize.py"
+            injected.write_text("raise RuntimeError('injected')\n")
+            with patch(
+                "mini_agent.benchmarks.programbench._git",
+                side_effect=programbench_fixture_git(
+                    resolved, untracked="sitecustomize.py\x00"
+                ),
+            ):
+                with self.assertRaisesRegex(ValueError, "untracked executable"):
+                    inspect_programbench_checkout(checkout)
+            injected.unlink()
+
+            (checkout / "pyproject.toml").write_text(
+                '[project]\nname = "programbench"\nversion = "9.9.9"\n',
+                encoding="utf-8",
+            )
+            with patch(
+                "mini_agent.benchmarks.programbench._git",
+                side_effect=programbench_fixture_git(resolved),
+            ):
+                with self.assertRaisesRegex(ValueError, "must declare version 1.2.4"):
+                    inspect_programbench_checkout(checkout)
+
+    async def test_generation_exports_an_offline_submission_without_a_score(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            instance = root / "instances" / "one"
+            environment = FakeProgramBenchEnvironment()
+            task = BenchmarkTask(
+                "org__tool.abc1234",
+                "rebuild it",
+                {
+                    "instance_id": "org__tool.abc1234",
+                    "image_name": (
+                        "programbench/org_1776_tool.abc1234:task_cleanroom_v6"
+                    ),
+                },
+            )
+            with patch(
+                "mini_agent.benchmarks.programbench.DockerSWEEnvironment.create",
+                AsyncMock(return_value=environment),
+            ) as create:
+                outcome = await run_programbench_task(
+                    task,
+                    RunContext(),
+                    instance,
+                    model_factory=lambda agent_id: ScriptedModel(
+                        [ModelResponse("done")]
+                    ),
+                    system_prompt="",
+                    max_steps=2,
+                )
+            keywords = create.await_args.kwargs
+            self.assertTrue(keywords["network_disabled"])
+            self.assertFalse(keywords["require_git_baseline"])
+            self.assertEqual(keywords["workdir"], "/workspace")
+            self.assertTrue(environment.closed)
+            self.assertEqual(outcome.status, "completed")
+            self.assertIsNone(outcome.score)
+            self.assertEqual(
+                outcome.metadata["scoring"], "official-programbench-eval-only"
+            )
+            archive = instance / "submission.tar.gz"
+            self.assertEqual(archive.read_bytes(), b"submission-archive")
+            self.assertEqual(
+                outcome.metadata["submission_sha256"],
+                hashlib.sha256(b"submission-archive").hexdigest(),
+            )
+            mismatched = BenchmarkTask(
+                "org__tool.abc1234",
+                "rebuild it",
+                {"instance_id": "org__tool.abc1234", "image_name": "other/image:tag"},
+            )
+            with self.assertRaisesRegex(ValueError, "image does not match"):
+                await run_programbench_task(
+                    mismatched,
+                    RunContext(),
+                    instance,
+                    model_factory=lambda agent_id: ScriptedModel([]),
+                    system_prompt="",
+                    max_steps=1,
+                )
+
+    def test_collect_submissions_requires_hash_bound_committed_results(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            instance = root / "instances" / "one"
+            instance.mkdir(parents=True)
+            archive = b"submission-archive"
+            (instance / "submission.tar.gz").write_bytes(archive)
+            commit_result(
+                instance,
+                {
+                    "task_id": "org__tool.abc1234",
+                    "status": "completed",
+                    "metadata": {
+                        "submission_sha256": hashlib.sha256(archive).hexdigest()
+                    },
+                },
+            )
+            stale = root / "official_run" / "gone__task.0000000"
+            stale.mkdir(parents=True)
+            (stale / "submission.tar.gz").write_bytes(b"stale")
+            self.assertEqual(
+                collect_submissions(root, root / "official_run"), 1
+            )
+            collected = (
+                root / "official_run" / "org__tool.abc1234" / "submission.tar.gz"
+            )
+            self.assertEqual(collected.read_bytes(), archive)
+            self.assertFalse(stale.exists())
+
+            (instance / "submission.tar.gz").write_bytes(b"tampered")
+            with self.assertRaisesRegex(ValueError, "hash does not match"):
+                collect_submissions(root, root / "official_run")
+
+    def test_grade_inputs_bind_submissions_to_visible_prompts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            checkout = programbench_fixture_checkout(root)
+            run_directory = root / "official_run"
+            (run_directory / "org__tool.abc1234").mkdir(parents=True)
+            (
+                run_directory / "org__tool.abc1234" / "submission.tar.gz"
+            ).write_bytes(b"submission-archive")
+            with patch(
+                "mini_agent.benchmarks.programbench._git",
+                side_effect=programbench_fixture_git(checkout.resolve()),
+            ):
+                inputs = inspect_programbench_grade_inputs(
+                    run_directory=run_directory, checkout=checkout
+                )
+                task = load_programbench(checkout)[0]
+            self.assertEqual(inputs["prediction_count"], 1)
+            self.assertEqual(
+                inputs["task_prompt_sha256"]["org__tool.abc1234"],
+                hashlib.sha256(task.prompt.encode("utf-8")).hexdigest(),
+            )
+            manifest = {
+                "tasks": [
+                    {
+                        "id": task.task_id,
+                        "prompt_sha256": hashlib.sha256(
+                            task.prompt.encode("utf-8")
+                        ).hexdigest(),
+                        "data_sha256": hashlib.sha256(
+                            json.dumps(
+                                task.data,
+                                sort_keys=True,
+                                separators=(",", ":"),
+                                allow_nan=False,
+                            ).encode("utf-8")
+                        ).hexdigest(),
+                    }
+                ]
+            }
+            _verify_grade_prompt_binding(manifest, inputs)
+            changed = {
+                "tasks": [{**manifest["tasks"][0], "prompt_sha256": "0" * 64}]
+            }
+            with self.assertRaisesRegex(ValueError, "do not match evaluation"):
+                _verify_grade_prompt_binding(changed, inputs)
+
+            (run_directory / "absent__task.0000000").mkdir()
+            (
+                run_directory / "absent__task.0000000" / "submission.tar.gz"
+            ).write_bytes(b"orphan")
+            with patch(
+                "mini_agent.benchmarks.programbench._git",
+                side_effect=programbench_fixture_git(checkout.resolve()),
+            ):
+                with self.assertRaisesRegex(ValueError, "missing from the checkout"):
+                    inspect_programbench_grade_inputs(
+                        run_directory=run_directory, checkout=checkout
+                    )
+
+    def test_official_grader_argv_writes_outside_the_submission_snapshot(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            run_directory = root / "run"
+            run_directory.mkdir()
+            argv = official_programbench_grader_argv(
+                run_directory=run_directory,
+                output=root / "official_evals",
+                python_executable="/fixture/python",
+                workers=2,
+            )
+            self.assertEqual(argv[:3], ("/fixture/python", "-I", "-c"))
+            self.assertIn("programbench.cli.main", argv[3])
+            self.assertEqual(argv[4:6], ("eval", str(run_directory.resolve())))
+            self.assertEqual(
+                argv[argv.index("--output") + 1], str(root / "official_evals")
+            )
+            self.assertEqual(argv[argv.index("--image-tag") + 1], "task_cleanroom_v6")
+            self.assertEqual(argv[argv.index("--workers") + 1], "2")
+            with self.assertRaisesRegex(ValueError, "must not overlap"):
+                official_programbench_grader_argv(
+                    run_directory=run_directory,
+                    output=run_directory / "evals",
+                )
+            with self.assertRaisesRegex(ValueError, "grader configuration"):
+                official_programbench_grader_argv(
+                    run_directory=run_directory,
+                    output=root / "official_evals",
+                    workers=0,
                 )
 
 

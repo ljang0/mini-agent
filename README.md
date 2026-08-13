@@ -186,8 +186,8 @@ The public surface is intentionally small:
 ```text
 mini-agent profile
 mini-agent run --environment swe|web|computer
-mini-agent eval --benchmark swebench|browsecomp|browsecomp-plus|osworld-v1|osworld-v2|cua-speed-run
-mini-agent grade --benchmark swebench|browsecomp-plus
+mini-agent eval --benchmark swebench|programbench|browsecomp|browsecomp-plus|osworld-v1|osworld-v2|cua-speed-run
+mini-agent grade --benchmark swebench|programbench|browsecomp-plus
 mini-agent doctor
 ```
 
@@ -295,6 +295,14 @@ mini-agent eval \
   --output /path/to/durable/mini-agent/runs/swe-canary \
   --scratch /path/to/local-scratch/mini-agent-swe
 
+# ProgramBench generation: offline `--network none` cleanroom containers.
+mini-agent eval \
+  --benchmark programbench \
+  --checkout /src/ProgramBench \
+  --runtime docker \
+  --model openai/MODEL \
+  --output /path/to/durable/mini-agent/runs/programbench-canary
+
 # Live BrowseComp plus an independently configured private-answer grader.
 mini-agent eval \
   --benchmark browsecomp \
@@ -353,6 +361,7 @@ run/
   instances/<hashed-task-id>/result.json
   instances/<hashed-task-id>/completed.json
   predictions.jsonl                 # SWE-bench
+  official_run/                     # ProgramBench
   official_runs/                    # BrowseComp-Plus
 ```
 
@@ -364,6 +373,11 @@ mini-agent grade \
   --evaluation /path/to/evaluation \
   --dataset /data/SWE-bench_Verified.jsonl \
   --run-id mini-agent-canary
+
+mini-agent grade \
+  --benchmark programbench \
+  --evaluation /path/to/evaluation \
+  --checkout /src/ProgramBench
 
 mini-agent grade \
   --benchmark browsecomp-plus \
@@ -380,6 +394,9 @@ a private `0700` grade directory before invoking upstream. SWE-bench requires
 the current Python to contain exactly `swebench==4.1.0`. Image verification uses
 the same Docker SDK, explicit `DOCKER_HOST`, and allowlisted environment as the
 upstream grader; the generation manifest's runtime command is inert provenance.
+ProgramBench requires the pinned checkout plus `programbench==1.2.4`, and runs
+the official `programbench eval` with `--output` outside the hashed submission
+snapshot so the evaluator cannot mutate its own input.
 BrowseComp-Plus checks
 the pinned checkout and lockfile plus the lock's direct grader versions
 (`numpy==1.26.4`, `tqdm==4.67.1`, `vllm==0.9.0.1`). Its judge model must be a

@@ -99,6 +99,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--benchmark",
         choices=(
             "swebench",
+            "programbench",
             "browsecomp",
             "browsecomp-plus",
             "osworld-v1",
@@ -154,7 +155,9 @@ def build_parser() -> argparse.ArgumentParser:
         "grade", help="Invoke an official benchmark grader on generated artifacts."
     )
     grade.add_argument(
-        "--benchmark", choices=("swebench", "browsecomp-plus"), required=True
+        "--benchmark",
+        choices=("swebench", "programbench", "browsecomp-plus"),
+        required=True,
     )
     grade.add_argument("--evaluation", type=Path, required=True)
     grade.add_argument("--output", type=Path)
@@ -641,6 +644,52 @@ async def _evaluate(args: argparse.Namespace) -> int:
                 per_agent_limits=_per_agent_limits(args),
             )
 
+    elif benchmark == "programbench":
+        from .benchmarks.programbench import (
+            inspect_programbench_checkout,
+            load_programbench,
+            run_programbench_task,
+        )
+        from .benchmarks.swebench import prepare_swebench_image_bindings
+
+        if args.runtime != "docker":
+            raise ValueError(
+                "ProgramBench evaluation is Docker-only; use --runtime docker"
+            )
+        checkout = _required_path(args.checkout, "--checkout")
+        args._programbench_checkout = dict(inspect_programbench_checkout(checkout))
+        tasks = load_programbench(
+            checkout,
+            limit=limit,
+            task_ids=_programbench_task_ids(args.task_list),
+        )
+        image_bindings = await prepare_swebench_image_bindings(
+            tasks,
+            runtime="docker",
+            container_runtime=tuple(args.container_runtime),
+        )
+        args._programbench_image_bindings = {
+            task_id: dict(binding.manifest_identity())
+            for task_id, binding in sorted(image_bindings.items())
+        }
+
+        async def worker(task: Any, context: RunContext, directory: Path) -> Any:
+            return await run_programbench_task(
+                task,
+                context,
+                directory,
+                model_factory=model_factory,
+                system_prompt=resolved_prompt,
+                max_steps=args.max_steps,
+                agent_spec=agent_spec,
+                container_runtime=tuple(args.container_runtime),
+                image_binding=image_bindings[task.task_id],
+                multi_agent=args.multi_agent,
+                max_active_agents=args.max_active_agents,
+                max_total_agents=args.max_total_agents,
+                per_agent_limits=_per_agent_limits(args),
+            )
+
     elif benchmark in {"browsecomp", "browsecomp-plus"}:
         from .benchmarks.web import (
             grade_browsecomp,
@@ -908,6 +957,11 @@ async def _evaluate(args: argparse.Namespace) -> int:
 
         count = collect_predictions(output, output / "predictions.jsonl")
         summary = {**summary, "predictions": count}
+    elif benchmark == "programbench":
+        from .benchmarks.programbench import collect_submissions
+
+        count = collect_submissions(output, output / "official_run")
+        summary = {**summary, "submissions": count}
     elif benchmark == "browsecomp-plus":
         from .benchmarks.web import collect_browsecomp_plus_runs
 
@@ -1336,10 +1390,28 @@ def _progress_worker(
     return wrapped
 
 
+def _programbench_task_ids(task_list: Path | None) -> tuple[str, ...] | None:
+    """Read an optional newline-delimited ProgramBench instance-id selection."""
+
+    if task_list is None:
+        return None
+    source = _required_path(task_list, "--task-list")
+    if not source.is_file():
+        raise ValueError("--task-list must be a file of ProgramBench instance ids")
+    selected = tuple(
+        line.strip()
+        for line in source.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    )
+    if not selected:
+        raise ValueError("--task-list contains no ProgramBench instance ids")
+    return selected
+
+
 def _benchmark_domain(benchmark: str) -> str:
     return (
         "swe"
-        if benchmark == "swebench"
+        if benchmark in {"swebench", "programbench"}
         else "web"
         if benchmark in {"browsecomp", "browsecomp-plus"}
         else "computer"
@@ -1382,6 +1454,30 @@ def _evaluation_config(
             ),
         }
         prepared_images = getattr(args, "_swebench_image_bindings", None)
+        if prepared_images is not None:
+            adapter = {**adapter, "image_bindings": prepared_images}
+    elif args.benchmark == "programbench":
+        from .benchmarks.programbench import (
+            PROGRAMBENCH_IMAGE_TAG,
+            PROGRAMBENCH_REVISION,
+            PROGRAMBENCH_SUBMISSION_NAME,
+            PROGRAMBENCH_VERSION,
+            PROGRAMBENCH_WORKDIR,
+        )
+
+        adapter = {
+            "runtime": "docker",
+            "container_runtime": list(args.container_runtime),
+            "revision": PROGRAMBENCH_REVISION,
+            "version": PROGRAMBENCH_VERSION,
+            "image_tag": PROGRAMBENCH_IMAGE_TAG,
+            "agent_network": "none",
+            "workdir": PROGRAMBENCH_WORKDIR,
+            "submission_artifact": PROGRAMBENCH_SUBMISSION_NAME,
+            "scoring": "official-programbench-eval-only",
+            "checkout": getattr(args, "_programbench_checkout", None),
+        }
+        prepared_images = getattr(args, "_programbench_image_bindings", None)
         if prepared_images is not None:
             adapter = {**adapter, "image_bindings": prepared_images}
     elif args.benchmark == "browsecomp":

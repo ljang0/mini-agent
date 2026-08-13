@@ -7,6 +7,7 @@ harness. Pins are enforced at runtime where an upstream checkout is required.
 | Benchmark | Pinned boundary | Maintained path | Deliberate difference |
 |---|---|---|---|
 | SWE-bench | tag `v4.1.0`, commit `726c5461e2ef52d83cf1ea2107870a8bb3328d57` | Official task fields, independent persistent Docker or Apptainer workspaces, binary patch artifact, exact prediction JSONL, official grader command | Generic one-`bash` loop and baseline prompt are not an official leaderboard model harness; upstream scoring remains Docker-only |
+| ProgramBench | commit `963063c9271cc40fa179977356782ea4582e0b0c`, package version `1.2.4` | Pinned `task.yaml` task loading, per-task `task_cleanroom_v6` cleanroom image, `--network none` agent container, `<run>/<instance_id>/submission.tar.gz` layout, official `programbench eval` command | Generic one-`bash` loop and baseline prompt are not the upstream mini-swe-agent baseline; `tests.json` is never loaded into task data, only hashed |
 | BrowseComp | `openai/simple-evals` commit `652c89d0ca9df547706735883097e9537d40dc47` | Official encrypted CSV decoding, live SerpAPI search/open, required independent private-answer grader | Search provider/tool protocol is a maintained baseline, not simple-evals' hosted model harness |
 | BrowseComp-Plus | `texttron/BrowseComp-Plus` commit `046949032b0328319cc9a02663a759ec601d9402` | Fixed Lucene BM25, exactly top five, 512-token snippets, search-only capability, full index-tree hash, tokenizer provenance, official per-query run schema and pinned grader command | One `browser` action renames the upstream provider-specific search function |
 | OSWorld v1 | `xlang-ai/OSWorld` commit `091f5ef1d5544bc74953c77875d5feb5bed30108` | Official task configs, reset/setup, 60-second reset settle plus fresh observation, independent `DesktopEnv`, pyautogui and literal `FAIL` steps, 20-second evaluation settle, hidden `evaluate()` | Batched native-pixel computer tool and baseline prompt are adapted |
@@ -76,6 +77,61 @@ Primary references are the pinned
 [mini-swe-agent loop](https://github.com/SWE-agent/mini-swe-agent/blob/a83fcae82d2a08f0ee0c688f9d137b3566c097f8/src/minisweagent/agents/default.py),
 [mini-swe-agent SWE-bench configuration](https://github.com/SWE-agent/mini-swe-agent/blob/a83fcae82d2a08f0ee0c688f9d137b3566c097f8/src/minisweagent/config/benchmarks/swebench.yaml),
 and [SWE-bench evaluator](https://github.com/SWE-bench/SWE-bench/blob/726c5461e2ef52d83cf1ea2107870a8bb3328d57/swebench/harness/run_evaluation.py).
+
+## ProgramBench
+
+Input is a local checkout of `facebookresearch/ProgramBench` at commit
+`963063c9271cc40fa179977356782ea4582e0b0c`, whose `pyproject.toml` must declare
+version `1.2.4`. The checkout is verified before any task loads: exact `HEAD`,
+no tracked modifications, and no untracked executable or source file that could
+shadow evaluation. Tasks come from
+`src/programbench/data/tasks/<instance_id>/task.yaml`, read through a strict
+reader for the pinned metadata grammar; anything else fails closed.
+
+Each task directory also holds `tests.json`, the evaluator's branch-to-test map.
+Its bytes never enter task data. Only its SHA-256 and size are recorded as
+hidden provenance, so the manifest binds which hidden tests existed without the
+agent, the prompt, or the trace ever seeing a test name.
+
+Inference uses the per-task Docker image
+`programbench/<instance_id with '__' replaced by '_1776_'>:task_cleanroom_v6`.
+As with SWE-bench, every selected tag is resolved to a full image ID before the
+manifest is committed and the container starts by that ID. Upstream requires the
+agent to have no internet during inference, so the agent container runs with
+`--network none`; that is recorded in the environment provenance and in the
+evaluation manifest as `agent_network: none`. The cleanroom images ship a
+compiled reference program and documentation rather than a Git tree, so the
+container is created without a Git baseline: patch export is unavailable and the
+whole `/workspace` tree is the exported state. Multi-agent adoption therefore
+replaces a descendant's workspace archive instead of applying a diff.
+
+Generation writes one hash-bound `submission.tar.gz` per instance and collects
+them into the exact upstream layout, `<run>/<instance_id>/submission.tar.gz`.
+The agent's build contract is upstream's: the evaluator wipes `/workspace`,
+unpacks the archive, deletes any shipped `./executable`, and runs `./compile.sh`
+with the build network blocked, expecting the built program at `./executable`.
+No score is assigned locally — `EvaluationOutcome.score` stays `None` and the
+result records `scoring: official-programbench-eval-only`.
+
+`mini-agent grade --benchmark programbench` requires the same pinned checkout
+plus `programbench==1.2.4` in the current Python, verified through the isolated
+grader-runtime probe. It re-derives every selected task from the checkout and
+refuses to start unless the prompt and complete canonical data hashes match the
+generation manifest. The collected submissions are snapshotted into the private
+`0700` grade directory and the official CLI is invoked there with `--output`
+pointing at a separate directory inside the grade output, so the snapshot the
+manifest hashes is never mutated by the evaluator. The pinned package ships no
+`__main__` module, so the isolated Python runs the entry point declared in the
+upstream `pyproject.toml` (`programbench.cli.main:app`) directly. The official
+evaluator pulls Docker images and downloads per-branch test blobs from
+HuggingFace on demand; `HOME` is the private grade directory, so that cache
+stays inside the grade evidence. Scores come only from those `.eval.json` files
+and upstream's own `programbench info` aggregation.
+
+Primary references are the pinned
+[usage guide](https://github.com/facebookresearch/programbench/blob/963063c9271cc40fa179977356782ea4582e0b0c/docs/README.md),
+[image naming](https://github.com/facebookresearch/programbench/blob/963063c9271cc40fa179977356782ea4582e0b0c/src/programbench/constants.py),
+and [evaluator](https://github.com/facebookresearch/programbench/blob/963063c9271cc40fa179977356782ea4582e0b0c/src/programbench/eval/eval.py).
 
 ## BrowseComp
 

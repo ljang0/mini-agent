@@ -35,6 +35,7 @@ from mini_agent.environments.swe import (
 from mini_agent.environments.swebench import (
     ApptainerSWEEnvironment,
     DockerSWEEnvironment,
+    SWEArchiveState,
     SWEbenchImageBinding,
     _materialize_apptainer_image,
     resolve_swebench_image_binding,
@@ -956,7 +957,79 @@ class RecordingRunner:
         return ProcessResult(output, 0, len(output))
 
 
+class ArchiveRecordingRunner(RecordingRunner):
+    """Recording runner that also serves workspace archive export/adoption."""
+
+    def __init__(self, archive: bytes = b"workspace-archive") -> None:
+        super().__init__()
+        self.archive = archive
+
+    async def run(self, argv: Sequence[str], **kwargs: Any) -> ProcessResult:
+        call = tuple(argv)
+        if call[1:2] == ("cp",):
+            self.calls.append(call)
+            if ":" in call[2]:
+                Path(call[3]).write_bytes(self.archive)
+            return ProcessResult(b"", 0, 0)
+        if "exec" in call[1:3] and "tar -czf" in call[-1]:
+            self.calls.append(call)
+            output = f"{len(self.archive)}\n".encode()
+            return ProcessResult(output, 0, len(output))
+        return await super().run(argv, **kwargs)
+
+
 class SWEbenchEnvironmentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_offline_container_disables_network_and_exports_an_archive(
+        self,
+    ) -> None:
+        runner = ArchiveRecordingRunner()
+        environment = await DockerSWEEnvironment.create(
+            {
+                "instance_id": "org__tool.abc1234",
+                "image_name": "programbench/org_1776_tool.abc1234:task_cleanroom_v6",
+            },
+            runner=runner,
+            workdir="/workspace",
+            network_disabled=True,
+            require_git_baseline=False,
+            benchmark_identity={"benchmark": "programbench"},
+        )
+        try:
+            start = next(call for call in runner.calls if call[1:2] == ("run",))
+            self.assertEqual(start[start.index("--network") + 1], "none")
+            self.assertEqual(start[start.index("--workdir") + 1], "/workspace")
+            self.assertFalse(
+                any("git rev-parse" in call[-1] for call in runner.calls)
+            )
+            self.assertIsNone(environment.base_commit)
+            provenance = environment.provenance()
+            self.assertTrue(provenance["network_disabled"])
+            self.assertEqual(provenance["benchmark"], "programbench")
+            self.assertEqual(provenance["workdir"], "/workspace")
+            self.assertEqual(provenance["patch_export"], "workspace_tar_gz")
+            with self.assertRaisesRegex(RuntimeError, "no Git baseline"):
+                await environment.export_patch()
+            self.assertEqual(await environment.export_archive(), b"workspace-archive")
+            archived = next(
+                call for call in reversed(runner.calls) if "tar -czf" in call[-1]
+            )
+            self.assertIn("-C /workspace .", archived[-1])
+            state = await environment.export_state()
+            self.assertIsInstance(state, SWEArchiveState)
+            await environment.adopt_state(state)
+            replaced = next(
+                call for call in reversed(runner.calls) if "tar -xzf" in call[-1]
+            )
+            self.assertIn("find /workspace -mindepth 1 -delete", replaced[-1])
+            with self.assertRaisesRegex(ProtocolError, "different container image"):
+                await environment.adopt_state(SWEArchiveState("elsewhere", b""))
+            environment.max_archive_bytes = 4
+            with self.assertRaisesRegex(RuntimeError, "byte limit"):
+                await environment.export_archive()
+        finally:
+            await environment.close()
+        self.assertEqual(runner.calls[-1][1:3], ("rm", "--force"))
+
     async def test_docker_image_preflight_materializes_and_binds_an_exact_id(
         self,
     ) -> None:
