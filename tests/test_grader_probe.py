@@ -9,6 +9,7 @@ decides whether a grader runtime is the one that was recorded.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -87,17 +88,36 @@ class GraderProbeTests(unittest.TestCase):
     def test_a_package_behind_a_symlink_is_refused(self) -> None:
         """A symlinked package root means the graded tree is not pinned.
 
-        This project's own venv is such a runtime (lib64 -> lib), so the
-        refusal is observable rather than hypothetical.
+        The condition is built here rather than borrowed from whatever the
+        interpreter happens to sit on: an earlier version of this test relied
+        on this project's venv having lib64 -> lib, which is true locally and
+        false on CI. Dropping -I is what lets PYTHONPATH reach the fixture;
+        every check the probe makes is otherwise the same.
         """
 
-        import importlib.metadata as metadata
-
-        report = probe({"httpx": metadata.version("httpx")})
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            real = root / "realpkg"
+            real.mkdir()
+            (real / "__init__.py").write_text("")
+            (root / "linkpkg").symlink_to(real, target_is_directory=True)
+            info = root / "linkpkg-1.0.dist-info"
+            info.mkdir()
+            (info / "METADATA").write_text(
+                "Metadata-Version: 2.1\nName: linkpkg\nVersion: 1.0\n"
+            )
+            output = root / "probe.json"
+            subprocess.run(
+                [sys.executable, "-c", SOURCE, str(output),
+                 json.dumps({"linkpkg": "1.0"})],
+                capture_output=True, timeout=120,
+                env={"PYTHONPATH": str(root), "PATH": os.environ.get("PATH", "")},
+            )
+            report = json.loads(output.read_text())
 
         self.assertFalse(report["ok"], report)
         self.assertEqual(report["error"], "module")
-        self.assertEqual(report["name"], "httpx")
+        self.assertEqual(report["name"], "linkpkg")
 
     def test_a_missing_package_is_named_not_guessed(self) -> None:
         report = probe({"definitely-not-installed-xyz": "1.0.0"})
