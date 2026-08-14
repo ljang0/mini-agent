@@ -4,6 +4,8 @@
   environments, budgets, accounting, and spec binding.
 - [Architecture](architecture.md): loop, environment, accounting, evidence, and
   recursive communication boundaries.
+- [Harnesses](harnesses.md): the selectable multi-agent topologies, how to add
+  one, and the capacity limits team size interacts with.
 - [Reference ledger](references.md): pinned primary sources, provider protocol
   reviews, and explicit equivalence boundaries.
 - [Benchmark fidelity](benchmarks.md): exact pins, prerequisites, output contracts,

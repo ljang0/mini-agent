@@ -242,6 +242,22 @@ With `--multi-agent`, every SWE worker gets an independent private repository
 copy. The root's selected state is exported as `patch.diff`; the source workspace
 is not changed.
 
+`--harness` selects a named multi-agent topology instead, so runs that differ
+only in coordination structure can be compared:
+
+```bash
+mini-agent eval --benchmark programbench --harness fixed-team --team-size 3 \
+  --max-active-agents 3 --max-total-agents 3 --model-concurrency 3 \
+  --per-agent-model-calls 64 --agent-git-share ...
+```
+
+The choices are `single`, `fixed-team` (peers with a designated lead),
+`orchestrator` (a coordinator with no task tools, delegating to blocking
+subagents), `async-subagents` (long-lived subagents that idle between
+instructions), and `recursive` — the free-form mesh `--multi-agent` selects.
+Every result records what each agent spent and how much of it went into
+coordination. See [docs/harnesses.md](docs/harnesses.md).
+
 Run live web research with SerpAPI, or use JSONL BM25 for a small deterministic
 fixture:
 
