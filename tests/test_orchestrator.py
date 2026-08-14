@@ -50,6 +50,7 @@ def orchestrator_for(
     fail_root_close: bool = False,
     fail_close_ids: set[str] | None = None,
     max_message_bytes: int = 64 * 1024,
+    harness: Any = None,
 ) -> Orchestrator:
     captured = environments if environments is not None else {}
 
@@ -84,6 +85,7 @@ def orchestrator_for(
         max_total_agents=max_total,
         per_agent_limits=per_agent_limits,
         max_message_bytes=max_message_bytes,
+        harness=harness,
     )
 
 
@@ -750,3 +752,118 @@ class OrchestratorTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HarnessTests(unittest.IsolatedAsyncioTestCase):
+    """Each harness's structural contract, which is what makes them comparable.
+
+    These assert shape rather than quality: how many agents exist and when,
+    which tools each role holds, whether a call blocks, and whether an agent
+    survives answering. Those are the properties an experiment varies.
+    """
+
+    async def test_a_fixed_team_exists_before_the_lead_takes_a_turn(self) -> None:
+        from mini_agent.harnesses import load_harness
+
+        harness = load_harness("fixed-team")
+        peers = ("/root/peer-2", "/root/peer-3")
+        models: dict[str, Any] = {
+            "/root": ScriptedModel(
+                [
+                    call("inbox", {"action": "inbox", "wait": True}),
+                    ModelResponse("lead answer"),
+                ]
+            )
+        }
+        for peer in peers:
+            models[peer] = ScriptThenBlockModel(
+                [
+                    call(
+                        "s",
+                        {
+                            "action": "send",
+                            "agent_id": "/root",
+                            "message": f"{peer} up",
+                        },
+                    ),
+                    ModelResponse(f"{peer} done"),
+                ]
+            )
+        orchestrator = orchestrator_for(models, max_active=3, max_total=3,
+                                        harness=harness)
+
+        result = await orchestrator.run(
+            "shared task", seeds=harness.seeds(size=3, task="shared task")
+        )
+
+        self.assertEqual(result.answer, "lead answer")
+        self.assertEqual(sorted(orchestrator.records), ["/root", *peers])
+        # Peers hold the same tools as the lead and cannot spawn.
+        for peer in peers:
+            environment = orchestrator.records[peer].environment
+            assert environment is not None
+            actions = environment.tools()[-1].input_schema["properties"]["action"]
+            self.assertEqual(actions["enum"], ["inbox", "send"])
+
+    async def test_delegation_blocks_and_returns_the_subagent_answer(self) -> None:
+        from mini_agent.harnesses import load_harness
+
+        harness = load_harness("orchestrator")
+        models = {
+            "/root": ScriptedModel(
+                [
+                    call("d", {"action": "delegate", "task": "do the work"}),
+                    ModelResponse("orchestrator answer"),
+                ]
+            ),
+            "/root/1": ScriptedModel([ModelResponse("subagent answer")]),
+        }
+        orchestrator = orchestrator_for(models, harness=harness)
+
+        result = await orchestrator.run("coordinate")
+
+        self.assertEqual(result.answer, "orchestrator answer")
+        delegate_output = models["/root"].queries[1][0][-1].tool_results[0].output
+        self.assertEqual(json.loads(delegate_output)["answer"], "subagent answer")
+        self.assertEqual(orchestrator.records["/root/1"].status, "completed")
+        # The orchestrator holds no domain tools, so it can only delegate.
+        environment = orchestrator.records["/root"].environment
+        assert environment is not None
+        self.assertEqual([tool.name for tool in environment.tools()], ["agent"])
+
+    async def test_an_async_subagent_idles_then_resumes_then_releases(self) -> None:
+        from mini_agent.harnesses import load_harness
+
+        harness = load_harness("async-subagents")
+        models = {
+            "/root": ScriptedModel(
+                [
+                    call("sp", {"action": "spawn", "task": "first"}),
+                    call("in", {"action": "inbox", "wait": True}),
+                    call(
+                        "sd",
+                        {"action": "send", "agent_id": "/root/1", "message": "second"},
+                    ),
+                    call("in2", {"action": "inbox", "wait": True}),
+                    call("rel", {"action": "release", "agent_id": "/root/1"}),
+                    ModelResponse("lead answer"),
+                ]
+            ),
+            "/root/1": ScriptedModel(
+                [ModelResponse("first done"), ModelResponse("second done")]
+            ),
+        }
+        orchestrator = orchestrator_for(models, harness=harness)
+
+        result = await orchestrator.run("lead")
+
+        self.assertEqual(result.answer, "lead answer")
+        first = json.loads(models["/root"].queries[2][0][-1].tool_results[0].output)
+        second = json.loads(models["/root"].queries[4][0][-1].tool_results[0].output)
+        self.assertEqual(first[0]["content"], "first done")
+        self.assertEqual(second[0]["content"], "second done")
+        # It answered twice on one conversation, then ended cleanly enough to
+        # have exported state -- which `stop` would have discarded.
+        record = orchestrator.records["/root/1"]
+        self.assertEqual(record.status, "completed")
+        self.assertIsNotNone(record.state)

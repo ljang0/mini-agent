@@ -12,6 +12,8 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Awaitable, Callable, Mapping, Sequence, TypeVar
 
 from .agent import MiniAgent
+from .harnesses import load_harness
+from .harnesses.base import ACTIONS, LEGACY_ACTIONS, Harness, Role
 from .environments.base import (
     AgentEnvironment,
     BaseEnvironment,
@@ -44,6 +46,22 @@ EnvironmentFactory = Callable[
 ]
 _T = TypeVar("_T")
 _ACTIVE = frozenset({"starting", "running"})
+
+# One clause per action, so a role's tool description says exactly what that
+# role can do instead of describing capabilities it does not hold.
+_ACTION_HELP = {
+    "spawn": "Spawn a mini-agent.",
+    "send": "Send a message to another agent.",
+    "inbox": "Read your inbox (wait=true blocks for delivery).",
+    "wait": "Wait for a descendant to finish.",
+    "stop": "Stop a descendant subtree.",
+    "adopt": "Adopt a completed descendant's environment state.",
+    "delegate": "Delegate a subtask and block until the subagent answers.",
+    "release": "Release an idle descendant so its state can be adopted.",
+}
+
+# What an agent is when no harness was selected: the pre-harness mesh.
+_LEGACY_ROLE = load_harness("recursive").roles["solver"]
 
 
 @dataclass(frozen=True)
@@ -79,10 +97,20 @@ class AgentRecord:
     inbox_event: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
     adopted_from: str | None = None
     adoption_history: list[str] = field(default_factory=list)
+    # Idleness is a boolean rather than a status, so the status vocabulary
+    # recorded in every benchmark artifact keeps its existing value domain.
+    idle: bool = False
+    released: bool = False
+    delegated: bool = False
 
 
 class CommunicationEnvironment(BaseEnvironment):
-    """Add one communication tool to a domain environment."""
+    """Add one communication tool to a domain environment.
+
+    ``actions`` is the subset of the vocabulary this agent's role holds, and
+    ``expose_domain_tools`` is how a role that only coordinates ends up with
+    nothing else to call. The defaults reproduce the pre-harness tool exactly.
+    """
 
     def __init__(
         self,
@@ -90,6 +118,9 @@ class CommunicationEnvironment(BaseEnvironment):
         orchestrator: "Orchestrator",
         owner: str,
         parent_id: str | None = None,
+        *,
+        actions: Sequence[str] = LEGACY_ACTIONS,
+        expose_domain_tools: bool = True,
     ) -> None:
         if not callable(getattr(base, "tools", None)):
             raise ValueError("domain environment must expose tools")
@@ -116,53 +147,54 @@ class CommunicationEnvironment(BaseEnvironment):
         self.orchestrator = orchestrator
         self.owner = owner
         self.parent_id = parent_id
-        self._base_tools = tools
+        self._base_tools = tools if expose_domain_tools else ()
+        self._actions = tuple(actions)
+        for action in self._actions:
+            if action not in ACTIONS:
+                raise ValueError(f"unknown agent action {action!r}")
         self._closed = False
 
     def tools(self) -> Sequence[ToolDefinition]:
-        return (
-            *self._base_tools,
-            ToolDefinition(
-                name="agent",
-                description=(
-                    f"You are agent {self.owner!r}; "
-                    + (
-                        "you have no parent. "
-                        if self.parent_id is None
-                        else f"your parent is {self.parent_id!r}. "
-                    )
-                    + "Spawn a mini-agent, exchange messages (use inbox with "
-                    "wait=true to block for delivery), wait for completion, stop "
-                    "a descendant subtree, or adopt a completed descendant's "
-                    "environment state."
-                ),
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "action": {
-                            "type": "string",
-                            "enum": [
-                                "spawn",
-                                "send",
-                                "inbox",
-                                "wait",
-                                "stop",
-                                "adopt",
-                            ],
-                        },
-                        "task": {"type": "string"},
-                        "agent_id": {"type": "string"},
-                        "agent_ids": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                        },
-                        "message": {"type": "string"},
-                        "wait": {"type": "boolean"},
+        if not self._actions:
+            return self._base_tools
+        return (*self._base_tools, self._agent_tool())
+
+    def _agent_tool(self) -> ToolDefinition:
+        whose = (
+            "you have no parent. "
+            if self.parent_id is None
+            else f"your parent is {self.parent_id!r}. "
+        )
+        if self._actions == LEGACY_ACTIONS:
+            # Pinned verbatim: this string is hashed into every recorded
+            # tools_sha256, so composing it would change existing traces.
+            summary = (
+                "Spawn a mini-agent, exchange messages (use inbox with "
+                "wait=true to block for delivery), wait for completion, stop "
+                "a descendant subtree, or adopt a completed descendant's "
+                "environment state."
+            )
+        else:
+            summary = " ".join(_ACTION_HELP[action] for action in self._actions)
+        return ToolDefinition(
+            name="agent",
+            description=f"You are agent {self.owner!r}; " + whose + summary,
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": list(self._actions)},
+                    "task": {"type": "string"},
+                    "agent_id": {"type": "string"},
+                    "agent_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
                     },
-                    "required": ["action"],
-                    "additionalProperties": False,
+                    "message": {"type": "string"},
+                    "wait": {"type": "boolean"},
                 },
-            ),
+                "required": ["action"],
+                "additionalProperties": False,
+            },
         )
 
     async def initial_observation(self) -> ToolExecution | None:
@@ -180,9 +212,13 @@ class CommunicationEnvironment(BaseEnvironment):
 
     async def execute(self, call: ToolCall) -> ToolExecution:
         if call.name != "agent":
+            if not any(tool.name == call.name for tool in self._base_tools):
+                raise InvalidAction(f"unsupported tool {call.name!r}")
             return await self.base.execute(call)
         scheduler = self.orchestrator
         action = call.arguments.get("action")
+        if action not in self._actions:
+            raise InvalidAction(f"unsupported agent action {action!r}")
         if action == "spawn":
             _only(call, "action", "task")
             task = self._argument(call, "task", action)
@@ -204,6 +240,18 @@ class CommunicationEnvironment(BaseEnvironment):
                 scheduler.read_messages(self.owner, wait=blocking)
             )
             return _json_execution([asdict(message) for message in messages])
+        if action == "delegate":
+            _only(call, "action", "task")
+            task = self._argument(call, "task", action)
+            return _json_execution(
+                await _await_action(scheduler.delegate(self.owner, task))
+            )
+        if action == "release":
+            _only(call, "action", "agent_id")
+            target = self._argument(call, "agent_id", action)
+            return _json_execution(
+                await _await_action(scheduler.release(self.owner, target))
+            )
         if action == "wait":
             _only(call, "action", "agent_ids")
             targets = call.arguments.get("agent_ids")
@@ -268,7 +316,13 @@ class CommunicationEnvironment(BaseEnvironment):
 
 
 class Orchestrator:
-    """A bounded scheduler with no topology-specific roles or depth limit."""
+    """A bounded scheduler that executes whatever topology a harness declares.
+
+    The scheduler holds the mechanisms -- admission control, mailboxes,
+    cancellation, state hand-off -- and the harness decides which of them each
+    agent may reach. Without a harness every agent gets the full pre-harness
+    vocabulary, which is what keeps existing runs reproducible.
+    """
 
     def __init__(
         self,
@@ -282,6 +336,7 @@ class Orchestrator:
         max_message_bytes: int = 64 * 1024,
         max_inbox_bytes: int = 1024 * 1024,
         root_id: str = "/root",
+        harness: Harness | None = None,
     ) -> None:
         if not callable(agent_builder) or not callable(environment_factory):
             raise ValueError("agent_builder and environment_factory must be callable")
@@ -313,6 +368,7 @@ class Orchestrator:
         self.max_message_bytes = max_message_bytes
         self.max_inbox_bytes = max_inbox_bytes
         self.root_id = root_id.rstrip("/")
+        self.harness = harness
         self._records: dict[str, AgentRecord] = {}
         self._resource_ids: set[str] = set()
         self._child_counts: dict[str, int] = {}
@@ -324,12 +380,32 @@ class Orchestrator:
     def records(self) -> Mapping[str, AgentRecord]:
         return dict(self._records)
 
-    async def run(self, task: str) -> AgentResult:
+    def _role(self, agent_id: str) -> Role:
+        if self.harness is None:
+            return _LEGACY_ROLE
+        return self.harness.role_of(agent_id, root_id=self.root_id)
+
+    async def run(
+        self, task: str, *, seeds: Sequence[tuple[str, str]] = ()
+    ) -> AgentResult:
+        """Run the team to the lead's answer.
+
+        ``seeds`` are peers started beside the lead, as (id suffix, task)
+        pairs. They are provisioned and running before the lead takes its
+        first turn, which is what makes a fixed team a team rather than
+        something the lead has to assemble.
+        """
+
         if self._running:
             raise RuntimeError("orchestrator instances can run only once")
         task = _bounded_text(task, "root task", self.max_message_bytes)
         self._running = True
         root = await self._reserve(None, self.root_id)
+        for suffix, seed_task in seeds:
+            record = await self._reserve(self.root_id, f"{self.root_id}/{suffix}")
+            await self._start(
+                record, _bounded_text(seed_task, "seed task", self.max_message_bytes)
+            )
         await self._start(root, task)
         assert root.task is not None
         result: AgentResult | None = None
@@ -401,6 +477,8 @@ class Orchestrator:
                     f"total agent limit reached ({self.max_total_agents})"
                 )
             agent_id = requested_id
+            if agent_id is not None and agent_id in self._records:
+                raise ProtocolError(f"duplicate agent id {agent_id!r}")
             if agent_id is None:
                 assert parent_id is not None
                 number = self._child_counts.get(parent_id, 0) + 1
@@ -442,13 +520,22 @@ class Orchestrator:
                     raise ValueError("environment_factory reused a resource identity")
                 self._resource_ids.add(identity)
                 identity_added = True
+            role = self._role(record.agent_id)
             environment = CommunicationEnvironment(
-                base, self, record.agent_id, record.parent_id
+                base,
+                self,
+                record.agent_id,
+                record.parent_id,
+                actions=role.actions,
+                expose_domain_tools=role.domain_tools,
             )
             built = self.agent_builder(record.agent_id, environment, self.context)
             agent = await built if inspect.isawaitable(built) else built
             if not isinstance(agent, MiniAgent):
                 raise TypeError("agent_builder must return MiniAgent")
+            # An agent that stays available reports each answer and waits; the
+            # environment is finished once, when it is finally released.
+            agent.finish_on_answer = not role.idle
             if agent.agent_id != record.agent_id or agent.context is not self.context:
                 raise ValueError("agent_builder must use the supplied id and context")
             if self.per_agent_limits is not None:
@@ -525,6 +612,18 @@ class Orchestrator:
         error: BaseException | None = None
         try:
             result = await agent.run(task)
+            while self._role(record.agent_id).idle and not record.released:
+                await self._deliver_answer(record, result)
+                record.idle = True
+                try:
+                    messages = await self.read_messages(record.agent_id, wait=True)
+                finally:
+                    record.idle = False
+                if record.released:
+                    break
+                result = await agent.resume(
+                    "\n".join(message.content for message in messages)
+                )
             state = await environment.export_state()
         except BaseException as exc:
             error = exc
@@ -565,7 +664,14 @@ class Orchestrator:
                     role=agent.role,
                     data={"error": type(error).__name__, "message": str(error)},
                 )
-            if record.parent_id is not None and record.status != "cancelled":
+            # A released agent already reported this answer while idling, and
+            # a delegated one hands its answer back through the tool result.
+            reported = record.released or record.delegated
+            if (
+                record.parent_id is not None
+                and record.status != "cancelled"
+                and not (reported and error is None)
+            ):
                 await self._deliver_result(record)
         except BaseException as terminal_error:
             record.terminal_error = terminal_error
@@ -580,6 +686,12 @@ class Orchestrator:
                 "cancelled" if isinstance(error, asyncio.CancelledError) else "failed"
             )
 
+    async def _deliver_answer(self, record: AgentRecord, result: AgentResult) -> None:
+        """Report an idle agent's answer without ending it."""
+
+        if record.parent_id is not None:
+            await self._report(record, result.answer, "result")
+
     async def _deliver_result(self, record: AgentRecord) -> None:
         assert record.parent_id is not None
         if record.result is not None:
@@ -589,13 +701,11 @@ class Orchestrator:
             assert record.error is not None
             content = f"{type(record.error).__name__}: {record.error}"
             kind = "error"
-        encoded = content.encode("utf-8")
-        if len(encoded) > self.max_message_bytes:
-            marker = b"\n[truncated]"
-            if len(marker) >= self.max_message_bytes:
-                marker = b""
-            kept = encoded[: self.max_message_bytes - len(marker)]
-            content = kept.decode("utf-8", errors="ignore") + marker.decode()
+        await self._report(record, content, kind)
+
+    async def _report(self, record: AgentRecord, content: str, kind: str) -> None:
+        assert record.parent_id is not None
+        content = _clip(content, self.max_message_bytes)
         try:
             await self._deliver(record.agent_id, record.parent_id, content, kind=kind)
         except ProtocolError as exc:
@@ -667,7 +777,9 @@ class Orchestrator:
                 record = self._records.get(agent_id)
                 if record is None:
                     raise ProtocolError(f"unknown agent {agent_id!r}")
-                if record.inbox or not wait:
+                # Being released is also a reason to stop waiting: otherwise a
+                # woken idle agent finds an empty inbox and parks again.
+                if record.inbox or not wait or record.released:
                     messages = list(record.inbox)
                     await self.context.trace.emit(
                         "messages_read",
@@ -793,6 +905,53 @@ class Orchestrator:
         )
         return statuses
 
+    async def delegate(self, parent_id: str, task: str) -> dict[str, Any]:
+        """Spawn one subagent, wait for it, and return its outcome.
+
+        The caller blocks inside its own tool call, so the wait is bounded by
+        the same wall clock as any other tool use and cannot outlive the run.
+        """
+
+        agent_id = await self.spawn(parent_id, task)
+        record = self._records[agent_id]
+        record.delegated = True
+        if record.task is not None:
+            await asyncio.wait([record.task])
+        if record.result is not None:
+            return {
+                "agent_id": agent_id,
+                "status": record.status,
+                "answer": _clip(record.result.answer, self.max_message_bytes),
+            }
+        return {
+            "agent_id": agent_id,
+            "status": record.status,
+            "error": f"{type(record.error).__name__}: {record.error}",
+        }
+
+    async def release(self, owner: str, target: str) -> dict[str, Any]:
+        """Retire an idle descendant so its environment state can be adopted.
+
+        ``stop`` cancels, and a cancelled agent exports no state, so without
+        this a lead could never take back the workspace of a subagent that is
+        working exactly as designed.
+        """
+
+        self._check_endpoints("release", owner, target, error=InvalidAction)
+        owner_record = self._records.get(owner)
+        record = self._records.get(target)
+        if owner_record is None or record is None:
+            raise InvalidAction("release requires known agents")
+        if not _is_descendant(owner, target):
+            raise InvalidAction("an agent may release only a descendant")
+        if not record.idle:
+            raise InvalidAction(f"agent {target!r} is not idle")
+        record.released = True
+        record.inbox_event.set()
+        if record.task is not None:
+            await asyncio.wait([record.task])
+        return self._status(target)
+
     async def adopt(self, owner: str, target: str) -> None:
         self._check_endpoints("adopt", owner, target, error=InvalidAction)
         owner_record = self._records.get(owner)
@@ -855,6 +1014,19 @@ class Orchestrator:
         failure = _record_lifecycle_failure(remaining)
         if failure:
             raise RuntimeError(failure)
+
+
+def _clip(content: str, max_bytes: int) -> str:
+    """Truncate to a byte budget, marking that something was cut."""
+
+    encoded = content.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return content
+    marker = b"\n[truncated]"
+    if len(marker) >= max_bytes:
+        marker = b""
+    kept = encoded[: max_bytes - len(marker)]
+    return kept.decode("utf-8", errors="ignore") + marker.decode()
 
 
 def _bounded_text(value: Any, name: str, max_bytes: int) -> str:

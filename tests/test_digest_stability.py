@@ -122,6 +122,43 @@ class FileAndTreeDigestTests(unittest.TestCase):
             self.assertNotEqual(directory_sha256(root), baseline)
 
 
+class AgentToolDigestTests(unittest.TestCase):
+    """The default `agent` tool's bytes are recorded evidence.
+
+    `tools_sha256` on every `model_call_queued` event hashes the exact tool
+    definitions handed to the model, so the description string and the action
+    enum are part of the durable record. Making the tool role-aware must not
+    move it for the roles that predate roles.
+    """
+
+    def _agent_tool(self, **keywords: object) -> object:
+        from mini_agent.orchestrator import CommunicationEnvironment
+        from support import EmptyEnvironment
+
+        class _Scheduler:
+            max_message_bytes = 64 * 1024
+
+        environment = CommunicationEnvironment(
+            EmptyEnvironment(), _Scheduler(), "/root", None, **keywords  # type: ignore[arg-type]
+        )
+        return environment.tools()[-1]
+
+    def test_default_agent_tool_is_byte_stable(self) -> None:
+        from dataclasses import asdict
+
+        self.assertEqual(
+            canonical_digest(asdict(self._agent_tool())),  # type: ignore[call-overload]
+            "c17bfeadbb65055dc0a2596cd2b4fc77c45dc4ce77a12a1230f4885c09b134ac",
+        )
+
+    def test_a_restricted_role_declares_only_its_actions(self) -> None:
+        tool = self._agent_tool(actions=("delegate",), expose_domain_tools=False)
+        self.assertEqual(
+            tool.input_schema["properties"]["action"]["enum"],  # type: ignore[attr-defined]
+            ["delegate"],
+        )
+
+
 class MachineImageIdentityCacheTests(unittest.TestCase):
     """The image cache must never answer for bytes it did not hash.
 

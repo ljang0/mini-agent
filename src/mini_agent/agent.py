@@ -36,6 +36,7 @@ class MiniAgent:
         context: Optional[RunContext] = None,
         agent_id: str = "/root",
         role: str = "solver",
+        finish_on_answer: bool = True,
     ) -> None:
         _require_positive_int(max_steps, "max_steps")
         _require_str(system_prompt, "system_prompt", non_empty=False)
@@ -54,11 +55,16 @@ class MiniAgent:
         self.context = context or RunContext()
         self.agent_id = agent_id
         self.role = role
+        self.finish_on_answer = finish_on_answer
         self.messages: list[Message] = []
+        self.steps_used = 0
 
     async def run(self, task: str) -> AgentResult:
+        """Start a fresh conversation for this task."""
+
         _require_str(task, "task")
         self.messages = []
+        self.steps_used = 0
         if self.system_prompt:
             self.messages.append(Message(role="system", content=self.system_prompt))
         self.messages.append(Message(role="user", content=task))
@@ -88,6 +94,23 @@ class MiniAgent:
                     )
                 )
 
+        return await self._loop()
+
+    async def resume(self, instruction: str) -> AgentResult:
+        """Continue this agent's existing conversation with new input.
+
+        An agent that reports a result and stays available is still the same
+        agent: it keeps its history, and ``max_steps`` stays a lifetime cap
+        rather than resetting on every instruction.
+        """
+
+        _require_str(instruction, "instruction")
+        if not self.messages:
+            raise ProtocolError("resume requires a started conversation")
+        self.messages.append(Message(role="user", content=instruction))
+        return await self._loop()
+
+    async def _loop(self) -> AgentResult:
         tools = tuple(self.environment.tools())
         if not all(isinstance(tool, ToolDefinition) for tool in tools):
             raise ProtocolError("environment tools must be ToolDefinition values")
@@ -95,7 +118,8 @@ class MiniAgent:
             raise ProtocolError("environment tool names must be unique")
         if tools and not callable(getattr(self.environment, "execute", None)):
             raise ProtocolError("an environment with tools must expose execute")
-        for step in range(1, self.max_steps + 1):
+        while self.steps_used < self.max_steps:
+            self.steps_used += 1
             response = await self.context.query(
                 self.model,
                 self.messages,
@@ -120,14 +144,14 @@ class MiniAgent:
                         "model returned neither final text nor tool calls"
                     )
                 finish = getattr(self.environment, "finish", None)
-                if finish is not None:
+                if finish is not None and self.finish_on_answer:
                     if not callable(finish):
                         raise ProtocolError("environment finish must be callable")
                     await finish()
                 return AgentResult(
                     answer=response.text,
                     messages=tuple(self.messages),
-                    steps=step,
+                    steps=self.steps_used,
                     metadata={"agent_id": self.agent_id},
                 )
 
