@@ -22,7 +22,7 @@ from ..environments.bash import (
     SWEArchiveState,
 )
 from ..models import Model
-from ..orchestrator import Orchestrator
+from ..team import run_team, selected_harness
 from ..runtime import RunContext
 from ..specs import AgentSpecV1
 from ..types import (
@@ -47,7 +47,6 @@ from .base import (
     BenchmarkTask,
     owned_instance_artifacts,
     EvaluationOutcome,
-    raise_after_cleanup,
     task_agent_builder,
     task_agent_root,
 )
@@ -323,6 +322,8 @@ async def run_programbench_task(
     image_binding: SWEbenchImageBinding | None = None,
     max_archive_bytes: int = DEFAULT_MAX_ARCHIVE_BYTES,
     multi_agent: bool = False,
+    harness: str = "single",
+    team_size: int | None = None,
     max_active_agents: int = 4,
     max_total_agents: int = 16,
     per_agent_limits: BudgetLimits | None = None,
@@ -386,57 +387,33 @@ async def run_programbench_task(
         system_prompt=system_prompt,
         max_steps=max_steps,
         agent_spec=agent_spec,
+        harness=selected_harness(harness, multi_agent),
+        root_id=task_agent_root(task.task_id),
     )
     root_id = task_agent_root(task.task_id)
-    if multi_agent:
-        orchestrator = Orchestrator(
-            agent_builder=agent_for,
-            environment_factory=environment_for,
-            context=context,
-            max_active_agents=max_active_agents,
-            max_total_agents=max_total_agents,
-            per_agent_limits=per_agent_limits,
-            root_id=root_id,
-        )
-        result = await orchestrator.run(task.prompt)
-        root_state = orchestrator.records[root_id].state
-        if not isinstance(root_state, SWEArchiveState):
-            raise RuntimeError("root ProgramBench agent produced no workspace archive")
-        archive = root_state.archive
-        metadata: Mapping[str, Any] = {
-            "mode": "multi",
-            "agents": {
-                agent_id: record.status
-                for agent_id, record in orchestrator.records.items()
-            },
-            "environments": {
-                agent_id: dict(record.environment.base.provenance())
-                for agent_id, record in orchestrator.records.items()
-                if record.environment is not None
-            },
-        }
-    else:
-        environment = await environment_for(root_id)
-        operation_error: BaseException | None = None
-        result = None
-        archive = b""
-        metadata = {}
-        try:
-            agent = await agent_for(root_id, environment, context)
-            result = await agent.run(task.prompt)
-            archive = await environment.export_archive()
-            metadata = {
-                "mode": "single",
-                "environment": dict(environment.provenance()),
-            }
-        except BaseException as exc:
-            operation_error = exc
-        cleanup_error: BaseException | None = None
-        try:
-            await environment.close()
-        except BaseException as exc:
-            cleanup_error = exc
-        raise_after_cleanup("ProgramBench generation", operation_error, cleanup_error)
+    team = await run_team(
+        task.prompt,
+        harness=selected_harness(harness, multi_agent),
+        team_size=team_size,
+        agent_builder=agent_for,
+        environment_factory=environment_for,
+        context=context,
+        root_id=root_id,
+        max_active_agents=max_active_agents,
+        max_total_agents=max_total_agents,
+        per_agent_limits=per_agent_limits,
+    )
+    result = team.require()
+    if not isinstance(team.state, SWEArchiveState):
+        raise RuntimeError("root ProgramBench agent produced no workspace archive")
+    archive = team.state.archive
+    metadata: Mapping[str, Any] = {
+        **team.metadata(),
+        "environments": {
+            agent_id: dict(base.provenance())
+            for agent_id, base in team.bases().items()
+        },
+    }
     assert result is not None
     atomic_bytes(directory / PROGRAMBENCH_SUBMISSION_NAME, archive)
     return EvaluationOutcome(

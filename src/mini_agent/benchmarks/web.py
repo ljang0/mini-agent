@@ -16,7 +16,7 @@ from typing import Any, Awaitable, Callable, Iterator, Mapping, TypeGuard
 
 from ..environments.web import BrowserEnvironment
 from ..models import Model
-from ..orchestrator import Orchestrator
+from ..team import run_team, selected_harness
 from ..runtime import RunContext
 from ..specs import AgentSpecV1
 from ..types import (
@@ -45,7 +45,6 @@ from .base import (
     task_agent_builder,
     BenchmarkTask,
     EvaluationOutcome,
-    raise_after_cleanup,
     task_agent_prefix,
     task_agent_root,
 )
@@ -235,6 +234,8 @@ async def run_web_task(
     system_prompt: str,
     max_steps: int,
     multi_agent: bool = False,
+    harness: str = "single",
+    team_size: int | None = None,
     max_active_agents: int = 4,
     max_total_agents: int = 16,
     model_name: str | None = None,
@@ -274,56 +275,34 @@ async def run_web_task(
         system_prompt=system_prompt,
         max_steps=max_steps,
         agent_spec=agent_spec,
+        harness=selected_harness(harness, multi_agent),
+        root_id=task_agent_root(task.task_id),
     )
 
     root_id = task_agent_root(task.task_id)
-    if multi_agent:
-        orchestrator = Orchestrator(
-            agent_builder=agent_for,
-            environment_factory=environment_for,
-            context=context,
-            max_active_agents=max_active_agents,
-            max_total_agents=max_total_agents,
-            per_agent_limits=per_agent_limits,
-            root_id=root_id,
-        )
-        result = await orchestrator.run(task.prompt)
-        metadata: Mapping[str, Any] = {
-            "mode": "multi",
-            "agents": {
-                agent_id: record.status
-                for agent_id, record in orchestrator.records.items()
-            },
-            "browsers": {
-                agent_id: {
-                    "accounting": dict(record.environment.base.accounting()),
-                    "provenance": dict(record.environment.base.provenance()),
-                }
-                for agent_id, record in orchestrator.records.items()
-                if record.environment is not None
-            },
-        }
-    else:
-        environment = await environment_for(root_id)
-        operation_error: BaseException | None = None
-        result = None
-        metadata = {}
-        try:
-            agent = await agent_for(root_id, environment, context)
-            result = await agent.run(task.prompt)
-            metadata = {
-                "mode": "single",
-                "browser": dict(environment.accounting()),
-                "environment": dict(environment.provenance()),
+    team = await run_team(
+        task.prompt,
+        harness=selected_harness(harness, multi_agent),
+        team_size=team_size,
+        agent_builder=agent_for,
+        environment_factory=environment_for,
+        context=context,
+        root_id=root_id,
+        max_active_agents=max_active_agents,
+        max_total_agents=max_total_agents,
+        per_agent_limits=per_agent_limits,
+    )
+    result = team.require()
+    metadata: Mapping[str, Any] = {
+        **team.metadata(),
+        "browsers": {
+            agent_id: {
+                "accounting": dict(base.accounting()),
+                "provenance": dict(base.provenance()),
             }
-        except BaseException as exc:
-            operation_error = exc
-        cleanup_error: BaseException | None = None
-        try:
-            await environment.close()
-        except BaseException as exc:
-            cleanup_error = exc
-        raise_after_cleanup("web generation", operation_error, cleanup_error)
+            for agent_id, base in team.bases().items()
+        },
+    }
     assert result is not None
     prediction = {
         "task_id": task.task_id,
@@ -465,16 +444,15 @@ def _browser_accounting(metadata: Mapping[str, Any]) -> dict[str, Any]:
     counts: dict[str, int] = {}
     references: set[str] = set()
     browsers = metadata.get("browsers", {})
-    if metadata.get("mode") == "single":
-        values = [metadata.get("browser", {})]
-    elif isinstance(browsers, Mapping):
-        values = [
+    values = (
+        [
             item.get("accounting", {})
             for item in browsers.values()
             if isinstance(item, Mapping)
         ]
-    else:
-        values = []
+        if isinstance(browsers, Mapping)
+        else []
+    )
     if not values:
         raise ValueError("web generation metadata has no browser accounting")
     for value in values:

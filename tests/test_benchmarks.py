@@ -17,6 +17,7 @@ from typing import Any, Mapping, Sequence
 from unittest.mock import AsyncMock, patch
 
 from mini_agent.agent import MiniAgent
+from mini_agent.environments.bash import SWEArchiveState, SWEPatchState
 from mini_agent._hash import (
     harness_identity,
     machine_image_identity,
@@ -1015,6 +1016,9 @@ class FakeSWEEnvironment(BaseEnvironment):
     async def export_patch(self) -> bytes:
         return b"diff --git a/a b/a\n"
 
+    async def export_state(self) -> SWEPatchState:
+        return SWEPatchState("git-commit:base", await self.export_patch())
+
     def provenance(self) -> Mapping[str, Any]:
         return {"container_image_id": "sha256:image"}
 
@@ -1510,6 +1514,9 @@ class FakeProgramBenchEnvironment(BaseEnvironment):
 
     async def export_archive(self) -> bytes:
         return self.archive
+
+    async def export_state(self) -> SWEArchiveState:
+        return SWEArchiveState("image:base", self.archive)
 
     def provenance(self) -> Mapping[str, Any]:
         return {"benchmark": "programbench", "network_disabled": True}

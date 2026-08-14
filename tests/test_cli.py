@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import contextlib
 import hashlib
 import io
@@ -1569,7 +1570,7 @@ class CLITests(unittest.TestCase):
                 ]
             )
         self.assertEqual(code, 1)
-        self.assertIn("requires --multi-agent", stderr.getvalue())
+        self.assertIn("requires a multi-agent harness", stderr.getvalue())
 
     def test_benchmark_content_capture_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -2292,7 +2293,12 @@ class CLIEvalEndToEndTests(unittest.TestCase):
 
     def _assert_completed(self, output: Path, task_id: str) -> Mapping[str, Any]:
         manifest = json.loads((output / "manifest.json").read_text())
-        self.assertIn("fingerprint", manifest["config"]["agent_spec"])
+        spec = manifest["config"]["agent_spec"]
+        # A harness with several roles records one spec each, so the
+        # fingerprint sits one level down.
+        specs = spec.values() if "fingerprint" not in spec else [spec]
+        for entry in specs:
+            self.assertIn("fingerprint", entry)
         instance = self._instance(output, task_id)
         self.assertTrue((instance / "completed.json").is_file())
         result = json.loads((instance / "result.json").read_text())
@@ -2365,6 +2371,94 @@ class CLIEvalEndToEndTests(unittest.TestCase):
             self.assertEqual(
                 json.loads(predictions[0])["instance_id"], "repo__issue-1"
             )
+
+    def test_a_fixed_team_runs_end_to_end_through_the_cli(self) -> None:
+        """--harness reaches the scheduler, not just the manifest.
+
+        A three-peer team must actually be created, run, and recorded: the
+        artifact should name every agent, and the manifest should say which
+        topology produced it.
+        """
+
+        from test_benchmarks import FakeSWEEnvironment
+
+        from mini_agent.benchmarks.base import BenchmarkTask
+        from mini_agent.benchmarks.swebench import SWEbenchImageBinding
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            dataset = root / "verified.jsonl"
+            dataset.write_text("{}\n")
+            task = BenchmarkTask(
+                "repo__issue-1",
+                "fix it",
+                {"instance_id": "repo__issue-1", "problem_statement": "fix it"},
+            )
+            binding = SWEbenchImageBinding(
+                runtime="docker",
+                requested=(
+                    "docker.io/swebench/sweb.eval.x86_64.repo_1776_issue-1:latest"
+                ),
+                identity="sha256:" + "a" * 64,
+                execution_ref="sha256:" + "a" * 64,
+            )
+            stdout = io.StringIO()
+            with (
+                patch(
+                    "mini_agent.benchmarks.swebench.load_swebench",
+                    return_value=(task,),
+                ),
+                patch(
+                    "mini_agent.benchmarks.swebench.prepare_swebench_image_bindings",
+                    AsyncMock(return_value={task.task_id: binding}),
+                ),
+                patch(
+                    "mini_agent.benchmarks.swebench.docker_swe_environment",
+                    AsyncMock(side_effect=lambda *a, **k: FakeSWEEnvironment()),
+                ),
+                patch(
+                    "mini_agent.cli.build_model",
+                    side_effect=lambda *a, **k: ScriptedModel(
+                        [ModelResponse("done")]
+                    ),
+                ),
+                contextlib.redirect_stdout(stdout),
+            ):
+                code = main(
+                    [
+                        "eval",
+                        "--benchmark",
+                        "swebench",
+                        "--model",
+                        "openai/test",
+                        "--dataset",
+                        str(dataset),
+                        "--harness",
+                        "fixed-team",
+                        "--team-size",
+                        "3",
+                        "--max-active-agents",
+                        "3",
+                        "--max-total-agents",
+                        "3",
+                        "--model-concurrency",
+                        "3",
+                        "--per-agent-model-calls",
+                        "4",
+                        *self._storage_args(root),
+                    ]
+                )
+            self.assertEqual(code, 0, stdout.getvalue())
+            output = root / "output"
+            result = self._assert_completed(output, task.task_id)
+            agents = result["metadata"]["agents"]
+            self.assertEqual(len(agents), 3, agents)
+            self.assertEqual(result["metadata"]["harness"], "fixed-team")
+            self.assertEqual(result["metadata"]["team_size"], 3)
+            manifest = json.loads((output / "manifest.json").read_text())
+            topology = manifest["config"]["topology"]
+            self.assertEqual(topology["harness"], "fixed-team")
+            self.assertEqual(sorted(topology["roles"]), ["lead", "peer"])
 
     def test_programbench_eval_completes_end_to_end(self) -> None:
         from test_benchmarks import (
@@ -2840,3 +2934,82 @@ class CLIEvalEndToEndTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HarnessSelectionTests(unittest.TestCase):
+    """Selecting a topology, and refusing one that cannot run as described."""
+
+    def _args(self, **overrides: Any) -> argparse.Namespace:
+        values: dict[str, Any] = {
+            "multi_agent": False,
+            "harness": "single",
+            "team_size": None,
+            "max_active_agents": 4,
+            "max_total_agents": 8,
+            "model_concurrency": 4,
+            "per_agent_model_calls": None,
+            "max_steps": 64,
+        }
+        values.update(overrides)
+        return argparse.Namespace(**values)
+
+    def test_legacy_topology_config_is_unchanged(self) -> None:
+        """Recorded manifests must keep resolving to what they recorded."""
+
+        from mini_agent.cli import _topology_config
+
+        self.assertEqual(
+            _topology_config(self._args()),
+            {"mode": "single", "max_steps": 64},
+        )
+        multi = _topology_config(
+            self._args(multi_agent=True, per_agent_model_calls=None)
+        )
+        self.assertEqual(multi["mode"], "multi")
+        self.assertNotIn("harness", multi)
+        self.assertNotIn("roles", multi)
+
+    def test_a_selected_harness_records_its_roles(self) -> None:
+        from mini_agent.cli import _topology_config
+
+        topology = _topology_config(self._args(harness="orchestrator"))
+        self.assertEqual(topology["harness"], "orchestrator")
+        self.assertEqual(
+            topology["roles"]["orchestrator"],
+            {"actions": ["delegate"], "domain_tools": False, "idles": False},
+        )
+
+    def test_a_team_wider_than_the_model_semaphore_is_refused(self) -> None:
+        """Silent serialization would make every latency number meaningless."""
+
+        from mini_agent.cli import _validate_topology_arguments
+
+        args = self._args(
+            harness="fixed-team",
+            team_size=10,
+            max_active_agents=10,
+            max_total_agents=10,
+            model_concurrency=4,
+            per_agent_model_calls=1,
+        )
+        with self.assertRaisesRegex(ValueError, "would serialize the team"):
+            _validate_topology_arguments(args)
+
+    def test_a_team_larger_than_the_agent_limit_is_refused(self) -> None:
+        from mini_agent.cli import _validate_topology_arguments
+
+        args = self._args(
+            harness="fixed-team", team_size=10, per_agent_model_calls=1
+        )
+        with self.assertRaisesRegex(ValueError, "--max-active-agents >= 10"):
+            _validate_topology_arguments(args)
+
+    def test_multi_agent_is_the_alias_for_recursive(self) -> None:
+        from mini_agent.cli import _harness_name, _validate_topology_arguments
+
+        self.assertEqual(_harness_name(self._args(multi_agent=True)), "recursive")
+        self.assertEqual(_harness_name(self._args()), "single")
+        with self.assertRaisesRegex(ValueError, "alias for --harness recursive"):
+            _validate_topology_arguments(
+                self._args(multi_agent=True, harness="fixed-team")
+            )

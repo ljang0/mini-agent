@@ -28,7 +28,7 @@ from ..environments.bash import (
     container_bash_environment,
 )
 from ..models import Model
-from ..orchestrator import Orchestrator
+from ..team import run_team, selected_harness
 from ..runtime import RunContext
 from ..runtimes.apptainer import ApptainerRuntime, apptainer_image_identity
 from ..runtimes.base import (
@@ -70,7 +70,6 @@ from .base import (
     owned_instance_artifacts,
     BenchmarkTask,
     EvaluationOutcome,
-    raise_after_cleanup,
     task_agent_root,
 )
 
@@ -534,6 +533,8 @@ async def run_swebench_task(
     container_runtime: Sequence[str] = ("docker",),
     apptainer_executable: str = "apptainer",
     multi_agent: bool = False,
+    harness: str = "single",
+    team_size: int | None = None,
     max_active_agents: int = 4,
     max_total_agents: int = 16,
     per_agent_limits: BudgetLimits | None = None,
@@ -571,60 +572,35 @@ async def run_swebench_task(
         system_prompt=system_prompt,
         max_steps=max_steps,
         agent_spec=agent_spec,
+        harness=selected_harness(harness, multi_agent),
+        root_id=task_agent_root(task.task_id),
     )
 
     root_id = task_agent_root(task.task_id)
-    if multi_agent:
-        orchestrator = Orchestrator(
-            agent_builder=agent_for,
-            environment_factory=environment_for,
-            context=context,
-            max_active_agents=max_active_agents,
-            max_total_agents=max_total_agents,
-            per_agent_limits=per_agent_limits,
-            root_id=root_id,
-        )
-        result = await orchestrator.run(task.prompt)
-        root_state = orchestrator.records[root_id].state
-        if not isinstance(root_state, SWEPatchState):
-            raise RuntimeError("root SWE agent produced no patch state")
-        patch = root_state.patch
-        metadata_value: Mapping[str, Any] = {
-            "mode": "multi",
-            "runtime": runtime,
-            "agents": {
-                agent_id: record.status
-                for agent_id, record in orchestrator.records.items()
-            },
-            "environments": {
-                agent_id: dict(record.environment.base.provenance())
-                for agent_id, record in orchestrator.records.items()
-                if record.environment is not None
-            },
-        }
-    else:
-        environment = await environment_for(root_id)
-        operation_error: BaseException | None = None
-        result = None
-        patch = b""
-        metadata_value = {}
-        try:
-            agent = await agent_for(root_id, environment, context)
-            result = await agent.run(task.prompt)
-            patch = await environment.export_patch()
-            metadata_value = {
-                "mode": "single",
-                "runtime": runtime,
-                "environment": dict(environment.provenance()),
-            }
-        except BaseException as exc:
-            operation_error = exc
-        cleanup_error: BaseException | None = None
-        try:
-            await environment.close()
-        except BaseException as exc:
-            cleanup_error = exc
-        raise_after_cleanup("SWE-bench generation", operation_error, cleanup_error)
+    team = await run_team(
+        task.prompt,
+        harness=selected_harness(harness, multi_agent),
+        team_size=team_size,
+        agent_builder=agent_for,
+        environment_factory=environment_for,
+        context=context,
+        root_id=root_id,
+        max_active_agents=max_active_agents,
+        max_total_agents=max_total_agents,
+        per_agent_limits=per_agent_limits,
+    )
+    result = team.require()
+    if not isinstance(team.state, SWEPatchState):
+        raise RuntimeError("root SWE agent produced no patch state")
+    patch = team.state.patch
+    metadata_value: Mapping[str, Any] = {
+        **team.metadata(),
+        "runtime": runtime,
+        "environments": {
+            agent_id: dict(base.provenance())
+            for agent_id, base in team.bases().items()
+        },
+    }
     assert result is not None
     atomic_bytes(directory / "patch.diff", patch)
     prediction = {

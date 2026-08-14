@@ -17,6 +17,18 @@ from .runtime import RunContext
 from .types import AgentResult, BudgetLimits
 
 
+def selected_harness(harness: str, multi_agent: bool) -> str:
+    """Resolve the harness a caller meant.
+
+    ``multi_agent`` predates harness selection, so it keeps working: it names
+    the free-form mesh it always ran, and an explicit ``harness`` wins.
+    """
+
+    if harness != "single":
+        return harness
+    return "recursive" if multi_agent else "single"
+
+
 @dataclass(frozen=True)
 class TeamRun:
     """A finished team, described without reference to any domain."""

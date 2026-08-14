@@ -457,7 +457,9 @@ def task_agent_builder(
     model_factory: Callable[[str], Any],
     system_prompt: str,
     max_steps: int,
-    agent_spec: AgentSpecV1 | None = None,
+    agent_spec: AgentSpecV1 | Mapping[str, AgentSpecV1] | None = None,
+    harness: str = "single",
+    root_id: str | None = None,
 ) -> Callable[[str, Any, RunContext], Awaitable["MiniAgent"]]:
     """Create the per-agent constructor every benchmark adapter shares.
 
@@ -472,14 +474,24 @@ def task_agent_builder(
     ) -> "MiniAgent":
         model = model_factory(agent_id)
         resolved = await model if inspect.isawaitable(model) else model
-        if agent_spec is not None:
+        spec, prompt = agent_spec, system_prompt
+        if isinstance(spec, Mapping):
+            # Roles differ in what they may do, so each binds against its own
+            # spec; one spec could only describe one of them truthfully.
+            from ..harnesses import load_harness
+
+            selected = load_harness(harness)
+            name = selected.role_name_of(agent_id, root_id=root_id or agent_id)
+            spec = spec[name]
+            prompt = system_prompt + selected.roles[name].prompt
+        if spec is not None:
             return spec_bound_agent(
-                agent_spec,
+                spec,
                 model=resolved,
                 environment=environment,
                 context=shared,
                 agent_id=agent_id,
-                system_prompt=system_prompt,
+                system_prompt=prompt,
                 max_steps=max_steps,
             )
         from ..agent import MiniAgent
@@ -487,7 +499,7 @@ def task_agent_builder(
         return MiniAgent(
             model=resolved,
             environment=environment,
-            system_prompt=system_prompt,
+            system_prompt=prompt,
             max_steps=max_steps,
             context=shared,
             agent_id=agent_id,

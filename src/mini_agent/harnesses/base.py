@@ -81,7 +81,7 @@ class Harness:
         if self.sizes and self.seed_role is None:
             raise ValueError("a sized harness must declare the role it seeds")
 
-    def role_of(self, agent_id: str, *, root_id: str) -> Role:
+    def role_name_of(self, agent_id: str, *, root_id: str) -> str:
         """Resolve an agent's role from its id alone.
 
         Ancestry is already encoded in the id (`/root`, `/root/1`), so no
@@ -89,8 +89,11 @@ class Harness:
         """
 
         if agent_id == root_id:
-            return self.roles[self.lead]
-        return self.roles[self.child_role or self.seed_role or self.lead]
+            return self.lead
+        return self.child_role or self.seed_role or self.lead
+
+    def role_of(self, agent_id: str, *, root_id: str) -> Role:
+        return self.roles[self.role_name_of(agent_id, root_id=root_id)]
 
     def team_size(self, requested: int | None) -> int:
         """Validate a requested team size against what this harness accepts."""

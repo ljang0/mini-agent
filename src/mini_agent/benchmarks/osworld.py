@@ -25,7 +25,7 @@ from ..environments.cua import (
 )
 from ..environments.base import complete_in_thread
 from ..models import Model
-from ..orchestrator import Orchestrator
+from ..team import run_team, selected_harness
 from ..runtime import RunContext
 from ..specs import AgentSpecV1
 from ..types import (
@@ -543,6 +543,8 @@ async def run_osworld_task(
     system_prompt: str,
     max_steps: int,
     multi_agent: bool = False,
+    harness: str = "single",
+    team_size: int | None = None,
     max_active_agents: int = 4,
     max_total_agents: int = 8,
     per_agent_limits: BudgetLimits | None = None,
@@ -583,63 +585,40 @@ async def run_osworld_task(
         system_prompt=system_prompt,
         max_steps=max_steps,
         agent_spec=agent_spec,
+        harness=selected_harness(harness, multi_agent),
+        root_id=task_agent_root(task.task_id),
     )
 
     score: float | None = None
     evaluator_result: Mapping[str, Any] | None = None
     operation_error: BaseException | None = None
     try:
-        if multi_agent:
-            orchestrator = Orchestrator(
-                agent_builder=agent_for,
-                environment_factory=environment_for,
-                context=context,
-                max_active_agents=max_active_agents,
-                max_total_agents=max_total_agents,
-                per_agent_limits=per_agent_limits,
-                root_id=root_id,
-            )
-            try:
-                result = await orchestrator.run(task.prompt)
-                answer, steps = result.answer, result.steps
-            except asyncio.CancelledError:
-                raise
-            except BudgetExceeded as exc:
-                agent_error = f"{type(exc).__name__}: {exc}"
-            except Exception as exc:
-                agent_error = f"{type(exc).__name__}: {exc}"
-                agent_failure = exc
-            root_record = orchestrator.records.get(root_id)
-            if root_record is not None and root_record.environment is not None:
-                root_environment = root_record.environment.base
-                state_adoption_history = tuple(root_record.adoption_history)
-                if state_adoption_history:
-                    state_selection = "adopted_descendant_environment"
-            agent_statuses = {
-                agent_id: record.status
-                for agent_id, record in orchestrator.records.items()
-            }
-        else:
-            root_environment = await pool.environment(root_id)
-            agent = await agent_for(root_id, root_environment, context)
-            inference_error: BaseException | None = None
-            try:
-                result = await agent.run(task.prompt)
-                answer, steps = result.answer, result.steps
-            except asyncio.CancelledError as exc:
-                inference_error = exc
-            except BudgetExceeded as exc:
-                agent_error = f"{type(exc).__name__}: {exc}"
-            except Exception as exc:
-                agent_error = f"{type(exc).__name__}: {exc}"
-                agent_failure = exc
-            close_error: BaseException | None = None
-            try:
-                await root_environment.close()
-            except BaseException as exc:
-                close_error = exc
-            raise_after_cleanup("OSWorld root inference", inference_error, close_error)
-            agent_statuses = {root_id: "failed" if agent_error else "completed"}
+        team = await run_team(
+            task.prompt,
+            harness=selected_harness(harness, multi_agent),
+            team_size=team_size,
+            agent_builder=agent_for,
+            environment_factory=environment_for,
+            context=context,
+            root_id=root_id,
+            max_active_agents=max_active_agents,
+            max_total_agents=max_total_agents,
+            per_agent_limits=per_agent_limits,
+            tolerate_failure=True,
+        )
+        if isinstance(team.error, asyncio.CancelledError):
+            raise team.error
+        if team.error is not None:
+            agent_error = f"{type(team.error).__name__}: {team.error}"
+            if not isinstance(team.error, BudgetExceeded):
+                agent_failure = team.error
+        if team.result is not None:
+            answer, steps = team.result.answer, team.result.steps
+        root_environment = team.bases().get(root_id)
+        state_adoption_history = tuple(team.root.adoption_history)
+        if state_adoption_history:
+            state_selection = "adopted_descendant_environment"
+        agent_statuses = team.statuses()
 
         if agent_failure is not None:
             raise agent_failure

@@ -29,13 +29,15 @@ from .benchmarks.base import (
     EvaluationRunner,
     raise_after_cleanup,
     spec_bound_agent,
+    task_agent_builder,
     task_agent_prefix,
 )
 from .doctor import _doctor
-from .environments.base import AgentEnvironment
 from .grading import _grade, _required_path
 from .models import BackendModel, Model, build_model
-from .orchestrator import AgentBuilder, Orchestrator
+from .orchestrator import AgentBuilder
+from .harnesses import harness_names, load_harness
+from .team import run_team, selected_harness
 from .profiles import load_profile, prompt_for
 from .providers import TokenPricing, _validate_endpoint
 from .runtime import RunContext, TraceRecorder, redact_artifact
@@ -246,6 +248,8 @@ def _add_execution_arguments(parser: argparse.ArgumentParser) -> None:
         "--max-tool-output-bytes", type=_positive_int, default=8 * 1024 * 1024
     )
     parser.add_argument("--multi-agent", action="store_true")
+    parser.add_argument("--harness", choices=harness_names(), default="single")
+    parser.add_argument("--team-size", type=_positive_int)
     parser.add_argument("--max-active-agents", type=_positive_int, default=4)
     parser.add_argument("--max-total-agents", type=_positive_int, default=8)
     parser.add_argument("--per-agent-model-calls", type=_positive_int)
@@ -322,7 +326,7 @@ async def _run(args: argparse.Namespace) -> int:
                 system_prompt.encode("utf-8")
             ).hexdigest(),
             "multi_agent": bool(args.multi_agent),
-            "agent_spec": spec.identity_dict(),
+            "agent_spec": _spec_identity(spec, _harness_name(args)),
             "topology": _topology_config(args),
             "execution": _execution_config(args),
             "limits": asdict(limits),
@@ -360,11 +364,11 @@ async def _run_swe(
     args: argparse.Namespace,
     context: RunContext,
     model_factory: Callable[[str], Model],
-    spec: AgentSpecV1,
+    spec: AgentSpecV1 | Mapping[str, AgentSpecV1],
     output: Path,
     work: Path,
 ) -> tuple[str, Mapping[str, Any]]:
-    system_prompt = spec.system_prompt
+    system_prompt = _base_prompt(args, spec)
     from .environments.bash import BashEnvironment, SWEPatchState
 
     if args.workspace is None:
@@ -382,29 +386,31 @@ async def _run_swe(
                 workspace, scratch_root=work / "agents"
             )
 
-        orchestrator = Orchestrator(
+        team = await run_team(
+            args.task,
+            harness=_harness_name(args),
+            team_size=args.team_size,
             agent_builder=_agent_builder(
-                model_factory, system_prompt, args.max_steps, agent_spec=spec
+                model_factory,
+                system_prompt,
+                args.max_steps,
+                agent_spec=spec,
+                harness=_harness_name(args),
             ),
             environment_factory=environment_factory,
             context=context,
+            root_id="/root",
             max_active_agents=args.max_active_agents,
             max_total_agents=args.max_total_agents,
             per_agent_limits=_per_agent_limits(args),
         )
-        result = await orchestrator.run(args.task)
-        state = orchestrator.records[orchestrator.root_id].state
-        if not isinstance(state, SWEPatchState):
+        if not isinstance(team.state, SWEPatchState):
             raise RuntimeError("root SWE agent did not produce a patch")
-        atomic_bytes(output / "patch.diff", state.patch)
-        return result.answer, {
-            "mode": "multi",
+        atomic_bytes(output / "patch.diff", team.state.patch)
+        return team.require().answer, {
+            **team.metadata(),
             "workspace_modified": False,
             "patch": "patch.diff",
-            "agents": {
-                agent_id: record.status
-                for agent_id, record in orchestrator.records.items()
-            },
         }
 
     environment = BashEnvironment.local(workspace)
@@ -416,7 +422,7 @@ async def _run_swe(
         context=context,
         task=args.task,
         label="direct SWE run",
-        agent_spec=spec,
+        agent_spec=_lead_spec(spec, _harness_name(args)),
     )
     return result.answer, {
         "mode": "single",
@@ -430,9 +436,9 @@ async def _run_web(
     args: argparse.Namespace,
     context: RunContext,
     model_factory: Callable[[str], Model],
-    spec: AgentSpecV1,
+    spec: AgentSpecV1 | Mapping[str, AgentSpecV1],
 ) -> tuple[str, Mapping[str, Any]]:
-    system_prompt = spec.system_prompt
+    system_prompt = _base_prompt(args, spec)
     tokenizer = _load_tokenizer(args) if args.snippet_tokens is not None else None
 
     async def environment_factory(agent_id: str) -> Any:
@@ -440,30 +446,32 @@ async def _run_web(
         return _browser_environment(args, tokenizer=tokenizer)
 
     if args.multi_agent:
-        orchestrator = Orchestrator(
+        team = await run_team(
+            args.task,
+            harness=_harness_name(args),
+            team_size=args.team_size,
             agent_builder=_agent_builder(
-                model_factory, system_prompt, args.max_steps, agent_spec=spec
+                model_factory,
+                system_prompt,
+                args.max_steps,
+                agent_spec=spec,
+                harness=_harness_name(args),
             ),
             environment_factory=environment_factory,
             context=context,
+            root_id="/root",
             max_active_agents=args.max_active_agents,
             max_total_agents=args.max_total_agents,
             per_agent_limits=_per_agent_limits(args),
         )
-        result = await orchestrator.run(args.task)
-        return result.answer, {
-            "mode": "multi",
-            "agents": {
-                agent_id: record.status
-                for agent_id, record in orchestrator.records.items()
-            },
+        return team.require().answer, {
+            **team.metadata(),
             "browsers": {
                 agent_id: {
-                    "accounting": record.environment.base.accounting(),
-                    "provenance": record.environment.base.provenance(),
+                    "accounting": base.accounting(),
+                    "provenance": base.provenance(),
                 }
-                for agent_id, record in orchestrator.records.items()
-                if record.environment is not None
+                for agent_id, base in team.bases().items()
             },
         }
 
@@ -476,7 +484,7 @@ async def _run_web(
         context=context,
         task=args.task,
         label="direct web run",
-        agent_spec=spec,
+        agent_spec=_lead_spec(spec, _harness_name(args)),
     )
     return result.answer, {
         "mode": "single",
@@ -564,6 +572,8 @@ async def _evaluate(args: argparse.Namespace) -> int:
         "max_steps": args.max_steps,
         "agent_spec": agent_spec,
         "multi_agent": args.multi_agent,
+        "harness": _harness_name(args),
+        "team_size": args.team_size,
         "max_active_agents": args.max_active_agents,
         "max_total_agents": args.max_total_agents,
         "per_agent_limits": _per_agent_limits(args),
@@ -1017,33 +1027,17 @@ def _agent_builder(
     system_prompt: str,
     max_steps: int,
     *,
-    agent_spec: AgentSpecV1 | None = None,
+    agent_spec: AgentSpecV1 | Mapping[str, AgentSpecV1] | None = None,
+    harness: str = "single",
 ) -> AgentBuilder:
-    def build(
-        agent_id: str,
-        environment: AgentEnvironment,
-        context: RunContext,
-    ) -> MiniAgent:
-        if agent_spec is not None:
-            return spec_bound_agent(
-                agent_spec,
-                model=model_factory(agent_id),
-                environment=environment,
-                context=context,
-                agent_id=agent_id,
-                system_prompt=system_prompt,
-                max_steps=max_steps,
-            )
-        return MiniAgent(
-            model=model_factory(agent_id),
-            environment=environment,
-            system_prompt=system_prompt,
-            max_steps=max_steps,
-            context=context,
-            agent_id=agent_id,
-        )
-
-    return build
+    return task_agent_builder(
+        model_factory=model_factory,
+        system_prompt=system_prompt,
+        max_steps=max_steps,
+        agent_spec=agent_spec,
+        harness=harness,
+        root_id="/root",
+    )
 
 
 def _provider_option(args: argparse.Namespace, prefix: str, name: str) -> Any:
@@ -1135,9 +1129,41 @@ def _limits(args: argparse.Namespace) -> BudgetLimits:
     )
 
 
+def _harness_name(args: argparse.Namespace) -> str:
+    return selected_harness(getattr(args, "harness", "single"), args.multi_agent)
+
+
 def _validate_topology_arguments(args: argparse.Namespace) -> None:
-    if args.per_agent_model_calls is not None and not args.multi_agent:
-        raise ValueError("--per-agent-model-calls requires --multi-agent")
+    name = _harness_name(args)
+    if args.per_agent_model_calls is not None and name == "single":
+        raise ValueError("--per-agent-model-calls requires a multi-agent harness")
+    if args.multi_agent and getattr(args, "harness", "single") not in {
+        "single",
+        "recursive",
+    }:
+        raise ValueError("--multi-agent is the alias for --harness recursive")
+    harness = load_harness(name)
+    size = harness.team_size(args.team_size)
+    needed = harness.capacity(size)
+    for value, flag in (
+        (args.max_active_agents, "--max-active-agents"),
+        (args.max_total_agents, "--max-total-agents"),
+    ):
+        if value < needed:
+            raise ValueError(
+                f"--harness {name} needs {flag} >= {needed}; {value} would fail "
+                "mid-run when the team is created"
+            )
+    # A team wider than the shared model semaphore still produces correct
+    # output -- it just serializes, silently, which would make every latency
+    # number from the run meaningless. Refuse instead of repairing it: this
+    # value is part of the recorded agent spec, so raising it here would make
+    # recorded fingerprints a function of team size.
+    if needed > args.model_concurrency:
+        raise ValueError(
+            f"--harness {name} needs --model-concurrency >= {needed}; the current "
+            f"{args.model_concurrency} would serialize the team"
+        )
 
 
 def _per_agent_limits(args: argparse.Namespace) -> BudgetLimits | None:
@@ -1382,7 +1408,7 @@ def _evaluation_config(
         raise ValueError(f"unsupported benchmark {args.benchmark!r}")
     return {
         "model": args.model,
-        "agent_spec": spec.identity_dict(),
+        "agent_spec": _spec_identity(spec, _harness_name(args)),
         "topology": topology,
         "system_prompt_sha256": hashlib.sha256(
             resolved_prompt.encode("utf-8")
@@ -1399,8 +1425,25 @@ def _evaluation_config(
 
 def _resolved_agent_spec(
     args: argparse.Namespace, domain: str, system_prompt: str
-) -> AgentSpecV1:
+) -> AgentSpecV1 | dict[str, AgentSpecV1]:
+    """Resolve the spec, or one spec per role when a harness has several.
+
+    A single spec can only describe agents that all hold the same tools, so a
+    harness whose roles differ records one spec each.
+    """
+
     profile = load_profile(domain, model=args.model)
+    harness = load_harness(_harness_name(args))
+    if not harness.legacy:
+        return {
+            name: replace(
+                profile.to_agent_spec(role=role),
+                system_prompt=system_prompt + role.prompt,
+                max_steps=args.max_steps,
+                budget=_limits(args),
+            )
+            for name, role in harness.roles.items()
+        }
     return replace(
         profile.to_agent_spec(multi_agent=bool(args.multi_agent)),
         system_prompt=system_prompt,
@@ -1409,11 +1452,51 @@ def _resolved_agent_spec(
     )
 
 
+SpecBundle = "AgentSpecV1 | Mapping[str, AgentSpecV1]"
+
+
+def _spec_identity(spec: Any, harness: str) -> Mapping[str, Any]:
+    """Record one identity, or one per role when the harness has several."""
+
+    if isinstance(spec, Mapping):
+        return {name: value.identity_dict() for name, value in sorted(spec.items())}
+    return spec.identity_dict()
+
+
+def _base_prompt(args: argparse.Namespace, spec: Any) -> str:
+    """The prompt before any role suffix, which the builder re-adds per role."""
+
+    if isinstance(spec, Mapping):
+        return args.system_prompt or prompt_for(args.environment)
+    return str(spec.system_prompt)
+
+
+def _lead_spec(spec: Any, harness: str) -> AgentSpecV1:
+    if isinstance(spec, Mapping):
+        return spec[load_harness(harness).lead]
+    return spec
+
+
 def _topology_config(args: argparse.Namespace) -> dict[str, Any]:
     topology: dict[str, Any] = {
         "mode": "multi" if args.multi_agent else "single",
         "max_steps": args.max_steps,
     }
+    harness = load_harness(_harness_name(args))
+    if not harness.legacy:
+        # Only non-legacy harnesses add keys, so single-agent and
+        # --multi-agent manifests stay byte-identical to those already
+        # recorded, and resuming one keeps working.
+        topology["harness"] = harness.name
+        topology["team_size"] = harness.team_size(args.team_size)
+        topology["roles"] = {
+            name: {
+                "actions": list(role.capabilities),
+                "domain_tools": role.domain_tools,
+                "idles": role.idle,
+            }
+            for name, role in sorted(harness.roles.items())
+        }
     if args.multi_agent:
         per_agent = _per_agent_limits(args)
         topology.update(
