@@ -317,13 +317,6 @@ class LocalRuntime:
     def owned_root(self) -> Path | None:
         return self._owned_root
 
-    async def destroy_owned_root(self) -> None:
-        """Remove the private root created by :meth:`isolated`, if any."""
-
-        if self._owned_root is not None and self._owned_root.exists():
-            await complete_in_thread(shutil.rmtree, self._owned_root)
-        self._owned_root = None
-
     async def exec(
         self,
         argv: Sequence[str],
