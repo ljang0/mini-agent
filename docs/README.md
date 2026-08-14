@@ -1,5 +1,7 @@
 # Documentation
 
+- [CLI reference](cli.md): every command, the exact invocation for each
+  benchmark, storage layout, environment variables, and result semantics.
 - [Library usage](library.md): the Python API — models, custom
   environments, budgets, accounting, and spec binding.
 - [Architecture](architecture.md): loop, environment, accounting, evidence, and
