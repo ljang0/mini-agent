@@ -6,6 +6,36 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Selectable multi-agent harnesses. `--harness` chooses a named topology and
+  `--team-size` sizes the ones that take a size: `single`, `fixed-team`
+  (3/5/10 peers with a designated lead), `orchestrator` (a coordinator with no
+  task tools, delegating to blocking subagents), `async-subagents` (a lead with
+  long-lived subagents that idle between instructions), and `recursive` — the
+  free-form mesh that predates this layer, which `--multi-agent` now aliases.
+  Adding a topology is one module in `mini_agent.harnesses` plus one name in
+  its registry; nothing in the scheduler, adapters, or CLI changes. See
+  `docs/harnesses.md`.
+- Two communication actions the four topologies need: `delegate`, which spawns
+  one subagent and blocks until it answers, and `release`, which retires an
+  idle subagent cleanly so its workspace can be adopted.
+- A per-agent coordination block in every evaluation result: model calls, tool
+  calls, bytes, tokens, messages sent and received, active seconds, and final
+  status. `BudgetLedger.agent_ids()` makes the per-agent tallies reachable.
+- `mini-agent eval --benchmark programbench --runtime apptainer` now works; the
+  adapter has supported Apptainer since the backend landed, but the CLI refused
+  it.
+
+### Fixed
+
+- A failed child no longer kills the run. `_deliver_result` marked its report
+  `kind="error"`, which `MailboxMessage` rejected; the resulting `ValueError`
+  escaped into terminal handling and became a whole-run failure, and the parent
+  never received the error report.
+- The ProgramBench manifest recorded `"runtime": "docker"` unconditionally,
+  which was true only because the CLI refused every other value.
+
 ### Changed
 
 - Container runtimes are now benchmark-neutral infrastructure under

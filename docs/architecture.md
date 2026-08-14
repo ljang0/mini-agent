@@ -171,43 +171,55 @@ BrowseComp-Plus is search-only), so evaluation manifests bind that adapter
 surface and every model-call trace hashes the complete actual tool definitions.
 This keeps the interchange contract small without losing execution evidence.
 
-## Minimal multi-agent layer
+## Multi-agent layer
 
-`CommunicationEnvironment` adds exactly one model-facing function, `agent`, with
-six actions:
+`CommunicationEnvironment` adds exactly one model-facing function, `agent`.
+Which of its actions an agent may call is decided by that agent's role:
 
 ```text
-spawn(task)
-send(agent_id, message)
-inbox(wait=false)
-wait(agent_ids?)
-stop(agent_id)
-adopt(agent_id)
+spawn(task)            send(agent_id, message)   inbox(wait=false)
+wait(agent_ids?)       stop(agent_id)            adopt(agent_id)
+delegate(task)         release(agent_id)
 ```
 
-Agent IDs encode ancestry (`/root/1/2`), but there is no hard-coded depth. Only a
-descendant can be waited on or adopted. Adoption is explicit and only works when
-the domain can export a compatible state: SWE agents adopt patches, computer
-agents adopt pool-owned live sessions, and web agents adopt the descendant's
-discovered references (the right to `open` them against the same backend). A
-child's textual answer is delivered through the mailbox; it does not silently
-replace the root submission.
-`wait` returns when the first requested running descendant stops, so callers can
-inspect statuses and wait again without stalling on every branch.
-`inbox(wait=true)` blocks within the existing tool timeout until a message arrives.
-`stop` is limited to the caller's descendant subtree and awaits cancellation and
-environment cleanup before reporting every affected status.
+A **harness** names one topology and declares its roles: which actions each
+role holds, whether it sees the domain's tools, its prompt suffix, and whether
+it stays available after answering. `--harness` selects one. The scheduler owns
+the mechanisms; the harness owns which of them each agent can reach. See
+[harnesses.md](harnesses.md) for the five that ship and what each one is for.
 
-All workers share global accounting. Limits cap simultaneously active agents,
-total agents ever created, message size, inbox size, model concurrency, calls,
-tool use, bytes, time, and optionally tokens/cost. Resource identities must be
-unique, start/cleanup failures are terminal evidence, and remaining descendants
-are cancelled when the root stops.
+This is a deliberate reversal. Until harnesses existed this layer had exactly
+one shape and the docs said so — no role graph, no topology-specific worker.
+That was the right call while nothing needed to compare topologies, and it is
+the wrong one now: the point of the harness layer is to hold everything else
+fixed and vary the coordination structure, which is impossible when there is
+only one. The old shape is preserved as the `recursive` harness rather than
+deleted, so every manifest recorded before this change still resolves.
 
-The scheduler deliberately has no role graph, planner class, debate protocol,
-selector, or topology-specific worker. Parallel child sampling is not best-of-N
-until a selector exists, and recursive delegation is not claimed to reproduce
-any published recursive-agent method's policy training.
+What is still *not* claimed: there is no judge, no best-of-N selector, and no
+merge. The answer is always the lead's own final text, recorded as
+`answer_selection`. A child's answer arrives in its parent's mailbox and does
+not silently replace the root submission. Parallel child sampling is not
+best-of-N, and none of these topologies is claimed to reproduce any published
+method's policy training.
+
+Agent IDs encode ancestry (`/root/1/2`), with no hard-coded depth. Only a
+descendant can be waited on, stopped, adopted, or released; messaging is a flat
+mesh by design, so peers can talk without a hierarchy. Adoption is explicit and
+only works when the domain can export compatible state: SWE agents adopt
+patches, computer agents adopt pool-owned live sessions, web agents adopt the
+descendant's discovered references. `release` exists because `adopt` requires a
+completed agent while `stop` cancels one, and a cancelled agent exports no
+state — without it a lead could never take back the workspace of a subagent
+that was working exactly as designed.
+
+All workers share global accounting, and each task's result records a
+per-agent coordination block: model calls, tool calls, bytes, tokens, messages
+sent and received, active seconds, and final status. Limits cap simultaneously
+active agents, total agents ever created, message size, inbox size, model
+concurrency, calls, tool use, bytes, time, and optionally tokens/cost. Resource
+identities must be unique, start/cleanup failures are terminal evidence, and
+remaining descendants are cancelled when the root stops.
 
 ## Benchmark boundary
 
