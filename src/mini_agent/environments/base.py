@@ -1,3 +1,10 @@
+"""What an environment must expose, and the optional lifecycle hooks.
+
+Two protocols and one mixin: tools plus execute is the whole required
+surface, and everything else -- an initial observation, exported state a
+sibling can adopt, cleanup -- is optional and defaulted here.
+"""
+
 from __future__ import annotations
 
 import uuid

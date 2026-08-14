@@ -1,3 +1,9 @@
+"""Model selection: parse a provider spec, build the backend it names.
+
+The scripted and echo models live here too, so a run needs no API key to
+exercise the loop.
+"""
+
 from __future__ import annotations
 
 from collections import deque

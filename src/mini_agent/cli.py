@@ -581,24 +581,17 @@ async def _evaluate(args: argparse.Namespace) -> int:
         per_agent_limits=_per_agent_limits(args),
     )
 
-    if benchmark == "swebench":
-        setup = await _evaluate_swebench(
-            args, limit=limit, common=common, work=work, layout=layout
-        )
-    elif benchmark == "programbench":
-        setup = await _evaluate_programbench(
-            args, limit=limit, common=common, work=work, layout=layout
-        )
-    elif benchmark == "browsecomp":
-        setup = _evaluate_browsecomp(args, limit=limit, common=common)
-    elif benchmark == "browsecomp-plus":
-        setup = _evaluate_browsecomp_plus(args, limit=limit, common=common)
-    elif benchmark in {"osworld-v1", "osworld-v2"}:
-        setup = _evaluate_osworld(
-            args, benchmark=benchmark, limit=limit, common=common
-        )
-    else:
+    evaluate = _EVALUATORS.get(benchmark)
+    if evaluate is None:
         raise ValueError(f"unsupported benchmark {benchmark!r}")
+    setup = await evaluate(
+        args,
+        benchmark=benchmark,
+        limit=limit,
+        common=common,
+        work=work,
+        layout=layout,
+    )
 
     selected_worker = (
         _progress_worker(setup.worker, benchmark) if args.progress else setup.worker
@@ -627,21 +620,10 @@ async def _evaluate(args: argparse.Namespace) -> int:
         final_index_sha = directory_sha256(args.index.expanduser())
         if final_index_sha != args.index_sha256:
             raise RuntimeError("Lucene index changed during BrowseComp-Plus evaluation")
-    if benchmark == "swebench":
-        from .benchmarks.swebench_grading import collect_predictions
-
-        count = collect_predictions(output, output / "predictions.jsonl")
-        summary = {**summary, "predictions": count}
-    elif benchmark == "programbench":
-        from .benchmarks.programbench import collect_submissions
-
-        count = collect_submissions(output, output / "official_run")
-        summary = {**summary, "submissions": count}
-    elif benchmark == "browsecomp-plus":
-        from .benchmarks.web import collect_browsecomp_plus_runs
-
-        count = collect_browsecomp_plus_runs(output, output / "official_runs")
-        summary = {**summary, "official_runs": count}
+    collector = _COLLECTORS.get(benchmark)
+    if collector is not None:
+        key, destination, collect = collector
+        summary = {**summary, key: collect(output, output / destination)}
     atomic_json(output / "summary.json", summary)
     print(json.dumps({"output": str(output), **summary}, indent=2, sort_keys=True))
     return 0 if summary["failed"] == 0 and summary["blocked"] == 0 else 1
@@ -650,6 +632,7 @@ async def _evaluate(args: argparse.Namespace) -> int:
 async def _evaluate_swebench(
     args: argparse.Namespace,
     *,
+    benchmark: str,
     limit: int | None,
     common: TeamOptions,
     work: Path,
@@ -697,6 +680,7 @@ async def _evaluate_swebench(
 async def _evaluate_programbench(
     args: argparse.Namespace,
     *,
+    benchmark: str,
     limit: int | None,
     common: TeamOptions,
     work: Path,
@@ -747,11 +731,14 @@ async def _evaluate_programbench(
     return _BenchmarkRun(tasks=tasks, worker=worker)
 
 
-def _evaluate_browsecomp(
+async def _evaluate_browsecomp(
     args: argparse.Namespace,
     *,
+    benchmark: str,
     limit: int | None,
     common: TeamOptions,
+    work: Path,
+    layout: StorageLayout,
 ) -> _BenchmarkRun:
     from .benchmarks.web import (
         grade_browsecomp,
@@ -810,11 +797,14 @@ def _evaluate_browsecomp(
     return _BenchmarkRun(tasks=tasks, worker=worker)
 
 
-def _evaluate_browsecomp_plus(
+async def _evaluate_browsecomp_plus(
     args: argparse.Namespace,
     *,
+    benchmark: str,
     limit: int | None,
     common: TeamOptions,
+    work: Path,
+    layout: StorageLayout,
 ) -> _BenchmarkRun:
     from .benchmarks.web import (
         load_browsecomp_plus,
@@ -866,12 +856,14 @@ def _evaluate_browsecomp_plus(
     return _BenchmarkRun(tasks=tasks, worker=worker)
 
 
-def _evaluate_osworld(
+async def _evaluate_osworld(
     args: argparse.Namespace,
     *,
     benchmark: str,
     limit: int | None,
     common: TeamOptions,
+    work: Path,
+    layout: StorageLayout,
 ) -> _BenchmarkRun:
     from .benchmarks.osworld import (
         UpstreamDesktopFactory,
@@ -1779,3 +1771,43 @@ def _nonnegative_float(value: str) -> float:
 
 
 __all__ = ["build_parser", "main"]
+
+
+def _collect_predictions(output: Path, destination: Path) -> int:
+    from .benchmarks.swebench_grading import collect_predictions
+
+    return collect_predictions(output, destination)
+
+
+def _collect_submissions(output: Path, destination: Path) -> int:
+    from .benchmarks.programbench import collect_submissions
+
+    return collect_submissions(output, destination)
+
+
+def _collect_official_runs(output: Path, destination: Path) -> int:
+    from .benchmarks.web import collect_browsecomp_plus_runs
+
+    return collect_browsecomp_plus_runs(output, destination)
+
+
+# Adding a benchmark means one evaluator and, if it produces an artifact the
+# official grader consumes, one collector -- not an edit in five places.
+_EVALUATORS: Mapping[str, Any] = {
+    "swebench": _evaluate_swebench,
+    "programbench": _evaluate_programbench,
+    "browsecomp": _evaluate_browsecomp,
+    "browsecomp-plus": _evaluate_browsecomp_plus,
+    "osworld-v1": _evaluate_osworld,
+    "osworld-v2": _evaluate_osworld,
+}
+
+_COLLECTORS: Mapping[str, tuple[str, str, Any]] = {
+    "swebench": ("predictions", "predictions.jsonl", _collect_predictions),
+    "programbench": ("submissions", "official_run", _collect_submissions),
+    "browsecomp-plus": (
+        "official_runs",
+        "official_runs",
+        _collect_official_runs,
+    ),
+}
