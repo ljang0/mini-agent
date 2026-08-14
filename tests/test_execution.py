@@ -13,7 +13,7 @@ from unittest.mock import patch
 from mini_agent.agent import MiniAgent
 from mini_agent.models import ScriptedModel
 from mini_agent.providers import ProviderError, TokenPricing
-from mini_agent.runtime import BudgetLedger, RunContext, TraceRecorder
+from mini_agent.execution import BudgetLedger, RunContext, TraceRecorder
 from mini_agent.types import (
     BudgetExceeded,
     BudgetLimits,
@@ -565,7 +565,7 @@ class BudgetTests(unittest.IsolatedAsyncioTestCase):
 class TraceAndPricingTests(unittest.IsolatedAsyncioTestCase):
     def test_trace_creation_syncs_file_and_parent_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, patch(
-            "mini_agent.runtime.os.fsync"
+            "mini_agent.execution.os.fsync"
         ) as sync:
             TraceRecorder(Path(temporary) / "trace.jsonl")
         self.assertEqual(sync.call_count, 2)
@@ -587,7 +587,7 @@ class TraceAndPricingTests(unittest.IsolatedAsyncioTestCase):
             def synced(_descriptor: int) -> None:
                 ordering.append("fsync")
 
-            with patch("mini_agent.runtime.os.fsync", side_effect=synced):
+            with patch("mini_agent.execution.os.fsync", side_effect=synced):
                 await RunContext(trace=trace).query(
                     OrderingModel(), (), (), agent_id="/root", role="solver"
                 )
@@ -609,7 +609,7 @@ class TraceAndPricingTests(unittest.IsolatedAsyncioTestCase):
             def synced(_descriptor: int) -> None:
                 ordering.append("fsync")
 
-            with patch("mini_agent.runtime.os.fsync", side_effect=synced):
+            with patch("mini_agent.execution.os.fsync", side_effect=synced):
                 await RunContext(trace=trace).execute(
                     environment,
                     ToolCall("call", "echo", {"value": "observed"}),

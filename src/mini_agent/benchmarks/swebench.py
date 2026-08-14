@@ -23,7 +23,7 @@ from ..environments.bash import (
     container_bash_environment,
 )
 from ..models import Model
-from ..runtime import RunContext
+from ..execution import RunContext
 from ..runtimes.apptainer import ApptainerRuntime, apptainer_image_identity
 from ..runtimes.base import (
     DEFAULT_MAX_OUTPUT_BYTES,

@@ -9,8 +9,8 @@
     "state": "post-0.5.0 working tree: selectable multi-agent harnesses, one team execution path, per-agent coordination reporting, and offline Git sharing for ProgramBench teams; bound by frozen_harness_identity",
     "frozen_harness_identity": {
       "schema": "mini-agent-harness-v1",
-      "source_file_count": 46,
-      "source_sha256": "b0c70600046681b021bfe1fdb8fd13ec5b128ba53d5dbf8f68e6b9bc0aca835f"
+      "source_file_count": 47,
+      "source_sha256": "c41d92ac0396af44ad5d39fd44de9d869e5e66aa9b168ac9cdbc4f5e81c92862"
     },
     "audit_pass": {
       "date": "2026-08-12",
@@ -28,7 +28,7 @@
       "interpreters": [
         "CPython 3.12.5"
       ],
-      "tests_per_interpreter": 420,
+      "tests_per_interpreter": 430,
       "status": "passed",
       "note": "run on the only interpreter present on the current node; the four-interpreter 3.10-3.13 matrix remains enforced in CI",
       "statement_coverage": "85%",
@@ -363,6 +363,43 @@
       "screenshot_is_png": true,
       "post_action_screenshot_bytes": 1669484,
       "note": "booted through runtimes/osworld_apptainer.py with no Docker daemon, QEMU 9.1.0 under KVM. The VM digest is byte-identical to the earlier pass, which is what a stable upstream asset looks like -- unlike the SIFs, whose digests move per build."
+    },
+    "reverified_after_probing": {
+      "date": "2026-08-14",
+      "why": "the orchestrator, ProgramBench, and the coordination summary all changed after the first harness pass, so every benchmark was run again rather than assumed still good",
+      "swebench_single": {
+        "status": "passed",
+        "patch_bytes": 506
+      },
+      "swebench_fixed_team": {
+        "status": "passed",
+        "containers": 3,
+        "patch_bytes": 504
+      },
+      "programbench": {
+        "status": "passed",
+        "submission_members": 66,
+        "network_probe": "BLOCKED",
+        "git_in_image": "git version 2.34.1"
+      },
+      "programbench_git_share": {
+        "status": "passed",
+        "containers": 3,
+        "lead_received_peer_file": true,
+        "network_probe": "BLOCKED",
+        "shared_repository_removed_after_the_task": true
+      },
+      "browsecomp_plus": {
+        "status": "passed",
+        "retrieved_documents": 5,
+        "snippet_tokens": 512,
+        "index_sha256": "047cc4803b8f55faf9e36b280704b1288cecc7e619888bf521af4fa0a90ab1d4"
+      },
+      "osworld_v1_boot": {
+        "status": "passed",
+        "screenshot_bytes": 1668791,
+        "vm_sha256": "6bf667a852b3c307f61d9f09c42559351f45e0607e428b4997becf534cf4d313"
+      }
     }
   }
 }

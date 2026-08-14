@@ -16,7 +16,7 @@ from typing import Any, Awaitable, Callable, Iterator, Mapping, TypeGuard
 
 from ..environments.web import BrowserEnvironment
 from ..models import Model
-from ..runtime import RunContext
+from ..execution import RunContext
 from ..types import (
     Message,
     strict_json_loads,

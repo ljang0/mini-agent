@@ -27,7 +27,7 @@ provenance records may be retained under a user-owned durable data directory.
 
 ## Deterministic gates
 
-The frozen source passed **390 tests on CPython 3.12.5**, the only
+The frozen source passed **430 tests on CPython 3.12.5**, the only
 interpreter installed on the current node; the four-interpreter 3.10–3.13
 matrix remains enforced in CI. The suite covers full CLI evaluation paths for every benchmark
 (argparse through worker, spec binding, agent loop, and artifact
@@ -52,9 +52,9 @@ regression that the suite did not catch; it is fixed, and
 `tests/test_digest_stability.py` now pins the byte value of every digest that
 reaches a durable artifact.
 
-The location-independent harness identity for this source snapshot covers 46
+The location-independent harness identity for this source snapshot covers 47
 package source files and is
-`b0c70600046681b021bfe1fdb8fd13ec5b128ba53d5dbf8f68e6b9bc0aca835f`.
+`c41d92ac0396af44ad5d39fd44de9d869e5e66aa9b168ac9cdbc4f5e81c92862`.
 
 The required commands pass:
 
@@ -83,7 +83,7 @@ paid model call. They were run during the reference audit, before the final
 source freeze. The computer evaluations bind their exact pre-freeze harness
 identity in saved manifests; the web artifacts bind their exact retrieval
 inputs and trace bytes. Later source hardening — including the audit/cleanup, ProgramBench, and
-flattening passes — is covered by the deterministic 390-test gate,
+flattening passes — is covered by the deterministic 430-test gate,
 not by retroactively relabelling these as final-source E2E runs. Scores of zero
 below are deliberate and say nothing about agent quality.
 

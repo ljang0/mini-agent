@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Mapping
 
-from .runtime import BudgetLedger
+from .execution import BudgetLedger
 
 
 SCHEMA = "mini-agent-coordination-v1"

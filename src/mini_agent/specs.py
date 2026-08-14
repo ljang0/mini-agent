@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from .agent import MiniAgent
     from .environments.base import AgentEnvironment
     from .models import Model
-    from .runtime import RunContext
+    from .execution import RunContext
 
 
 AGENT_SPEC_SCHEMA = "mini-agent.agent-spec/v1"
@@ -263,7 +263,7 @@ class AgentSpecV1:
         """
 
         from .agent import MiniAgent
-        from .runtime import RunContext
+        from .execution import RunContext
 
         if model_id != self.model:
             raise ValueError("model identifier does not match the agent spec")

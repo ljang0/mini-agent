@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 
 from mini_agent.coordination import SCHEMA, coordination_summary
-from mini_agent.runtime import BudgetLedger
+from mini_agent.execution import BudgetLedger
 from mini_agent.types import BudgetLimits, Usage
 
 

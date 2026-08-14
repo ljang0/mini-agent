@@ -41,7 +41,7 @@ from .harnesses import harness_names, load_harness
 from .team import run_team, selected_harness
 from .profiles import load_profile, prompt_for
 from .providers import TokenPricing, _validate_endpoint
-from .runtime import RunContext, TraceRecorder, redact_artifact
+from .execution import RunContext, TraceRecorder, redact_artifact
 from .specs import AgentSpecV1
 from .storage import StorageLayout
 from .types import (

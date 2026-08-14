@@ -79,7 +79,7 @@ from mini_agent.environments.base import BaseEnvironment
 from mini_agent.environments.web import BrowserEnvironment, JsonlSearchBackend
 from mini_agent.grading import _verify_grade_prompt_binding
 from mini_agent.models import ScriptedModel
-from mini_agent.runtime import RunContext, TraceRecorder
+from mini_agent.execution import RunContext, TraceRecorder
 from mini_agent.types import (
     BudgetLimits,
     ModelResponse,

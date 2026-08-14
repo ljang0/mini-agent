@@ -42,7 +42,7 @@ from mini_agent.grading import (
 )
 from mini_agent.environments.base import BaseEnvironment
 from mini_agent.models import ScriptedModel
-from mini_agent.runtime import RunContext
+from mini_agent.execution import RunContext
 from mini_agent.storage import StorageLayout
 from mini_agent.types import ModelResponse, ToolCall, ToolDefinition
 

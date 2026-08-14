@@ -8,7 +8,7 @@ from typing import Any, Sequence
 from mini_agent.agent import MiniAgent
 from mini_agent.models import ScriptedModel
 from mini_agent.orchestrator import CommunicationEnvironment, Orchestrator
-from mini_agent.runtime import RunContext, TraceRecorder
+from mini_agent.execution import RunContext, TraceRecorder
 from mini_agent.types import (
     BudgetExceeded,
     BudgetLimits,

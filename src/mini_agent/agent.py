@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from .environments.base import AgentEnvironment
 
 from .models import Model
-from .runtime import RunContext
+from .execution import RunContext
 from .types import (
     AgentResult,
     BudgetExceeded,

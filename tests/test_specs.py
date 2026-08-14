@@ -8,7 +8,7 @@ from mini_agent.benchmarks.base import spec_bound_agent, task_agent_builder
 from mini_agent.environments.base import BaseEnvironment
 from mini_agent.models import ScriptedModel
 from mini_agent.profiles import load_profile, prompt_for
-from mini_agent.runtime import RunContext
+from mini_agent.execution import RunContext
 from mini_agent.specs import AgentSpecV1, TranslationLoss, TranslationReport
 from mini_agent.types import BudgetLimits, ModelResponse, ToolDefinition, ToolExecution
 

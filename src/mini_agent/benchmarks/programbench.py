@@ -22,7 +22,7 @@ from ..environments.bash import (
     SWEArchiveState,
 )
 from ..models import Model
-from ..runtime import RunContext
+from ..execution import RunContext
 from ..types import (
     _require_mapping,
     _require_no_symlink,

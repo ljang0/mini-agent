@@ -37,7 +37,7 @@ from mini_agent.environments.web import (
     directory_sha256,
 )
 from mini_agent.environments import web as web_environment_module
-from mini_agent.runtime import RunContext
+from mini_agent.execution import RunContext
 from mini_agent.types import InfrastructureError, ProtocolError, ToolCall
 
 
