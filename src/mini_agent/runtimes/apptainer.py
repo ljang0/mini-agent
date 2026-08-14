@@ -14,7 +14,7 @@ from typing import Any, Mapping, Sequence
 
 from .._hash import stable_file_sha256
 from .._lifecycle import complete_in_thread, raise_lifecycle_errors
-from ..types import _require_no_symlink, _require_positive_int
+from ..types import _require_bool, _require_no_symlink, _require_positive_int
 from .base import (
     DEFAULT_MAX_OUTPUT_BYTES,
     ProcessResult,
@@ -135,6 +135,8 @@ def apptainer_exec_argv(
     argv: Sequence[str],
     env: Mapping[str, str] | None = None,
     binds: Sequence[tuple[Path, str]] = (),
+    writable_binds: Sequence[tuple[Path, str]] = (),
+    network_disabled: bool = False,
 ) -> tuple[str, ...]:
     """Build one `apptainer exec` argv for a private fakeroot overlay."""
 
@@ -150,12 +152,17 @@ def apptainer_exec_argv(
         "--pwd",
         workdir,
     ]
+    if network_disabled:
+        # A private empty network namespace: no interface, no DNS, no egress.
+        command.extend(("--net", "--network", "none"))
     if env:
         command.extend(
             ("--env", ",".join(f"{key}={value}" for key, value in env.items()))
         )
     for source, target in binds:
         command.extend(("--bind", f"{source}:{target}:ro"))
+    for source, target in writable_binds:
+        command.extend(("--bind", f"{source}:{target}:rw"))
     command.append(image)
     command.extend(argv)
     return tuple(command)
@@ -163,6 +170,10 @@ def apptainer_exec_argv(
 
 class ApptainerRuntime:
     """One private fakeroot ext3 overlay over an immutable local SIF."""
+
+    # `--containall` gives every exec a fresh tmpfs /tmp, so anything the
+    # harness must read back afterwards has to be staged on the overlay.
+    archive_staging_dir: str = "/"
 
     def __init__(
         self,
@@ -178,6 +189,7 @@ class ApptainerRuntime:
         exec_env: Mapping[str, str] | None = None,
         staging_dir: str = "/tmp",
         root_prefix: str = DEFAULT_OVERLAY_ROOT_PREFIX,
+        network_disabled: bool = False,
         _ownership_token: object | None = None,
     ) -> None:
         if _ownership_token is not _OWNED_APPTAINER:
@@ -206,6 +218,7 @@ class ApptainerRuntime:
         self.workdir = require_workdir(workdir)
         self.runner = require_runner(runner)
         self.exec_env = dict(exec_env or {})
+        self.network_disabled = _require_bool(network_disabled, "network_disabled")
         self.staging_dir = require_workdir(staging_dir)
         self._binds: dict[str, Path] = {}
 
@@ -225,6 +238,7 @@ class ApptainerRuntime:
         overlay_size_mib: int = 16 * 1024,
         expected_identity: str | None = None,
         materialize: bool = True,
+        network_disabled: bool = False,
         timeout_seconds: float = 60.0,
         max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES,
     ) -> "ApptainerRuntime":
@@ -286,6 +300,7 @@ class ApptainerRuntime:
                 runner=process_runner,
                 exec_env=exec_env,
                 root_prefix=root_prefix,
+                network_disabled=network_disabled,
                 _ownership_token=_OWNED_APPTAINER,
             )
         except BaseException as operation_error:
@@ -318,16 +333,50 @@ class ApptainerRuntime:
                 binds=tuple(
                     (source, target) for target, source in sorted(self._binds.items())
                 ),
+                network_disabled=self.network_disabled,
             ),
             timeout_seconds=timeout_seconds,
             max_output_bytes=max_output_bytes,
         )
 
     async def read_file(self, path: str) -> bytes:
-        del path
-        raise RuntimeError(
-            "the Apptainer overlay runtime cannot export files; use a Git patch"
-        )
+        """Copy one file out of the overlay through a private writable bind.
+
+        The bind exists only for this one exec, so an agent command never sees
+        a writable host path; only the harness's export path uses it.
+        """
+
+        require_ref(path, "container file path must be non-empty", no_dash=True)
+        export = Path(tempfile.mkdtemp(prefix="export-", dir=self.owned_root))
+        target = "/mini-agent-export"
+        operation_error: BaseException | None = None
+        content = b""
+        try:
+            copied = await self.runner.run(
+                apptainer_exec_argv(
+                    executable=self.executable,
+                    overlay=self.overlay,
+                    image=self.image,
+                    workdir=self.workdir,
+                    argv=("cp", path, f"{target}/payload"),
+                    env=self.exec_env,
+                    writable_binds=((export, target),),
+                    network_disabled=self.network_disabled,
+                ),
+                timeout_seconds=300.0,
+                max_output_bytes=DEFAULT_MAX_OUTPUT_BYTES,
+            )
+            require_ok(copied, "could not copy the overlay file")
+            content = await complete_in_thread((export / "payload").read_bytes)
+        except BaseException as exc:
+            operation_error = exc
+        cleanup_error: BaseException | None = None
+        try:
+            await complete_in_thread(shutil.rmtree, export)
+        except BaseException as exc:
+            cleanup_error = exc
+        raise_lifecycle_errors("overlay file read", operation_error, cleanup_error)
+        return content
 
     async def write_file(self, name: str, data: bytes) -> str:
         """Stage bytes on the host and bind them read-only into every exec."""

@@ -187,6 +187,8 @@ async def docker_doctor(
 class DockerRuntime:
     """One detached, mini-agent-owned container addressed by image ID."""
 
+    archive_staging_dir: str = "/tmp"
+
     def __init__(
         self,
         *,

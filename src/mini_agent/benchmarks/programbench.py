@@ -52,7 +52,11 @@ from .base import (
     task_agent_root,
 )
 from .checkout import git as _git, reject_untracked_execution_files
-from .swebench import SWEbenchImageBinding, docker_swe_environment
+from .swebench import (
+    SWEbenchImageBinding,
+    apptainer_swe_environment,
+    docker_swe_environment,
+)
 
 
 PROGRAMBENCH_REVISION = "963063c9271cc40fa179977356782ea4582e0b0c"
@@ -310,7 +314,12 @@ async def run_programbench_task(
     model_factory: ModelFactory,
     system_prompt: str,
     max_steps: int,
+    runtime: str = "docker",
     container_runtime: Sequence[str] = ("docker",),
+    apptainer_executable: str = "apptainer",
+    apptainer_image_cache: Path | None = None,
+    scratch_root: Path | None = None,
+    overlay_size_mib: int = 16 * 1024,
     image_binding: SWEbenchImageBinding | None = None,
     max_archive_bytes: int = DEFAULT_MAX_ARCHIVE_BYTES,
     multi_agent: bool = False,
@@ -331,24 +340,43 @@ async def run_programbench_task(
     if task.data.get("image_name") != programbench_image_name(instance_id):
         raise ValueError("ProgramBench task image does not match its instance id")
 
+    if runtime not in {"docker", "apptainer"}:
+        raise ValueError("ProgramBench runtime must be docker or apptainer")
+    # The cleanroom contract is identical on either backend: the agent's
+    # container has no network, has no Git tree to diff against, and exports
+    # its whole workspace as the submission.
+    identity = {
+        "benchmark": "programbench",
+        "benchmark_revision": PROGRAMBENCH_REVISION,
+        "benchmark_version": PROGRAMBENCH_VERSION,
+        "benchmark_image_tag": PROGRAMBENCH_IMAGE_TAG,
+    }
+
     async def environment_for(agent_id: str) -> BashEnvironment:
         del agent_id
+        if runtime == "apptainer":
+            return await apptainer_swe_environment(
+                task.data,
+                image_binding=image_binding,
+                executable=apptainer_executable,
+                scratch_root=scratch_root,
+                image_cache=apptainer_image_cache,
+                overlay_size_mib=overlay_size_mib,
+                workdir=PROGRAMBENCH_WORKDIR,
+                network_disabled=True,
+                require_git_baseline=False,
+                max_archive_bytes=max_archive_bytes,
+                benchmark_identity=identity,
+            )
         return await docker_swe_environment(
             task.data,
             image_binding=image_binding,
             runtime=container_runtime,
             workdir=PROGRAMBENCH_WORKDIR,
-            # Upstream requires the agent to have no internet during inference.
             network_disabled=True,
-            # Cleanroom images ship a binary and documentation, not a Git tree.
             require_git_baseline=False,
             max_archive_bytes=max_archive_bytes,
-            benchmark_identity={
-                "benchmark": "programbench",
-                "benchmark_revision": PROGRAMBENCH_REVISION,
-                "benchmark_version": PROGRAMBENCH_VERSION,
-                "benchmark_image_tag": PROGRAMBENCH_IMAGE_TAG,
-            },
+            benchmark_identity=identity,
         )
 
     agent_for = task_agent_builder(

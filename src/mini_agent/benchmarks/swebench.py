@@ -385,6 +385,11 @@ async def apptainer_swe_environment(
     timeout_seconds: float = 60,
     max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES,
     max_patch_bytes: int = DEFAULT_MAX_PATCH_BYTES,
+    max_archive_bytes: int = DEFAULT_MAX_ARCHIVE_BYTES,
+    workdir: str = SWEBENCH_WORKDIR,
+    network_disabled: bool = False,
+    require_git_baseline: bool = True,
+    benchmark_identity: Mapping[str, Any] | None = None,
     runner: ProcessRunner | None = None,
 ) -> BashEnvironment:
     """One bash tool in a private Apptainer fakeroot overlay over the task SIF."""
@@ -405,12 +410,13 @@ async def apptainer_swe_environment(
         expected_identity=None if image_binding is None else image_binding.identity,
         executable=executable,
         runner=runner,
-        workdir=SWEBENCH_WORKDIR,
+        workdir=workdir,
         exec_env=_APPTAINER_EXEC_ENV,
         scratch_root=scratch_root,
         image_cache=image_cache,
         root_prefix=_APPTAINER_ROOT_PREFIX,
         overlay_size_mib=overlay_size_mib,
+        network_disabled=network_disabled,
         timeout_seconds=timeout_seconds,
         max_output_bytes=max_output_bytes,
     )
@@ -419,11 +425,13 @@ async def apptainer_swe_environment(
         expected_base_commit=expected_base_commit,
         base_identity_prefix=sandbox.image_identity,
         tool_description=_APPTAINER_TOOL_DESCRIPTION,
-        provenance_extra=_benchmark_identity(None),
+        provenance_extra=_benchmark_identity(benchmark_identity),
         startup_label="Apptainer SWE setup",
+        require_git_baseline=require_git_baseline,
         timeout_seconds=timeout_seconds,
         max_output_bytes=max_output_bytes,
         max_patch_bytes=max_patch_bytes,
+        max_archive_bytes=max_archive_bytes,
     )
 
 

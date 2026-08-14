@@ -44,7 +44,8 @@ from .base import BaseEnvironment
 MINI_SWE_AGENT_REVISION = "a83fcae82d2a08f0ee0c688f9d137b3566c097f8"
 DEFAULT_MAX_PATCH_BYTES = 8 * 1024 * 1024
 DEFAULT_MAX_ARCHIVE_BYTES = 256 * 1024 * 1024
-DEFAULT_ARCHIVE_PATH = "/tmp/mini-agent-workspace.tar.gz"
+ARCHIVE_NAME = "mini-agent-workspace.tar.gz"
+DEFAULT_ARCHIVE_PATH = f"/tmp/{ARCHIVE_NAME}"
 LOCAL_TOOL_DESCRIPTION = (
     "Run one bash command in the repository workspace. Each call "
     "uses a new shell; filesystem changes persist."
@@ -110,7 +111,7 @@ class BashEnvironment(BaseEnvironment):
         force_add: bool = False,
         clean_flags: str = "-ffd",
         destroy_on_timeout: bool = False,
-        archive_path: str = DEFAULT_ARCHIVE_PATH,
+        archive_path: str | None = None,
     ) -> None:
         self.runtime = runtime
         self.base_commit = base_commit
@@ -124,7 +125,8 @@ class BashEnvironment(BaseEnvironment):
         self.force_add = force_add
         self.clean_flags = clean_flags
         self.destroy_on_timeout = destroy_on_timeout
-        self.archive_path = archive_path
+        staging = getattr(runtime, "archive_staging_dir", "/tmp").rstrip("/")
+        self.archive_path = archive_path or f"{staging}/{ARCHIVE_NAME}"
         self._provenance_extra = dict(provenance_extra or {})
         self._closed = False
 
