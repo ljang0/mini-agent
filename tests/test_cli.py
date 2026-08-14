@@ -2437,6 +2437,9 @@ class CLIEvalEndToEndTests(unittest.TestCase):
             self.assertEqual(adapter["image_tag"], "task_cleanroom_v6")
             self.assertEqual(adapter["scoring"], "official-programbench-eval-only")
             self.assertEqual(adapter["checkout"]["revision"], PROGRAMBENCH_REVISION)
+            # The manifest must report the runtime that actually ran, not a
+            # constant that happened to be true while only one was reachable.
+            self.assertEqual(adapter["runtime"], "docker")
             self.assertEqual(
                 adapter["image_bindings"][task_id]["identity"],
                 "sha256:" + "a" * 64,

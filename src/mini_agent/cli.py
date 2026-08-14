@@ -574,7 +574,9 @@ async def _evaluate(args: argparse.Namespace) -> int:
             args, limit=limit, common=common, work=work, layout=layout
         )
     elif benchmark == "programbench":
-        setup = await _evaluate_programbench(args, limit=limit, common=common)
+        setup = await _evaluate_programbench(
+            args, limit=limit, common=common, work=work, layout=layout
+        )
     elif benchmark == "browsecomp":
         setup = _evaluate_browsecomp(args, limit=limit, common=common)
     elif benchmark == "browsecomp-plus":
@@ -685,6 +687,8 @@ async def _evaluate_programbench(
     *,
     limit: int | None,
     common: Mapping[str, Any],
+    work: Path,
+    layout: StorageLayout,
 ) -> _BenchmarkRun:
     from .benchmarks.programbench import (
         inspect_programbench_checkout,
@@ -693,10 +697,6 @@ async def _evaluate_programbench(
     )
     from .benchmarks.swebench import prepare_swebench_image_bindings
 
-    if args.runtime != "docker":
-        raise ValueError(
-            "ProgramBench evaluation is Docker-only; use --runtime docker"
-        )
     checkout = _required_path(args.checkout, "--checkout")
     args._programbench_checkout = dict(inspect_programbench_checkout(checkout))
     tasks = load_programbench(
@@ -706,8 +706,10 @@ async def _evaluate_programbench(
     )
     image_bindings = await prepare_swebench_image_bindings(
         tasks,
-        runtime="docker",
+        runtime=args.runtime,
         container_runtime=tuple(args.container_runtime),
+        apptainer_executable=args.apptainer_executable,
+        apptainer_image_cache=layout.assets / "apptainer-images",
     )
     args._programbench_image_bindings = {
         task_id: dict(binding.manifest_identity())
@@ -719,8 +721,13 @@ async def _evaluate_programbench(
             task,
             context,
             directory,
+            runtime=args.runtime,
+            scratch_root=work / "programbench",
             container_runtime=tuple(args.container_runtime),
+            apptainer_executable=args.apptainer_executable,
+            apptainer_image_cache=layout.assets / "apptainer-images",
             image_binding=image_bindings[task.task_id],
+            overlay_size_mib=args.overlay_size_mib,
             **common,
         )
 
@@ -1302,7 +1309,7 @@ def _evaluation_config(
         )
 
         adapter = {
-            "runtime": "docker",
+            "runtime": args.runtime,
             "container_runtime": list(args.container_runtime),
             "revision": PROGRAMBENCH_REVISION,
             "version": PROGRAMBENCH_VERSION,

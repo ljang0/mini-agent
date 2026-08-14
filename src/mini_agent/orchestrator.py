@@ -58,8 +58,8 @@ class MailboxMessage:
         _require_int(self.sequence, "mailbox sequence")
         for name in ("sender", "recipient", "content", "kind"):
             _require_str(getattr(self, name), f"mailbox {name}", non_empty=False)
-        if self.kind not in {"message", "result"}:
-            raise ValueError("mailbox kind must be 'message' or 'result'")
+        if self.kind not in {"message", "result", "error"}:
+            raise ValueError("mailbox kind must be 'message', 'result', or 'error'")
 
 
 @dataclass

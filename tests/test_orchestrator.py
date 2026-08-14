@@ -163,6 +163,43 @@ class OrchestratorTests(unittest.IsolatedAsyncioTestCase):
         await environment.close()
         self.assertEqual(base.close_calls, 2)
 
+    async def test_a_failed_child_reports_to_its_parent_without_killing_the_run(
+        self,
+    ) -> None:
+        """A child's failure is the parent's news, not the run's cause of death.
+
+        Multi-agent work fails children routinely -- a bad tool call, an
+        exhausted budget, a crashed environment. The parent has to hear about
+        it so it can react, and the run has to survive so it can.
+        """
+
+        class FailingModel:
+            async def query(self, messages: Any, tools: Any) -> ModelResponse:
+                del messages, tools
+                raise RuntimeError("child exploded")
+
+        models = {
+            "/root": ScriptedModel(
+                [
+                    call("spawn", {"action": "spawn", "task": "doomed"}),
+                    call("wait", {"action": "wait", "agent_ids": ["/root/1"]}),
+                    call("inbox", {"action": "inbox"}),
+                    ModelResponse("root survived"),
+                ]
+            ),
+            "/root/1": FailingModel(),
+        }
+        orchestrator = orchestrator_for(models)
+
+        result = await orchestrator.run("lead")
+
+        self.assertEqual(result.answer, "root survived")
+        self.assertEqual(orchestrator.records["/root/1"].status, "failed")
+        inbox_output = models["/root"].queries[3][0][-1].tool_results[0].output
+        messages = json.loads(inbox_output)
+        self.assertEqual([message["kind"] for message in messages], ["error"])
+        self.assertIn("child exploded", messages[0]["content"])
+
     async def test_spawn_message_wait_and_inbox(self) -> None:
         models = {
             "/root": ScriptedModel(
