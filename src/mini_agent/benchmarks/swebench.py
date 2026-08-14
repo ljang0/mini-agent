@@ -41,11 +41,8 @@ from ..runtimes.docker import (
     docker_doctor,
     docker_image_id,
 )
-from ..specs import AgentSpecV1
 from ..types import (
-    BudgetLimits,
     _require_bool,
-    _require_callable,
     _require_mapping,
     _require_positive_int,
     _require_str,
@@ -56,6 +53,7 @@ from ..storage import (
     atomic_json,
 )
 from .base import (
+    TeamOptions,
     run_benchmark_team,
     BenchmarkTask,
     EvaluationOutcome,
@@ -513,9 +511,6 @@ async def run_swebench_task(
     context: RunContext,
     directory: Path,
     *,
-    model_factory: ModelFactory,
-    system_prompt: str,
-    max_steps: int,
     runtime: str,
     model_name: str = "mini-agent",
     scratch_root: Path | None = None,
@@ -524,23 +519,19 @@ async def run_swebench_task(
     overlay_size_mib: int = 16 * 1024,
     container_runtime: Sequence[str] = ("docker",),
     apptainer_executable: str = "apptainer",
-    multi_agent: bool = False,
-    harness: str = "single",
-    team_size: int | None = None,
-    max_active_agents: int = 4,
-    max_total_agents: int = 16,
-    per_agent_limits: BudgetLimits | None = None,
-    agent_spec: AgentSpecV1 | None = None,
+    options: TeamOptions,
 ) -> EvaluationOutcome:
-    _require_callable(model_factory, "model_factory")
-    _require_str(system_prompt, "system_prompt", non_empty=False)
-    _require_positive_int(max_steps, "max_steps")
+    """Run one task in its official image and export the agent's patch.
+
+    Nothing here scores anything: the patch and the prediction record are the
+    whole output, and only the official grader turns them into a result.
+    """
+
     _require_str(model_name, "model_name")
     _require_grader_component(task.task_id, "SWE-bench task instance_id")
     _require_grader_component(
         model_name.replace("/", "__"), "SWE-bench model_name_or_path"
     )
-    _require_bool(multi_agent, "multi_agent")
     if runtime not in {"docker", "apptainer"}:
         raise ValueError("SWE-bench runtime must be docker or apptainer")
 
@@ -563,16 +554,7 @@ async def run_swebench_task(
         task,
         context,
         environment_factory=environment_for,
-        model_factory=model_factory,
-        system_prompt=system_prompt,
-        max_steps=max_steps,
-        agent_spec=agent_spec,
-        harness=harness,
-        team_size=team_size,
-        multi_agent=multi_agent,
-        max_active_agents=max_active_agents,
-        max_total_agents=max_total_agents,
-        per_agent_limits=per_agent_limits,
+        options=options,
     )
     if not isinstance(team.state, SWEPatchState):
         raise RuntimeError("root SWE agent produced no patch state")

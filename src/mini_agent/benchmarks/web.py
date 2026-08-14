@@ -17,12 +17,9 @@ from typing import Any, Awaitable, Callable, Iterator, Mapping, TypeGuard
 from ..environments.web import BrowserEnvironment
 from ..models import Model
 from ..runtime import RunContext
-from ..specs import AgentSpecV1
 from ..types import (
-    BudgetLimits,
     Message,
     strict_json_loads,
-    _require_bool,
     _require_callable,
     _require_int,
     _require_mapping,
@@ -41,6 +38,7 @@ from ..storage import (
     read_committed_result,
 )
 from .base import (
+    TeamOptions,
     run_benchmark_team,
     BenchmarkTask,
     EvaluationOutcome,
@@ -228,23 +226,10 @@ async def run_web_task(
     directory: Path,
     *,
     browser_factory: BrowserFactory,
-    model_factory: ModelFactory,
-    system_prompt: str,
-    max_steps: int,
-    multi_agent: bool = False,
-    harness: str = "single",
-    team_size: int | None = None,
-    max_active_agents: int = 4,
-    max_total_agents: int = 16,
+    options: TeamOptions,
     model_name: str | None = None,
-    per_agent_limits: BudgetLimits | None = None,
-    agent_spec: AgentSpecV1 | None = None,
 ) -> EvaluationOutcome:
     _require_callable(browser_factory, "browser_factory")
-    _require_callable(model_factory, "model_factory")
-    _require_str(system_prompt, "system_prompt", non_empty=False)
-    _require_positive_int(max_steps, "max_steps")
-    _require_bool(multi_agent, "multi_agent")
     if task.data.get("benchmark") == "browsecomp-plus":
         _require_str(model_name, "BrowseComp-Plus generation model_name")
 
@@ -272,16 +257,7 @@ async def run_web_task(
         task,
         context,
         environment_factory=environment_for,
-        model_factory=model_factory,
-        system_prompt=system_prompt,
-        max_steps=max_steps,
-        agent_spec=agent_spec,
-        harness=harness,
-        team_size=team_size,
-        multi_agent=multi_agent,
-        max_active_agents=max_active_agents,
-        max_total_agents=max_total_agents,
-        per_agent_limits=per_agent_limits,
+        options=options,
     )
     result = team.require()
     metadata: Mapping[str, Any] = {

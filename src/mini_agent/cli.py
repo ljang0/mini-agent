@@ -30,6 +30,7 @@ from .benchmarks.base import (
     raise_after_cleanup,
     spec_bound_agent,
     task_agent_builder,
+    TeamOptions,
     task_agent_prefix,
 )
 from .doctor import _doctor
@@ -567,18 +568,18 @@ async def _evaluate(args: argparse.Namespace) -> int:
         domain, multi_agent=args.multi_agent
     )
     agent_spec = _resolved_agent_spec(args, domain, resolved_prompt)
-    common: dict[str, Any] = {
-        "model_factory": model_factory,
-        "system_prompt": resolved_prompt,
-        "max_steps": args.max_steps,
-        "agent_spec": agent_spec,
-        "multi_agent": args.multi_agent,
-        "harness": _harness_name(args),
-        "team_size": args.team_size,
-        "max_active_agents": args.max_active_agents,
-        "max_total_agents": args.max_total_agents,
-        "per_agent_limits": _per_agent_limits(args),
-    }
+    common = TeamOptions(
+        model_factory=model_factory,
+        system_prompt=resolved_prompt,
+        max_steps=args.max_steps,
+        agent_spec=agent_spec,
+        multi_agent=args.multi_agent,
+        harness=_harness_name(args),
+        team_size=args.team_size,
+        max_active_agents=args.max_active_agents,
+        max_total_agents=args.max_total_agents,
+        per_agent_limits=_per_agent_limits(args),
+    )
 
     if benchmark == "swebench":
         setup = await _evaluate_swebench(
@@ -650,7 +651,7 @@ async def _evaluate_swebench(
     args: argparse.Namespace,
     *,
     limit: int | None,
-    common: Mapping[str, Any],
+    common: TeamOptions,
     work: Path,
     layout: StorageLayout,
 ) -> _BenchmarkRun:
@@ -687,7 +688,7 @@ async def _evaluate_swebench(
             apptainer_image_cache=layout.assets / "apptainer-images",
             image_binding=image_bindings[task.task_id],
             overlay_size_mib=args.overlay_size_mib,
-            **common,
+            options=common,
         )
 
     return _BenchmarkRun(tasks=tasks, worker=worker)
@@ -697,7 +698,7 @@ async def _evaluate_programbench(
     args: argparse.Namespace,
     *,
     limit: int | None,
-    common: Mapping[str, Any],
+    common: TeamOptions,
     work: Path,
     layout: StorageLayout,
 ) -> _BenchmarkRun:
@@ -740,7 +741,7 @@ async def _evaluate_programbench(
             image_binding=image_bindings[task.task_id],
             overlay_size_mib=args.overlay_size_mib,
             git_share=bool(args.agent_git_share),
-            **common,
+            options=common,
         )
 
     return _BenchmarkRun(tasks=tasks, worker=worker)
@@ -750,7 +751,7 @@ def _evaluate_browsecomp(
     args: argparse.Namespace,
     *,
     limit: int | None,
-    common: Mapping[str, Any],
+    common: TeamOptions,
 ) -> _BenchmarkRun:
     from .benchmarks.web import (
         grade_browsecomp,
@@ -775,7 +776,7 @@ def _evaluate_browsecomp(
             directory,
             browser_factory=browser_factory,
             model_name=args.model,
-            **common,
+            options=common,
         )
         grader = grader_factory(task_agent_prefix(task.task_id) + "/grader")
         score, raw = await grade_browsecomp(
@@ -813,7 +814,7 @@ def _evaluate_browsecomp_plus(
     args: argparse.Namespace,
     *,
     limit: int | None,
-    common: Mapping[str, Any],
+    common: TeamOptions,
 ) -> _BenchmarkRun:
     from .benchmarks.web import (
         load_browsecomp_plus,
@@ -859,7 +860,7 @@ def _evaluate_browsecomp_plus(
             directory,
             browser_factory=browser_factory,
             model_name=args.model,
-            **common,
+            options=common,
         )
 
     return _BenchmarkRun(tasks=tasks, worker=worker)
@@ -870,7 +871,7 @@ def _evaluate_osworld(
     *,
     benchmark: str,
     limit: int | None,
-    common: Mapping[str, Any],
+    common: TeamOptions,
 ) -> _BenchmarkRun:
     from .benchmarks.osworld import (
         UpstreamDesktopFactory,
@@ -939,7 +940,7 @@ def _evaluate_osworld(
             context,
             directory,
             desktop_factory=desktop_factory,
-            **common,
+            options=common,
         )
 
     return _BenchmarkRun(tasks=tasks, worker=worker, checkout_cwd=checkout_cwd)

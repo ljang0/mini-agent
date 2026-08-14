@@ -24,6 +24,7 @@ from mini_agent._hash import (
 )
 from mini_agent.storage import atomic_json
 from mini_agent.benchmarks.base import (
+    TeamOptions,
     BenchmarkTask,
     EvaluationOutcome,
     EvaluationRunner,
@@ -725,9 +726,11 @@ class WebBenchmarkTests(unittest.IsolatedAsyncioTestCase):
                     max_observation_chars=None,
                     allow_open=False,
                 ),
-                model_factory=lambda agent_id: model,
-                system_prompt="",
-                max_steps=3,
+                options=TeamOptions(
+        model_factory=lambda agent_id: model,
+        system_prompt="",
+        max_steps=3,
+    ),
                 model_name="scripted/test",
             )
             self.assertEqual(outcome.status, "completed")
@@ -838,11 +841,13 @@ class WebBenchmarkTests(unittest.IsolatedAsyncioTestCase):
                 RunContext(),
                 Path("unused"),
                 browser_factory=lambda agent_id: BrowserEnvironment(Search()),
-                model_factory=lambda agent_id: ScriptedModel(
-                    [ModelResponse("answer")]
-                ),
-                system_prompt="",
-                max_steps=1,
+                options=TeamOptions(
+        model_factory=lambda agent_id: ScriptedModel(
+                        [ModelResponse("answer")]
+                    ),
+        system_prompt="",
+        max_steps=1,
+    ),
                 model_name="scripted/test",
             )
 
@@ -865,11 +870,13 @@ class WebBenchmarkTests(unittest.IsolatedAsyncioTestCase):
                 browser_factory=lambda agent_id: BrowserEnvironment(
                     Search(), allow_open=False
                 ),
-                model_factory=lambda agent_id: ScriptedModel(
-                    [ModelResponse("answer")]
-                ),
-                system_prompt="",
-                max_steps=1,
+                options=TeamOptions(
+        model_factory=lambda agent_id: ScriptedModel(
+                        [ModelResponse("answer")]
+                    ),
+        system_prompt="",
+        max_steps=1,
+    ),
                 model_name="scripted/test",
             )
 
@@ -1367,11 +1374,13 @@ class SWEBenchmarkTests(unittest.IsolatedAsyncioTestCase):
                     task,
                     RunContext(),
                     directory / "instances" / "one",
-                    model_factory=lambda agent_id: ScriptedModel(
-                        [ModelResponse("done")]
-                    ),
-                    system_prompt="",
-                    max_steps=2,
+                    options=TeamOptions(
+        model_factory=lambda agent_id: ScriptedModel(
+                            [ModelResponse("done")]
+                        ),
+        system_prompt="",
+        max_steps=2,
+    ),
                     runtime="docker",
                     model_name="scripted/model",
                     image_binding=binding,
@@ -1480,9 +1489,11 @@ class SWEBenchmarkTests(unittest.IsolatedAsyncioTestCase):
                     task,
                     RunContext(),
                     Path(temporary),
-                    model_factory=lambda agent_id: ScriptedModel([]),
-                    system_prompt="",
-                    max_steps=1,
+                    options=TeamOptions(
+        model_factory=lambda agent_id: ScriptedModel([]),
+        system_prompt="",
+        max_steps=1,
+    ),
                     runtime="docker",
                     model_name="scripted/model",
                 )
@@ -1702,11 +1713,13 @@ class ProgramBenchTests(unittest.IsolatedAsyncioTestCase):
                     task,
                     RunContext(),
                     instance,
-                    model_factory=lambda agent_id: ScriptedModel(
-                        [ModelResponse("done")]
-                    ),
-                    system_prompt="",
-                    max_steps=2,
+                    options=TeamOptions(
+        model_factory=lambda agent_id: ScriptedModel(
+                            [ModelResponse("done")]
+                        ),
+        system_prompt="",
+        max_steps=2,
+    ),
                 )
             keywords = create.await_args.kwargs
             self.assertTrue(keywords["network_disabled"])
@@ -1734,9 +1747,11 @@ class ProgramBenchTests(unittest.IsolatedAsyncioTestCase):
                     mismatched,
                     RunContext(),
                     instance,
-                    model_factory=lambda agent_id: ScriptedModel([]),
-                    system_prompt="",
-                    max_steps=1,
+                    options=TeamOptions(
+        model_factory=lambda agent_id: ScriptedModel([]),
+        system_prompt="",
+        max_steps=1,
+    ),
                 )
 
     def test_collect_submissions_requires_hash_bound_committed_results(self) -> None:
@@ -2223,11 +2238,13 @@ class OSWorldBenchmarkTests(unittest.IsolatedAsyncioTestCase):
                     RunContext(),
                     checkout / "run",
                     desktop_factory=factory,
-                    model_factory=lambda agent_id: ScriptedModel(
-                        [ModelResponse("done")]
-                    ),
-                    system_prompt="",
-                    max_steps=1,
+                    options=TeamOptions(
+        model_factory=lambda agent_id: ScriptedModel(
+                            [ModelResponse("done")]
+                        ),
+        system_prompt="",
+        max_steps=1,
+    ),
                 )
             self.assertEqual(events, ["check:1", "check:2"])
             self.assertFalse((checkout / "run/score.json").exists())
@@ -2496,9 +2513,11 @@ class OSWorldBenchmarkTests(unittest.IsolatedAsyncioTestCase):
                     RunContext(),
                     checkout / "run",
                     desktop_factory=factory,
-                    model_factory=lambda agent_id: model,
-                    system_prompt="",
-                    max_steps=3,
+                    options=TeamOptions(
+        model_factory=lambda agent_id: model,
+        system_prompt="",
+        max_steps=3,
+    ),
                 )
             self.assertEqual(outcome.score, 0.5)
             self.assertEqual(outcome.metadata["score_scale"], "0-1")
@@ -2590,12 +2609,14 @@ class OSWorldBenchmarkTests(unittest.IsolatedAsyncioTestCase):
                     RunContext(),
                     checkout / "run",
                     desktop_factory=factory,
-                    model_factory=model,
-                    system_prompt="",
-                    max_steps=4,
-                    multi_agent=True,
-                    max_active_agents=2,
-                    max_total_agents=2,
+                    options=TeamOptions(
+        model_factory=model,
+        system_prompt="",
+        max_steps=4,
+        multi_agent=True,
+        max_active_agents=2,
+        max_total_agents=2,
+    ),
                 )
         assert root_id is not None
         self.assertEqual(outcome.score, 0.2)
@@ -2641,14 +2662,16 @@ class OSWorldBenchmarkTests(unittest.IsolatedAsyncioTestCase):
                     RunContext(),
                     checkout / "run",
                     desktop_factory=lambda agent_id, cache: desktop,
-                    model_factory=lambda agent_id: ScriptedModel(
-                        [ModelResponse("done")]
-                    ),
-                    system_prompt="",
-                    max_steps=1,
-                    multi_agent=True,
-                    max_active_agents=1,
-                    max_total_agents=1,
+                    options=TeamOptions(
+        model_factory=lambda agent_id: ScriptedModel(
+                            [ModelResponse("done")]
+                        ),
+        system_prompt="",
+        max_steps=1,
+        multi_agent=True,
+        max_active_agents=1,
+        max_total_agents=1,
+    ),
                 )
         self.assertEqual(outcome.metadata["state_selection"], "root_environment")
         self.assertEqual(outcome.metadata["state_adoption_history"], [])
@@ -2693,9 +2716,11 @@ class OSWorldBenchmarkTests(unittest.IsolatedAsyncioTestCase):
                     RunContext(),
                     checkout / "run",
                     desktop_factory=lambda agent_id, cache: desktop,
-                    model_factory=lambda agent_id: ScriptedModel([]),
-                    system_prompt="",
-                    max_steps=1,
+                    options=TeamOptions(
+        model_factory=lambda agent_id: ScriptedModel([]),
+        system_prompt="",
+        max_steps=1,
+    ),
                 )
             self.assertTrue(desktop.closed)
 
@@ -2747,9 +2772,11 @@ class OSWorldBenchmarkTests(unittest.IsolatedAsyncioTestCase):
                     RunContext(),
                     checkout / "run",
                     desktop_factory=lambda agent_id, cache: desktop,
-                    model_factory=lambda agent_id: model,
-                    system_prompt="",
-                    max_steps=1,
+                    options=TeamOptions(
+        model_factory=lambda agent_id: model,
+        system_prompt="",
+        max_steps=1,
+    ),
                 )
             self.assertEqual(outcome.score, 0.25)
             self.assertIn("BudgetExceeded", outcome.metadata["agent_error"])
@@ -2793,11 +2820,13 @@ class OSWorldBenchmarkTests(unittest.IsolatedAsyncioTestCase):
                         RunContext(),
                         checkout / "run",
                         desktop_factory=lambda agent_id, cache: desktop,
-                        model_factory=lambda agent_id: ScriptedModel(
-                            [ModelResponse("done")]
-                        ),
-                        system_prompt="",
-                        max_steps=2,
+                        options=TeamOptions(
+        model_factory=lambda agent_id: ScriptedModel(
+                                [ModelResponse("done")]
+                            ),
+        system_prompt="",
+        max_steps=2,
+    ),
                     )
             self.assertTrue(desktop.closed)
 

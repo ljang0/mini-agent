@@ -26,10 +26,8 @@ from ..environments.cua import (
 from ..environments.base import complete_in_thread
 from ..models import Model
 from ..runtime import RunContext
-from ..specs import AgentSpecV1
 from ..types import (
     BudgetExceeded,
-    BudgetLimits,
     _require_bool,
     _require_callable,
     _require_finite_number,
@@ -48,6 +46,7 @@ from .base import (
     BenchmarkTask,
     EvaluationOutcome,
     combine_errors,
+    TeamOptions,
     run_benchmark_team,
     raise_after_cleanup,
     shielded_create,
@@ -538,24 +537,11 @@ async def run_osworld_task(
     directory: Path,
     *,
     desktop_factory: DesktopFactory,
-    model_factory: ModelFactory,
-    system_prompt: str,
-    max_steps: int,
-    multi_agent: bool = False,
-    harness: str = "single",
-    team_size: int | None = None,
-    max_active_agents: int = 4,
-    max_total_agents: int = 8,
-    per_agent_limits: BudgetLimits | None = None,
-    agent_spec: AgentSpecV1 | None = None,
+    options: TeamOptions,
 ) -> EvaluationOutcome:
     """Run inference, then score only the root-selected live desktop."""
 
-    for factory, name in ((desktop_factory, "desktop"), (model_factory, "model")):
-        _require_callable(factory, f"{name}_factory")
-    _require_str(system_prompt, "system_prompt", non_empty=False)
-    _require_positive_int(max_steps, "max_steps")
-    _require_bool(multi_agent, "multi_agent")
+    _require_callable(desktop_factory, "desktop_factory")
     checkout = Path(task_string(task, "checkout", label="OSWorld")).resolve()
     version = task_string(task, "version", label="OSWorld")
     checkout_info = inspect_osworld_checkout(checkout, version=version)
@@ -587,16 +573,7 @@ async def run_osworld_task(
             task,
             context,
             environment_factory=environment_for,
-            model_factory=model_factory,
-            system_prompt=system_prompt,
-            max_steps=max_steps,
-            agent_spec=agent_spec,
-            harness=harness,
-            team_size=team_size,
-            multi_agent=multi_agent,
-            max_active_agents=max_active_agents,
-            max_total_agents=max_total_agents,
-            per_agent_limits=per_agent_limits,
+            options=options,
             tolerate_failure=True,
         )
         if isinstance(team.error, asyncio.CancelledError):
@@ -655,7 +632,7 @@ async def run_osworld_task(
         "version": task.data["version"],
         "revision": task.data["revision"],
         "domain": task.data["domain"],
-        "mode": "multi" if multi_agent else "single",
+        "mode": "multi" if options.multi_agent else "single",
         "agents": dict(agent_statuses),
         "agent_steps": steps,
         "agent_error": agent_error,
@@ -664,7 +641,7 @@ async def run_osworld_task(
         "verifier_exposed_to_agent": False,
         "state_selection": state_selection,
     }
-    if multi_agent:
+    if options.multi_agent:
         metadata["state_adoption_history"] = list(state_adoption_history)
     if evaluator_result is not None:
         metadata["evaluator_result"] = dict(evaluator_result)

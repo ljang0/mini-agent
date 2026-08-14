@@ -23,15 +23,10 @@ from ..environments.bash import (
 )
 from ..models import Model
 from ..runtime import RunContext
-from ..specs import AgentSpecV1
 from ..types import (
-    BudgetLimits,
-    _require_bool,
-    _require_callable,
     _require_mapping,
     _require_no_symlink,
     _require_positive_int,
-    _require_str,
     strict_json_loads,
 )
 from .._hash import (
@@ -46,6 +41,7 @@ from .base import (
     BenchmarkTask,
     owned_instance_artifacts,
     EvaluationOutcome,
+    TeamOptions,
     run_benchmark_team,
 )
 from .checkout import git as _git, reject_untracked_execution_files
@@ -335,9 +331,6 @@ async def run_programbench_task(
     context: RunContext,
     directory: Path,
     *,
-    model_factory: ModelFactory,
-    system_prompt: str,
-    max_steps: int,
     runtime: str = "docker",
     container_runtime: Sequence[str] = ("docker",),
     apptainer_executable: str = "apptainer",
@@ -346,21 +339,11 @@ async def run_programbench_task(
     overlay_size_mib: int = 16 * 1024,
     image_binding: SWEbenchImageBinding | None = None,
     max_archive_bytes: int = DEFAULT_MAX_ARCHIVE_BYTES,
-    multi_agent: bool = False,
+    options: TeamOptions,
     git_share: bool = False,
-    harness: str = "single",
-    team_size: int | None = None,
-    max_active_agents: int = 4,
-    max_total_agents: int = 16,
-    per_agent_limits: BudgetLimits | None = None,
-    agent_spec: AgentSpecV1 | None = None,
 ) -> EvaluationOutcome:
     """Generate one offline submission archive; never assign a local score."""
 
-    _require_callable(model_factory, "model_factory")
-    _require_str(system_prompt, "system_prompt", non_empty=False)
-    _require_positive_int(max_steps, "max_steps")
-    _require_bool(multi_agent, "multi_agent")
     instance_id = _require_instance_id(
         task.task_id, "ProgramBench task instance_id"
     )
@@ -420,16 +403,7 @@ async def run_programbench_task(
         task,
         context,
         environment_factory=environment_for,
-        model_factory=model_factory,
-        system_prompt=system_prompt,
-        max_steps=max_steps,
-        agent_spec=agent_spec,
-        harness=harness,
-        team_size=team_size,
-        multi_agent=multi_agent,
-        max_active_agents=max_active_agents,
-        max_total_agents=max_total_agents,
-        per_agent_limits=per_agent_limits,
+        options=options,
     )
     if not isinstance(team.state, SWEArchiveState):
         raise RuntimeError("root ProgramBench agent produced no workspace archive")
