@@ -580,12 +580,13 @@ async def run_osworld_task(
     async def environment_for(agent_id: str) -> OSWorldEnvironment:
         return await pool.environment(agent_id)
 
+    selected = selected_harness(harness, multi_agent)
     agent_for = task_agent_builder(
         model_factory=model_factory,
         system_prompt=system_prompt,
         max_steps=max_steps,
         agent_spec=agent_spec,
-        harness=selected_harness(harness, multi_agent),
+        harness=selected,
         root_id=task_agent_root(task.task_id),
     )
 
@@ -595,7 +596,7 @@ async def run_osworld_task(
     try:
         team = await run_team(
             task.prompt,
-            harness=selected_harness(harness, multi_agent),
+            harness=selected,
             team_size=team_size,
             agent_builder=agent_for,
             environment_factory=environment_for,
