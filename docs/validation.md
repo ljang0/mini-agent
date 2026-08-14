@@ -27,7 +27,7 @@ provenance records may be retained under a user-owned durable data directory.
 
 ## Deterministic gates
 
-The frozen source passed **369 tests on CPython 3.12.5**, the only
+The frozen source passed **390 tests on CPython 3.12.5**, the only
 interpreter installed on the current node; the four-interpreter 3.10–3.13
 matrix remains enforced in CI. The suite covers full CLI evaluation paths for every benchmark
 (argparse through worker, spec binding, agent loop, and artifact
@@ -52,9 +52,9 @@ regression that the suite did not catch; it is fixed, and
 `tests/test_digest_stability.py` now pins the byte value of every digest that
 reaches a durable artifact.
 
-The location-independent harness identity for this source snapshot covers 39
+The location-independent harness identity for this source snapshot covers 46
 package source files and is
-`7b3a2115054b1852ab3a1581e4be6f4f31590ab2775653c5645734d68680260c`.
+`b0c70600046681b021bfe1fdb8fd13ec5b128ba53d5dbf8f68e6b9bc0aca835f`.
 
 The required commands pass:
 
@@ -83,7 +83,7 @@ paid model call. They were run during the reference audit, before the final
 source freeze. The computer evaluations bind their exact pre-freeze harness
 identity in saved manifests; the web artifacts bind their exact retrieval
 inputs and trace bytes. Later source hardening — including the audit/cleanup, ProgramBench, and
-flattening passes — is covered by the deterministic 369-test gate,
+flattening passes — is covered by the deterministic 390-test gate,
 not by retroactively relabelling these as final-source E2E runs. Scores of zero
 below are deliberate and say nothing about agent quality.
 
@@ -111,10 +111,34 @@ with scripted models and no API key. Full byte values are in
 
 | Canary | Result | What was exercised |
 |---|---|---|
-| SWE-bench generation | pass | official `astropy__astropy-12907` image through Apptainer; 4 model calls, 3 `bash` calls, 506-byte exported patch carrying the agent's edit; image SHA `28717945…` — note this differs from the `3c2e9eb1…` above because the upstream `:latest` tag moved, which is exactly what image-identity binding exists to catch |
+| SWE-bench generation | pass | official `astropy__astropy-12907` image through Apptainer; 4 model calls, 3 `bash` calls, 506-byte exported patch carrying the agent's edit; image SHA `28717945…`. An earlier version of this row attributed the difference from `3c2e9eb1…` to the upstream `:latest` tag moving. Only half of that is right: the *size* changed (1,047,486,464 → 1,091,235,840 bytes), which is a real upstream change, but a third build later produced a third digest at the identical size, so SIF digests also move per build. `apptainer build` is not bit-reproducible; a SIF digest identifies the local artifact, and the upstream image identity is the digest recorded in the binding |
 | ProgramBench generation | pass | real `task_cleanroom_v6` image through the new Apptainer backend; DNS resolution inside the container failed as required; whole-workspace `submission.tar.gz` of 374,426 bytes over 64 members containing the agent's file |
 | BrowseComp-Plus fixed retrieval | pass | 2.1 GB Lucene index, Anserini fat JAR whose SHA-256 equals the pinned constant, tokenizer at the pinned commit; five hits, snippets truncated at exactly the 512-token budget, and the session reference withheld from the model |
 | OSWorld v1 boot | pass | pinned checkout, real 24 GB `Ubuntu.qcow2`, QEMU 9.1.0 under KVM through the Apptainer shim with no Docker daemon; a 1,668,417-byte PNG screenshot and a second frame after a `pyautogui` step. Reset without a `task_config`, so this proves the machine and observation path, not a task's setup steps |
+
+## Harness pass
+
+Selectable multi-agent harnesses were added after the pass above, so every
+benchmark was re-acquired from upstream and re-run against the new source, and
+each topology was exercised on real containers rather than fakes. Byte values
+are in `harness_pass` in `validation-record.json`.
+
+| Canary | Result | What was exercised |
+|---|---|---|
+| SWE-bench, `single` | pass | official image through Apptainer; 506-byte patch carrying the agent's edit |
+| SWE-bench, `fixed-team` ×3 | pass | three agents in three separate overlays over one image; peers messaged the lead, which then made the edit that became the 504-byte patch |
+| SWE-bench, `orchestrator` | pass | two containers; the coordinator held no task tools and delegated, and the subagent did the work. The patch is 0 bytes — correct, since the submission is the lead's workspace and this lead never edits one |
+| SWE-bench, `async-subagents` | pass | two containers; the subagent answered, idled, was woken with new instructions, answered again, and was released before the lead finished |
+| ProgramBench | pass | real `task_cleanroom_v6` image; 66-member submission; the network probe read `BLOCKED` and `git version 2.34.1` was present |
+| ProgramBench, Git sharing | pass | three containers sharing one bare repository through a filesystem bind; one agent pushed, the lead fetched, and the network stayed blocked in both |
+| BrowseComp-Plus fixed retrieval | pass | same index digest, same first result, and the same 512-token snippet budget as the pass above |
+| OSWorld v1 boot | pass | pinned checkout, the real 24 GB `Ubuntu.qcow2`, QEMU 9.1.0 under KVM through the Apptainer shim; a 1,669,484-byte PNG and a second frame after a `pyautogui` step. The VM digest is byte-identical to the earlier pass, which is what a stable upstream asset looks like |
+
+One correction this pass produced: the earlier ProgramBench network check
+searched `trace.jsonl` for its probe output, but traces are content-redacted,
+so the string could never appear and a fallback clause let the check pass
+vacuously. The probe now writes into the workspace and is read from the
+submission archive, where it genuinely reads `BLOCKED`.
 
 Two limits of this pass are worth stating plainly. No official grader ran:
 both the SWE-bench and ProgramBench graders require Docker, which this node

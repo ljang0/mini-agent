@@ -6,11 +6,11 @@
     "scope": "source gates for the v0.5.0 public release (audit/cleanup plus OSS hardening passes), harness plumbing canaries, and machine-input provenance; not benchmark quality"
   },
   "source": {
-    "state": "post-0.5.0 working tree: cua-speed-run removed as unrunnable, the two longest functions split per benchmark, and machine-image identity memoized; bound by frozen_harness_identity",
+    "state": "post-0.5.0 working tree: selectable multi-agent harnesses, one team execution path, per-agent coordination reporting, and offline Git sharing for ProgramBench teams; bound by frozen_harness_identity",
     "frozen_harness_identity": {
       "schema": "mini-agent-harness-v1",
-      "source_file_count": 37,
-      "source_sha256": "7b6d9a4c60d3affa9bb4a017a73a0e6485938afd28da1919181f81334c9c6629"
+      "source_file_count": 46,
+      "source_sha256": "b0c70600046681b021bfe1fdb8fd13ec5b128ba53d5dbf8f68e6b9bc0aca835f"
     },
     "audit_pass": {
       "date": "2026-08-12",
@@ -28,7 +28,7 @@
       "interpreters": [
         "CPython 3.12.5"
       ],
-      "tests_per_interpreter": 369,
+      "tests_per_interpreter": 390,
       "status": "passed",
       "note": "run on the only interpreter present on the current node; the four-interpreter 3.10-3.13 matrix remains enforced in CI"
     },
@@ -334,6 +334,22 @@
         "patch_bytes": 504,
         "note": "the subagent answered, idled, was woken with new instructions, answered again, and was released before the lead finished"
       }
+    },
+    "osworld_v1_boot": {
+      "status": "passed",
+      "checkout_revision": "091f5ef1d5544bc74953c77875d5feb5bed30108",
+      "vm_image": {
+        "size_bytes": 24460197888,
+        "sha256": "6bf667a852b3c307f61d9f09c42559351f45e0607e428b4997becf534cf4d313"
+      },
+      "apptainer_image": {
+        "size_bytes": 80822272,
+        "sha256": "49b7321163a05b907080e273e39c82c0084b3413aa28fea67cddbcff4a98aa66"
+      },
+      "screenshot_bytes": 1669484,
+      "screenshot_is_png": true,
+      "post_action_screenshot_bytes": 1669484,
+      "note": "booted through runtimes/osworld_apptainer.py with no Docker daemon, QEMU 9.1.0 under KVM. The VM digest is byte-identical to the earlier pass, which is what a stable upstream asset looks like -- unlike the SIFs, whose digests move per build."
     }
   }
 }
