@@ -28,9 +28,22 @@
       "interpreters": [
         "CPython 3.12.5"
       ],
-      "tests_per_interpreter": 390,
+      "tests_per_interpreter": 420,
       "status": "passed",
-      "note": "run on the only interpreter present on the current node; the four-interpreter 3.10-3.13 matrix remains enforced in CI"
+      "note": "run on the only interpreter present on the current node; the four-interpreter 3.10-3.13 matrix remains enforced in CI",
+      "statement_coverage": "85%",
+      "mutation_spot_checks": {
+        "checked": [
+          "canonical JSON key ordering",
+          "machine-image cache sidecar key",
+          "orchestrator active-agent limit",
+          "environment resource-identity reuse",
+          "release requires an idle agent",
+          "shared bind inside the workdir",
+          "recursive harness prompt drift"
+        ],
+        "result": "every mutation is now caught. Two were not, and were fixed: role fingerprints were only self-consistent because profiles derives the legacy constants from the recursive role, so editing that role moved both sides together -- the values are pinned now; and nothing exercised release against a non-idle agent."
+      }
     },
     {
       "command": "PYTHONPATH=src python3 -m compileall -q src tests",

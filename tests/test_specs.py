@@ -353,6 +353,42 @@ class HarnessRoleSpecTests(unittest.TestCase):
 
         self.profile = load_profile("swe")
 
+    # Golden values. The equality tests below prove the two construction
+    # paths agree with each other; they cannot notice both paths moving
+    # together, which is exactly what happens when a role's prompt is
+    # edited -- profiles derives the legacy constants from the recursive
+    # role. Pinning the values is what makes prompt drift visible.
+    FINGERPRINTS = {
+        "single/solo":
+            "281ed957571d0f319af4456be2dbc1a705a7ac23ae2aa59e27e95205843480b1",
+        "recursive/solver":
+            "11b9e4a7eca172a24f1e60b42338e213b0a38dee277127aee1757b06ec66b8db",
+        "fixed-team/lead":
+            "deafef15f19b480cd074ad2e75154a2b9df368952fe7ab275809803cdd3e1e9c",
+        "fixed-team/peer":
+            "86cadf27ee18d55cce82734d0d293e9d1ea19d8e3f7bac339cc2e45db1ebefc8",
+        "orchestrator/orchestrator":
+            "762f375a2f0ae53a29c43ca582b18159789f9cc785d079a21bcc5200d11a9e54",
+        "orchestrator/subagent":
+            "f1677c42f901f65dc7592e386499ee77b0fe763ae08b109a6ea13a4af1b88599",
+        "async-subagents/lead":
+            "e3881c41f9a86a0a527638001a672013f893f784d6d5b875c9fa824276a88576",
+        "async-subagents/subagent":
+            "a5299fc85c463682c11cdb9916de1eafdc16ffd8994c553a4993b8e6281825ae",
+    }
+
+    def test_every_role_fingerprint_is_byte_stable(self) -> None:
+        """Editing a role's prompt or actions must be a deliberate act."""
+
+        from mini_agent.harnesses import HARNESSES
+
+        observed = {
+            f"{name}/{role_name}": self.profile.to_agent_spec(role=role).fingerprint
+            for name, harness in HARNESSES.items()
+            for role_name, role in harness.roles.items()
+        }
+        self.assertEqual(observed, self.FINGERPRINTS)
+
     def test_recursive_role_reproduces_the_multi_agent_fingerprint(self) -> None:
         from mini_agent.harnesses import load_harness
 

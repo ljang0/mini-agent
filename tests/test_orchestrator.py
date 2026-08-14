@@ -867,3 +867,51 @@ class HarnessTests(unittest.IsolatedAsyncioTestCase):
         record = orchestrator.records["/root/1"]
         self.assertEqual(record.status, "completed")
         self.assertIsNotNone(record.state)
+
+
+class ReleaseGuardTests(unittest.IsolatedAsyncioTestCase):
+    """Release retires an idle agent; it must not interrupt a working one."""
+
+    async def test_releasing_a_busy_agent_is_refused(self) -> None:
+        from mini_agent.harnesses import load_harness
+
+        harness = load_harness("async-subagents")
+        models = {
+            "/root": ScriptedModel(
+                [
+                    call("sp", {"action": "spawn", "task": "work"}),
+                    call("rel", {"action": "release", "agent_id": "/root/1"}),
+                    ModelResponse("lead answer"),
+                ]
+            ),
+            # Never answers, so it is running rather than idle when released.
+            "/root/1": BlockingModel(),
+        }
+        orchestrator = orchestrator_for(models, harness=harness)
+
+        result = await orchestrator.run("lead")
+
+        self.assertEqual(result.answer, "lead answer")
+        release_output = models["/root"].queries[2][0][-1].tool_results[0].output
+        self.assertIn("not idle", release_output)
+
+    async def test_releasing_an_agent_that_is_not_a_descendant_is_refused(
+        self,
+    ) -> None:
+        from mini_agent.harnesses import load_harness
+
+        harness = load_harness("async-subagents")
+        models = {
+            "/root": ScriptedModel(
+                [
+                    call("rel", {"action": "release", "agent_id": "/root"}),
+                    ModelResponse("lead answer"),
+                ]
+            ),
+        }
+        orchestrator = orchestrator_for(models, harness=harness)
+
+        await orchestrator.run("lead")
+
+        release_output = models["/root"].queries[1][0][-1].tool_results[0].output
+        self.assertIn("descendant", release_output)
