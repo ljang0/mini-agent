@@ -244,7 +244,7 @@ def _grade_swebench(
     runtime: Mapping[str, Any],
     observed_grader_runtime: Callable[[str], Mapping[str, Any]],
 ) -> _GradePlan:
-    from .benchmarks.swebench import (
+    from .benchmarks.swebench_grading import (
         collect_predictions,
         inspect_swebench_grade_inputs,
         official_grader_argv,

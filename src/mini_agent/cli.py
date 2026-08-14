@@ -627,7 +627,7 @@ async def _evaluate(args: argparse.Namespace) -> int:
         if final_index_sha != args.index_sha256:
             raise RuntimeError("Lucene index changed during BrowseComp-Plus evaluation")
     if benchmark == "swebench":
-        from .benchmarks.swebench import collect_predictions
+        from .benchmarks.swebench_grading import collect_predictions
 
         count = collect_predictions(output, output / "predictions.jsonl")
         summary = {**summary, "predictions": count}

@@ -236,7 +236,7 @@ class CLITests(unittest.TestCase):
                     return_value={"schema": "fixture"},
                 ),
                 patch(
-                    "mini_agent.benchmarks.swebench."
+                    "mini_agent.benchmarks.swebench_grading."
                     "swebench_grader_source_identity",
                     return_value={
                         "revision": "fixture",
@@ -244,7 +244,7 @@ class CLITests(unittest.TestCase):
                     },
                 ),
                 patch(
-                    "mini_agent.benchmarks.swebench."
+                    "mini_agent.benchmarks.swebench_grading."
                     "verify_swebench_grader_images",
                     return_value={
                         "container_runtime": ["docker"],
@@ -515,12 +515,12 @@ class CLITests(unittest.TestCase):
                     return_value=_fixture_grader_runtime(root, "swebench"),
                 ),
                 patch(
-                    "mini_agent.benchmarks.swebench."
+                    "mini_agent.benchmarks.swebench_grading."
                     "swebench_grader_source_identity",
                     side_effect=source_identity,
                 ),
                 patch(
-                    "mini_agent.benchmarks.swebench."
+                    "mini_agent.benchmarks.swebench_grading."
                     "verify_swebench_grader_images",
                     return_value={"container_runtime": ["docker"], "images": []},
                 ),
@@ -621,7 +621,7 @@ class CLITests(unittest.TestCase):
                     return_value=_fixture_grader_runtime(root, "swebench"),
                 ),
                 patch(
-                    "mini_agent.benchmarks.swebench."
+                    "mini_agent.benchmarks.swebench_grading."
                     "swebench_grader_source_identity",
                     return_value={
                         "revision": "fixture",
@@ -629,7 +629,7 @@ class CLITests(unittest.TestCase):
                     },
                 ),
                 patch(
-                    "mini_agent.benchmarks.swebench."
+                    "mini_agent.benchmarks.swebench_grading."
                     "verify_swebench_grader_images",
                     side_effect=verify_images,
                 ),
@@ -1055,9 +1055,9 @@ class CLITests(unittest.TestCase):
     def test_swe_grade_rejects_same_prompt_with_different_hidden_task_data(
         self,
     ) -> None:
-        from mini_agent.benchmarks.swebench import (
+        from mini_agent.benchmarks.swebench import load_swebench
+        from mini_agent.benchmarks.swebench_grading import (
             inspect_swebench_grade_inputs,
-            load_swebench,
         )
 
         with tempfile.TemporaryDirectory() as temporary:

@@ -53,12 +53,14 @@ from mini_agent.benchmarks.programbench import (
 from mini_agent.benchmarks.swebench import (
     SWEBENCH_SOURCE_SHA256,
     SWEbenchImageBinding,
-    collect_predictions,
-    inspect_swebench_grade_inputs,
     load_swebench,
-    official_grader_argv,
     prepare_swebench_image_bindings,
     run_swebench_task,
+)
+from mini_agent.benchmarks.swebench_grading import (
+    collect_predictions,
+    inspect_swebench_grade_inputs,
+    official_grader_argv,
     swebench_grader_source_identity,
     swebench_grader_image_name,
     verify_swebench_grader_images,
@@ -1088,7 +1090,7 @@ class SWEBenchmarkTests(unittest.IsolatedAsyncioTestCase):
             importlib.invalidate_caches()
             try:
                 with patch(
-                    "mini_agent.benchmarks.swebench.metadata.version",
+                    "mini_agent.benchmarks.swebench_grading.metadata.version",
                     return_value="7.fixture",
                 ):
                     import docker as docker_fixture
@@ -1199,7 +1201,7 @@ class SWEBenchmarkTests(unittest.IsolatedAsyncioTestCase):
             ).hexdigest()
             with (
                 patch(
-                    "mini_agent.benchmarks.swebench.SWEBENCH_SOURCE_SHA256",
+                    "mini_agent.benchmarks.swebench_grading.SWEBENCH_SOURCE_SHA256",
                     expected,
                 ),
             ):
