@@ -55,9 +55,13 @@ async def _doctor(args: argparse.Namespace) -> int:
             from .benchmarks.swebench import swebench_doctor
 
             docker = await swebench_doctor(runtime=tuple(args.container_runtime))
+            # as_dict() reports the argv under "runtime"; the rest of the
+            # harness -- and the Apptainer branch below -- uses that key for
+            # the backend name and "container_runtime" for the argv.
             swe_report: Mapping[str, Any] = {
-                "runtime": "docker",
                 **docker.as_dict(),
+                "runtime": "docker",
+                "container_runtime": list(args.container_runtime),
             }
             runtime_ok = docker.ok
         else:
