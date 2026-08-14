@@ -389,6 +389,7 @@ async def apptainer_swe_environment(
     network_disabled: bool = False,
     require_git_baseline: bool = True,
     benchmark_identity: Mapping[str, Any] | None = None,
+    shared_binds: Mapping[str, Path] | None = None,
     runner: ProcessRunner | None = None,
 ) -> BashEnvironment:
     """One bash tool in a private Apptainer fakeroot overlay over the task SIF."""
@@ -416,6 +417,7 @@ async def apptainer_swe_environment(
         root_prefix=_APPTAINER_ROOT_PREFIX,
         overlay_size_mib=overlay_size_mib,
         network_disabled=network_disabled,
+        shared_binds=shared_binds,
         timeout_seconds=timeout_seconds,
         max_output_bytes=max_output_bytes,
     )

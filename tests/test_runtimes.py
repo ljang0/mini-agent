@@ -488,3 +488,31 @@ class SandboxRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     max_output_bytes=1024,
                 )
         self.assertEqual(runner.pull_calls, 0)
+
+
+class SharedBindTests(unittest.TestCase):
+    """A shared writable bind is the one channel between isolated agents."""
+
+    def test_a_shared_bind_may_not_sit_inside_the_workspace(self) -> None:
+        """Otherwise it would be submitted, and adoption would delete it.
+
+        `export_archive` tars the workspace, so a repository inside it becomes
+        part of the submission; adopting a descendant's workspace deletes
+        everything in it, which would destroy every teammate's history.
+        """
+
+        from mini_agent.runtimes.apptainer import ApptainerRuntime
+
+        with tempfile.TemporaryDirectory() as temporary:
+            share = Path(temporary) / "team.git"
+            share.mkdir()
+            with self.assertRaisesRegex(ValueError, "inside the workdir"):
+                ApptainerRuntime._validate_shared_binds(
+                    {"/workspace/team.git": share}, "/workspace"
+                )
+            self.assertEqual(
+                ApptainerRuntime._validate_shared_binds(
+                    {"/srv/team.git": share}, "/workspace"
+                ),
+                {"/srv/team.git": share.resolve()},
+            )

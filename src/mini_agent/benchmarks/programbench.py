@@ -86,7 +86,34 @@ Rules enforced by the evaluator:
 This container has no internet access. Task id: {instance_id}.
 """.strip()
 
+PROGRAMBENCH_SHARED_GIT = "/srv/team.git"
+
 ModelFactory = Callable[[str], Model | Awaitable[Model]]
+
+
+def _shared_git_repository(
+    task_id: str, scratch_root: Path | None, enabled: bool
+) -> dict[str, Path]:
+    """Create the bare repository a team pushes and pulls through.
+
+    It lives outside the workspace on purpose: `export_archive` tars the
+    workspace, so a repository inside it would be submitted, and adopting a
+    descendant's workspace deletes everything in it, which would destroy every
+    teammate's history.
+    """
+
+    if not enabled:
+        return {}
+    if scratch_root is None:
+        raise ValueError("--agent-git-share requires a scratch root")
+    digest = hashlib.sha256(task_id.encode("utf-8")).hexdigest()
+    path = _require_no_symlink(scratch_root / "share" / digest, "shared git root")
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if not (path / "HEAD").exists():
+        _git(path, "init", "--bare", "--initial-branch=main")
+        # Concurrent pushes must never race a background repack.
+        _git(path, "config", "gc.auto", "0")
+    return {PROGRAMBENCH_SHARED_GIT: path}
 _INSTANCE_ID = re.compile(r"[a-z0-9][a-z0-9_.-]{0,127}")
 _IMAGE_TAG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")
 _PROJECT_VERSION = re.compile(r'(?m)^version\s*=\s*"([^"\s]+)"\s*$')
@@ -322,6 +349,7 @@ async def run_programbench_task(
     image_binding: SWEbenchImageBinding | None = None,
     max_archive_bytes: int = DEFAULT_MAX_ARCHIVE_BYTES,
     multi_agent: bool = False,
+    git_share: bool = False,
     harness: str = "single",
     team_size: int | None = None,
     max_active_agents: int = 4,
@@ -355,6 +383,8 @@ async def run_programbench_task(
         "benchmark_image_tag": PROGRAMBENCH_IMAGE_TAG,
     }
 
+    shared = _shared_git_repository(task.task_id, scratch_root, git_share)
+
     async def environment_for(agent_id: str) -> BashEnvironment:
         del agent_id
         if runtime == "apptainer":
@@ -370,6 +400,12 @@ async def run_programbench_task(
                 require_git_baseline=False,
                 max_archive_bytes=max_archive_bytes,
                 benchmark_identity=identity,
+                shared_binds=shared,
+            )
+        if shared:
+            raise ValueError(
+                "--agent-git-share needs --runtime apptainer; the Docker "
+                "runtime has no bind support"
             )
         return await docker_swe_environment(
             task.data,

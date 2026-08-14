@@ -190,6 +190,7 @@ class ApptainerRuntime:
         staging_dir: str = "/tmp",
         root_prefix: str = DEFAULT_OVERLAY_ROOT_PREFIX,
         network_disabled: bool = False,
+        shared_binds: Mapping[str, Path] | None = None,
         _ownership_token: object | None = None,
     ) -> None:
         if _ownership_token is not _OWNED_APPTAINER:
@@ -221,6 +222,22 @@ class ApptainerRuntime:
         self.network_disabled = _require_bool(network_disabled, "network_disabled")
         self.staging_dir = require_workdir(staging_dir)
         self._binds: dict[str, Path] = {}
+        # Writable host paths every exec sees. The only current use is a team's
+        # shared Git repository, which must live outside the workdir so it is
+        # neither submitted nor destroyed when a workspace is replaced.
+        self.shared_binds = self._validate_shared_binds(shared_binds, self.workdir)
+
+    @staticmethod
+    def _validate_shared_binds(
+        shared_binds: Mapping[str, Path] | None, workdir: str
+    ) -> dict[str, Path]:
+        resolved: dict[str, Path] = {}
+        for target, source in dict(shared_binds or {}).items():
+            target = require_workdir(target)
+            if target == workdir or target.startswith(workdir.rstrip("/") + "/"):
+                raise ValueError("a shared bind must not sit inside the workdir")
+            resolved[target] = _require_no_symlink(source, "shared bind").resolve()
+        return resolved
 
     @classmethod
     async def start(
@@ -237,6 +254,7 @@ class ApptainerRuntime:
         root_prefix: str = DEFAULT_OVERLAY_ROOT_PREFIX,
         overlay_size_mib: int = 16 * 1024,
         expected_identity: str | None = None,
+        shared_binds: Mapping[str, Path] | None = None,
         materialize: bool = True,
         network_disabled: bool = False,
         timeout_seconds: float = 60.0,
@@ -301,6 +319,7 @@ class ApptainerRuntime:
                 exec_env=exec_env,
                 root_prefix=root_prefix,
                 network_disabled=network_disabled,
+                shared_binds=shared_binds,
                 _ownership_token=_OWNED_APPTAINER,
             )
         except BaseException as operation_error:
@@ -332,6 +351,10 @@ class ApptainerRuntime:
                 env=self.exec_env if env is None else env,
                 binds=tuple(
                     (source, target) for target, source in sorted(self._binds.items())
+                ),
+                writable_binds=tuple(
+                    (source, target)
+                    for target, source in sorted(self.shared_binds.items())
                 ),
                 network_disabled=self.network_disabled,
             ),
@@ -406,6 +429,9 @@ class ApptainerRuntime:
             "container_image_identity": self.image_identity,
             "overlay": "private_fakeroot_ext3",
             "workdir": self.workdir,
+            # Named explicitly: a writable shared bind is the one way an
+            # otherwise isolated container can reach another agent's bytes.
+            "shared_writable_binds": sorted(self.shared_binds),
         }
 
     def resource_identity(self) -> str:

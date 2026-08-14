@@ -153,6 +153,7 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--enable-proxy", action="store_true")
     evaluate.add_argument("--client-password-env")
     evaluate.add_argument("--include-gitlab", action="store_true")
+    evaluate.add_argument("--agent-git-share", action="store_true")
     _add_execution_arguments(evaluate)
     _add_storage_arguments(evaluate)
 
@@ -738,6 +739,7 @@ async def _evaluate_programbench(
             apptainer_image_cache=layout.assets / "apptainer-images",
             image_binding=image_bindings[task.task_id],
             overlay_size_mib=args.overlay_size_mib,
+            git_share=bool(args.agent_git_share),
             **common,
         )
 
@@ -1341,6 +1343,13 @@ def _evaluation_config(
             "version": PROGRAMBENCH_VERSION,
             "image_tag": PROGRAMBENCH_IMAGE_TAG,
             "agent_network": "none",
+            # A shared repository is the one channel between otherwise
+            # isolated agents, so it is named rather than implied by silence.
+            "agent_sharing": (
+                {"mode": "git_shared_bare_repository", "mount": "/srv/team.git"}
+                if args.agent_git_share
+                else {"mode": "none"}
+            ),
             "workdir": PROGRAMBENCH_WORKDIR,
             "submission_artifact": PROGRAMBENCH_SUBMISSION_NAME,
             "scoring": "official-programbench-eval-only",
