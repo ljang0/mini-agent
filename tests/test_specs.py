@@ -338,5 +338,52 @@ class SpecBoundAgentTests(unittest.IsolatedAsyncioTestCase):
             )
 
 
+class HarnessRoleSpecTests(unittest.TestCase):
+    """Harness roles must not disturb the fingerprints already recorded.
+
+    Every evaluation manifest carries an agent-spec fingerprint, and operators
+    compare them across runs. The two pre-harness shapes -- single-agent and
+    the free-form mesh behind --multi-agent -- have to keep producing exactly
+    the fingerprints they produced before harnesses existed, or the recorded
+    evidence silently stops matching the code that made it.
+    """
+
+    def setUp(self) -> None:
+        from mini_agent.profiles import load_profile
+
+        self.profile = load_profile("swe")
+
+    def test_recursive_role_reproduces_the_multi_agent_fingerprint(self) -> None:
+        from mini_agent.harnesses import load_harness
+
+        role = load_harness("recursive").roles["solver"]
+        self.assertEqual(
+            self.profile.to_agent_spec(role=role).fingerprint,
+            self.profile.to_agent_spec(multi_agent=True).fingerprint,
+        )
+
+    def test_single_role_reproduces_the_single_agent_fingerprint(self) -> None:
+        from mini_agent.harnesses import load_harness
+
+        role = load_harness("single").roles["solo"]
+        self.assertEqual(
+            self.profile.to_agent_spec(role=role).fingerprint,
+            self.profile.to_agent_spec().fingerprint,
+        )
+
+    def test_a_restricted_role_records_fewer_capabilities(self) -> None:
+        from mini_agent.harnesses import load_harness
+
+        harness = load_harness("orchestrator")
+        orchestrator = self.profile.to_agent_spec(role=harness.roles["orchestrator"])
+        subagent = self.profile.to_agent_spec(role=harness.roles["subagent"])
+        # An orchestrator holds no domain tools, so its spec must not claim one.
+        self.assertEqual(orchestrator.tool_capabilities, ("agent",))
+        self.assertEqual(orchestrator.communication_capabilities, ("delegate",))
+        self.assertEqual(subagent.tool_capabilities, ("bash",))
+        self.assertEqual(subagent.communication_capabilities, ())
+        self.assertNotEqual(orchestrator.fingerprint, subagent.fingerprint)
+
+
 if __name__ == "__main__":
     unittest.main()

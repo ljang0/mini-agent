@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any, Mapping
 
+from .harnesses import Role, load_harness
 from .models import SUPPORTED_PROVIDERS, parse_model_spec, translation_losses_for
 from .specs import AgentSpecV1, TranslationReport
 from .types import BudgetLimits, _require_bool, _require_str
@@ -30,19 +31,13 @@ _PROMPTS = {
 }
 
 _TOOLS = {"swe": "bash", "web": "browser", "computer": "computer"}
-_COMMUNICATION_CAPABILITIES = (
-    "adopt",
-    "inbox",
-    "send",
-    "spawn",
-    "stop",
-    "wait",
-)
-_COMMUNICATION_PROMPT = (
-    " You may also use the agent tool to delegate bounded subtasks, exchange "
-    "messages, block for inbox delivery, wait for or stop descendant work, or "
-    "explicitly adopt supported child state."
-)
+
+# The pre-harness capability set and prompt suffix, taken from the harness that
+# reproduces it. Deriving rather than repeating them means the two cannot drift
+# apart and silently change a fingerprint that recorded evidence depends on.
+_LEGACY_ROLE = load_harness("recursive").roles["solver"]
+_COMMUNICATION_CAPABILITIES = _LEGACY_ROLE.capabilities
+_COMMUNICATION_PROMPT = _LEGACY_ROLE.prompt
 
 
 def _resolved_prompt(prompt: str, *, multi_agent: bool) -> str:
@@ -63,10 +58,22 @@ class Profile:
         value["fidelity"] = "minimal_baseline"
         return value
 
-    def to_agent_spec(self, *, multi_agent: bool = False) -> AgentSpecV1:
-        """Resolve this maintained profile to the stable provider-neutral spec."""
+    def to_agent_spec(
+        self, *, multi_agent: bool = False, role: Role | None = None
+    ) -> AgentSpecV1:
+        """Resolve this maintained profile to the stable provider-neutral spec.
+
+        With ``role`` the spec describes one harness role, so an agent that
+        holds fewer actions is recorded holding fewer actions. Without it the
+        pre-harness behaviour is reproduced exactly, which is what keeps every
+        already-recorded fingerprint valid.
+        """
 
         _require_bool(multi_agent, "multi_agent")
+        if role is not None and multi_agent:
+            raise ValueError("pass either multi_agent or role, not both")
+        if role is not None:
+            return self._role_spec(role)
         tools: tuple[str, ...] = (_TOOLS[self.environment],)
         communication: tuple[str, ...] = ()
         if multi_agent:
@@ -82,6 +89,24 @@ class Profile:
             budget=self.limits,
             tool_capabilities=tools,
             communication_capabilities=communication,
+            fidelity="minimal_baseline",
+        )
+
+    def _role_spec(self, role: Role) -> AgentSpecV1:
+        tools: tuple[str, ...] = ()
+        if role.domain_tools:
+            tools = (_TOOLS[self.environment],)
+        if role.actions:
+            tools = (*tools, "agent")
+        return AgentSpecV1(
+            environment=self.environment,
+            model=self.model,
+            profile=self.name,
+            system_prompt=self.system_prompt + role.prompt,
+            max_steps=self.max_steps,
+            budget=self.limits,
+            tool_capabilities=tools,
+            communication_capabilities=role.capabilities,
             fidelity="minimal_baseline",
         )
 
