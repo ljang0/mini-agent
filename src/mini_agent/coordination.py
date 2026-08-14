@@ -18,7 +18,18 @@ from .runtime import BudgetLedger
 
 SCHEMA = "mini-agent-coordination-v1"
 
-_TERMINAL = ("agent_completed", "agent_failed", "agent_cancelled")
+# Failing to start is terminal too, and is the one an agent never recovers
+# from; leaving it out reported such an agent as having no status at all.
+_TERMINAL = (
+    "agent_completed",
+    "agent_failed",
+    "agent_cancelled",
+    "agent_start_failed",
+)
+
+# A cancelled call still consumed time. Peers are cancelled whenever a lead
+# finishes first, so on a team run this is the common ending, not a rare one.
+_CALL_ENDED = ("model_call_completed", "model_call_failed", "model_call_cancelled")
 
 
 def _empty() -> dict[str, Any]:
@@ -78,7 +89,7 @@ def coordination_summary(
             record["messages_dropped"] += 1
         elif name == "model_call_started" and isinstance(elapsed, (int, float)):
             started[str(agent_id)] = float(elapsed)
-        elif name in ("model_call_completed", "model_call_failed"):
+        elif name in _CALL_ENDED:
             begin = started.pop(str(agent_id), None)
             if begin is not None and isinstance(elapsed, (int, float)):
                 record["active_seconds"] += round(float(elapsed) - begin, 6)

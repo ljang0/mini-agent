@@ -78,5 +78,38 @@ class CoordinationSummaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["totals"]["message_bytes"], 0)
 
 
+class CancelledCallTests(unittest.IsolatedAsyncioTestCase):
+    """A team run normally ends by cancelling whoever is still working."""
+
+    async def _ledger(self) -> BudgetLedger:
+        ledger = BudgetLedger(BudgetLimits(max_model_calls=50))
+        await ledger.reserve_call("/eval/t/root/1")
+        return ledger
+
+    async def test_a_cancelled_call_still_counts_its_time(self) -> None:
+        ledger = await self._ledger()
+        events = [
+            event("model_call_started", "/eval/t/root/1", elapsed=1.0),
+            event("model_call_cancelled", "/eval/t/root/1", elapsed=2.0),
+            event("agent_cancelled", "/eval/t/root/1"),
+        ]
+
+        summary = coordination_summary(events, ledger=ledger, prefix="/eval/t")
+
+        agent = summary["agents"]["/eval/t/root/1"]
+        self.assertEqual(agent["active_seconds"], 1.0)
+        self.assertEqual(agent["status"], "cancelled")
+
+    async def test_an_agent_that_never_started_reports_that(self) -> None:
+        ledger = await self._ledger()
+        events = [event("agent_start_failed", "/eval/t/root/1", error="OSError")]
+
+        summary = coordination_summary(events, ledger=ledger, prefix="/eval/t")
+
+        self.assertEqual(
+            summary["agents"]["/eval/t/root/1"]["status"], "start_failed"
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

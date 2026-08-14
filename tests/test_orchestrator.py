@@ -915,3 +915,55 @@ class ReleaseGuardTests(unittest.IsolatedAsyncioTestCase):
 
         release_output = models["/root"].queries[1][0][-1].tool_results[0].output
         self.assertIn("descendant", release_output)
+
+
+class PartialTeamCleanupTests(unittest.IsolatedAsyncioTestCase):
+    """A team that never fully forms must not leave machines running.
+
+    Seeded peers are provisioned before the lead, so a lead that fails to
+    start would otherwise strand every peer's container or desktop with
+    nothing left to close it.
+    """
+
+    async def test_peers_are_closed_when_the_lead_fails_to_start(self) -> None:
+        from mini_agent.harnesses import load_harness
+
+        harness = load_harness("fixed-team")
+        environments: dict[str, IsolatedEnvironment] = {}
+
+        async def environment_factory(agent_id: str) -> IsolatedEnvironment:
+            if agent_id == "/root":
+                raise RuntimeError("lead environment unavailable")
+            environment = IsolatedEnvironment(agent_id)
+            environments[agent_id] = environment
+            return environment
+
+        def agent_builder(agent_id: str, environment: Any, context: RunContext):
+            return MiniAgent(
+                model=ScriptThenBlockModel([]),
+                environment=environment,
+                context=context,
+                agent_id=agent_id,
+                max_steps=4,
+            )
+
+        orchestrator = Orchestrator(
+            agent_builder=agent_builder,
+            environment_factory=environment_factory,
+            context=RunContext(BudgetLimits(max_model_calls=20)),
+            max_active_agents=3,
+            max_total_agents=3,
+            harness=harness,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "lead environment unavailable"):
+            await orchestrator.run(
+                "shared task", seeds=harness.seeds(size=3, task="shared task")
+            )
+
+        self.assertEqual(len(environments), 2)
+        self.assertTrue(
+            all(item.closed for item in environments.values()),
+            {name: item.closed for name, item in environments.items()},
+        )
+

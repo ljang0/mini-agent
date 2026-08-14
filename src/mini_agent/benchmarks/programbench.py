@@ -103,10 +103,15 @@ def _shared_git_repository(
     digest = hashlib.sha256(task_id.encode("utf-8")).hexdigest()
     path = _require_no_symlink(scratch_root / "share" / digest, "shared git root")
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if not (path / "HEAD").exists():
-        _git(path, "init", "--bare", "--initial-branch=main")
-        # Concurrent pushes must never race a background repack.
-        _git(path, "config", "gc.auto", "0")
+    # Start every attempt from an empty repository. Reusing one would let a
+    # resumed run's agents fetch refs the previous attempt pushed, which is
+    # work this attempt did not do.
+    if path.exists():
+        shutil.rmtree(path)
+    path.mkdir(parents=True, mode=0o700)
+    _git(path, "init", "--bare", "--initial-branch=main")
+    # Concurrent pushes must never race a background repack.
+    _git(path, "config", "gc.auto", "0")
     return {PROGRAMBENCH_SHARED_GIT: path}
 _INSTANCE_ID = re.compile(r"[a-z0-9][a-z0-9_.-]{0,127}")
 _IMAGE_TAG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")
@@ -399,12 +404,16 @@ async def run_programbench_task(
             benchmark_identity=identity,
         )
 
-    team = await run_benchmark_team(
-        task,
-        context,
-        environment_factory=environment_for,
-        options=options,
-    )
+    try:
+        team = await run_benchmark_team(
+            task,
+            context,
+            environment_factory=environment_for,
+            options=options,
+        )
+    finally:
+        for path in shared.values():
+            shutil.rmtree(path, ignore_errors=True)
     if not isinstance(team.state, SWEArchiveState):
         raise RuntimeError("root ProgramBench agent produced no workspace archive")
     archive = team.state.archive

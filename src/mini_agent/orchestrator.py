@@ -401,12 +401,22 @@ class Orchestrator:
         task = _bounded_text(task, "root task", self.max_message_bytes)
         self._running = True
         root = await self._reserve(None, self.root_id)
-        for suffix, seed_task in seeds:
-            record = await self._reserve(self.root_id, f"{self.root_id}/{suffix}")
-            await self._start(
-                record, _bounded_text(seed_task, "seed task", self.max_message_bytes)
-            )
-        await self._start(root, task)
+        try:
+            for suffix, seed_task in seeds:
+                record = await self._reserve(
+                    self.root_id, f"{self.root_id}/{suffix}"
+                )
+                await self._start(
+                    record,
+                    _bounded_text(seed_task, "seed task", self.max_message_bytes),
+                )
+            await self._start(root, task)
+        except BaseException:
+            # Peers are provisioned before the lead, so a failure here leaves
+            # already-started containers or desktops with nothing to close
+            # them. Tear the partial team down before giving up.
+            await self._cancel_remaining(except_agent=self.root_id)
+            raise
         assert root.task is not None
         result: AgentResult | None = None
         operation_error: BaseException | None = None
