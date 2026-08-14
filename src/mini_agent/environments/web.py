@@ -166,12 +166,8 @@ def load_snippet_tokenizer(
                     f"found {observed}"
                 )
     try:
-        from huggingface_hub import (  # type: ignore[import-not-found, import-untyped, unused-ignore]
-            hf_hub_download,
-        )
-        from tokenizers import (  # type: ignore[import-not-found, import-untyped, unused-ignore]
-            Tokenizer,
-        )
+        from huggingface_hub import hf_hub_download
+        from tokenizers import Tokenizer
     except ImportError as exc:
         raise RuntimeError(
             "token-bounded fixed retrieval requires mini-agent[web-fixed]"
@@ -411,7 +407,7 @@ def _lucene_searcher(index_path: Path, anserini_jar: Path) -> Any:
             f"found {pyjnius_version}"
         )
     try:
-        import jnius_config  # type: ignore[import-not-found]
+        import jnius_config
     except ImportError as exc:
         raise RuntimeError(_WEB_FIXED_HINT) from exc
     if jnius_config.vm_running:
@@ -427,7 +423,7 @@ def _lucene_searcher(index_path: Path, anserini_jar: Path) -> Any:
     else:
         jnius_config.set_classpath(str(anserini_jar))
     try:
-        from jnius import autoclass  # type: ignore[import-not-found]
+        from jnius import autoclass
     except ImportError as exc:
         raise RuntimeError(_WEB_FIXED_HINT) from exc
     searcher = autoclass("io.anserini.search.SimpleSearcher")(str(index_path))

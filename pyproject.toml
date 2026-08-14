@@ -19,3 +19,11 @@ check_untyped_defs = true
 no_implicit_optional = true
 warn_redundant_casts = true
 warn_unused_ignores = true
+
+# These optional extras ship no stubs, so the diagnostic depends on whether
+# they happen to be installed.  A module override keeps the check identical on
+# machines that have the web-fixed extra and those that do not, without inline
+# ignores that are themselves unused in one of the two cases.
+[[tool.mypy.overrides]]
+module = ["huggingface_hub", "jnius", "jnius_config", "tokenizers"]
+ignore_missing_imports = true

@@ -343,8 +343,10 @@ async def run_programbench_task(
     if runtime not in {"docker", "apptainer"}:
         raise ValueError("ProgramBench runtime must be docker or apptainer")
     # The cleanroom contract is identical on either backend: the agent's
-    # container has no network, has no Git tree to diff against, and exports
-    # its whole workspace as the submission.
+    # container has no network, and the submission is the whole exported
+    # workspace rather than a diff.  The image does ship a .git tree, but the
+    # adapter never requires or reads a Git baseline, so a rewritten history
+    # cannot change what gets submitted.
     identity = {
         "benchmark": "programbench",
         "benchmark_revision": PROGRAMBENCH_REVISION,
