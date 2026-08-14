@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping, Sequence
 
 from .._hash import canonical_bytes, harness_identity
 from ..environments.base import complete_in_thread
+from ..coordination import coordination_summary
 from ..runtime import BudgetLedger, RunContext, TraceRecorder, redact_artifact
 from ..specs import AgentSpecV1
 from ..storage import atomic_json, read_committed_result, read_json_object
@@ -166,6 +167,9 @@ class EvaluationRunner:
                     role="evaluation",
                     data={"benchmark": self.benchmark, "task_id": task.task_id},
                 )
+                # Where this task's events begin, so the coordination summary
+                # scans its own slice rather than the whole run per task.
+                first_event = len(trace.events)
                 try:
                     outcome = await worker(task, context, directory)
                     if outcome.task_id != task.task_id:
@@ -178,9 +182,20 @@ class EvaluationRunner:
                         status="failed",
                         error=f"{type(exc).__name__}: {exc}",
                     )
-                accounting = ledger.snapshot(prefix=task_agent_prefix(task.task_id))
+                prefix = task_agent_prefix(task.task_id)
+                accounting = ledger.snapshot(prefix=prefix)
+                coordination = coordination_summary(
+                    (asdict(event) for event in trace.events[first_event:]),
+                    ledger=ledger,
+                    prefix=prefix,
+                )
                 outcome = replace(
-                    outcome, metadata={**outcome.metadata, "accounting": accounting}
+                    outcome,
+                    metadata={
+                        **outcome.metadata,
+                        "accounting": accounting,
+                        "coordination": coordination,
+                    },
                 )
                 redacted_outcome = redact_artifact(asdict(outcome), self.secrets)
                 atomic_json(directory / "result.json", redacted_outcome)
