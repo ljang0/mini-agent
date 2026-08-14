@@ -23,7 +23,6 @@ from ..environments.bash import (
     container_bash_environment,
 )
 from ..models import Model
-from ..team import run_team, selected_harness
 from ..runtime import RunContext
 from ..runtimes.apptainer import ApptainerRuntime, apptainer_image_identity
 from ..runtimes.base import (
@@ -57,10 +56,9 @@ from ..storage import (
     atomic_json,
 )
 from .base import (
-    task_agent_builder,
+    run_benchmark_team,
     BenchmarkTask,
     EvaluationOutcome,
-    task_agent_root,
 )
 
 
@@ -561,57 +559,51 @@ async def run_swebench_task(
             overlay_size_mib=overlay_size_mib,
         )
 
-    selected = selected_harness(harness, multi_agent)
-    agent_for = task_agent_builder(
+    team = await run_benchmark_team(
+        task,
+        context,
+        environment_factory=environment_for,
         model_factory=model_factory,
         system_prompt=system_prompt,
         max_steps=max_steps,
         agent_spec=agent_spec,
-        harness=selected,
-        root_id=task_agent_root(task.task_id),
-    )
-
-    root_id = task_agent_root(task.task_id)
-    team = await run_team(
-        task.prompt,
-        harness=selected,
+        harness=harness,
         team_size=team_size,
-        agent_builder=agent_for,
-        environment_factory=environment_for,
-        context=context,
-        root_id=root_id,
+        multi_agent=multi_agent,
         max_active_agents=max_active_agents,
         max_total_agents=max_total_agents,
         per_agent_limits=per_agent_limits,
     )
-    result = team.require()
     if not isinstance(team.state, SWEPatchState):
         raise RuntimeError("root SWE agent produced no patch state")
     patch = team.state.patch
-    metadata_value: Mapping[str, Any] = {
-        **team.metadata(),
-        "runtime": runtime,
-        "environments": {
-            agent_id: dict(base.provenance())
-            for agent_id, base in team.bases().items()
-        },
-    }
-    assert result is not None
+
     atomic_bytes(directory / "patch.diff", patch)
-    prediction = {
-        "instance_id": task.task_id,
-        "model_patch": patch.decode("utf-8", errors="strict"),
-        "model_name_or_path": model_name,
-    }
-    atomic_json(directory / "prediction.json", prediction)
-    artifact_metadata = {
-        **metadata_value,
-        "patch_bytes": len(patch),
-        "patch_sha256": _sha256(patch),
-        "prediction_sha256": _sha256((directory / "prediction.json").read_bytes()),
-    }
+    atomic_json(
+        directory / "prediction.json",
+        {
+            "instance_id": task.task_id,
+            "model_patch": patch.decode("utf-8", errors="strict"),
+            "model_name_or_path": model_name,
+        },
+    )
     return EvaluationOutcome(
-        task.task_id, "completed", answer=result.answer, metadata=artifact_metadata
+        task.task_id,
+        "completed",
+        answer=team.require().answer,
+        metadata={
+            **team.metadata(),
+            "runtime": runtime,
+            "environments": {
+                agent_id: dict(base.provenance())
+                for agent_id, base in team.bases().items()
+            },
+            "patch_bytes": len(patch),
+            "patch_sha256": _sha256(patch),
+            "prediction_sha256": _sha256(
+                (directory / "prediction.json").read_bytes()
+            ),
+        },
     )
 
 

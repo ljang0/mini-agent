@@ -25,7 +25,6 @@ from ..environments.cua import (
 )
 from ..environments.base import complete_in_thread
 from ..models import Model
-from ..team import run_team, selected_harness
 from ..runtime import RunContext
 from ..specs import AgentSpecV1
 from ..types import (
@@ -46,10 +45,10 @@ from ..storage import (
     atomic_json,
 )
 from .base import (
-    task_agent_builder,
     BenchmarkTask,
     EvaluationOutcome,
     combine_errors,
+    run_benchmark_team,
     raise_after_cleanup,
     shielded_create,
     task_agent_root,
@@ -580,28 +579,21 @@ async def run_osworld_task(
     async def environment_for(agent_id: str) -> OSWorldEnvironment:
         return await pool.environment(agent_id)
 
-    selected = selected_harness(harness, multi_agent)
-    agent_for = task_agent_builder(
-        model_factory=model_factory,
-        system_prompt=system_prompt,
-        max_steps=max_steps,
-        agent_spec=agent_spec,
-        harness=selected,
-        root_id=task_agent_root(task.task_id),
-    )
-
     score: float | None = None
     evaluator_result: Mapping[str, Any] | None = None
     operation_error: BaseException | None = None
     try:
-        team = await run_team(
-            task.prompt,
-            harness=selected,
-            team_size=team_size,
-            agent_builder=agent_for,
+        team = await run_benchmark_team(
+            task,
+            context,
             environment_factory=environment_for,
-            context=context,
-            root_id=root_id,
+            model_factory=model_factory,
+            system_prompt=system_prompt,
+            max_steps=max_steps,
+            agent_spec=agent_spec,
+            harness=harness,
+            team_size=team_size,
+            multi_agent=multi_agent,
             max_active_agents=max_active_agents,
             max_total_agents=max_total_agents,
             per_agent_limits=per_agent_limits,

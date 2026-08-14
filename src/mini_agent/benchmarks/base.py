@@ -675,3 +675,53 @@ __all__ = [
     "task_agent_prefix",
     "task_agent_root",
 ]
+
+
+async def run_benchmark_team(
+    task: BenchmarkTask,
+    context: RunContext,
+    *,
+    environment_factory: Any,
+    model_factory: Callable[[str], Any],
+    system_prompt: str,
+    max_steps: int,
+    agent_spec: Any = None,
+    harness: str = "single",
+    team_size: int | None = None,
+    multi_agent: bool = False,
+    max_active_agents: int = 4,
+    max_total_agents: int = 16,
+    per_agent_limits: Any = None,
+    tolerate_failure: bool = False,
+) -> Any:
+    """Run one benchmark task as a team, whatever its topology.
+
+    Resolving the harness, naming the root, and building the per-role agent
+    builder is the same work for every benchmark. Keeping it here lets each
+    adapter read as what it actually is: run the team, take the artifact.
+    """
+
+    from ..team import run_team, selected_harness
+
+    selected = selected_harness(harness, multi_agent)
+    root_id = task_agent_root(task.task_id)
+    return await run_team(
+        task.prompt,
+        harness=selected,
+        team_size=team_size,
+        agent_builder=task_agent_builder(
+            model_factory=model_factory,
+            system_prompt=system_prompt,
+            max_steps=max_steps,
+            agent_spec=agent_spec,
+            harness=selected,
+            root_id=root_id,
+        ),
+        environment_factory=environment_factory,
+        context=context,
+        root_id=root_id,
+        max_active_agents=max_active_agents,
+        max_total_agents=max_total_agents,
+        per_agent_limits=per_agent_limits,
+        tolerate_failure=tolerate_failure,
+    )

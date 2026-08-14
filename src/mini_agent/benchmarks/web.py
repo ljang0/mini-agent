@@ -16,7 +16,6 @@ from typing import Any, Awaitable, Callable, Iterator, Mapping, TypeGuard
 
 from ..environments.web import BrowserEnvironment
 from ..models import Model
-from ..team import run_team, selected_harness
 from ..runtime import RunContext
 from ..specs import AgentSpecV1
 from ..types import (
@@ -42,11 +41,10 @@ from ..storage import (
     read_committed_result,
 )
 from .base import (
-    task_agent_builder,
+    run_benchmark_team,
     BenchmarkTask,
     EvaluationOutcome,
     task_agent_prefix,
-    task_agent_root,
 )
 
 
@@ -270,25 +268,17 @@ async def run_web_task(
                 )
         return resolved
 
-    selected = selected_harness(harness, multi_agent)
-    agent_for = task_agent_builder(
+    team = await run_benchmark_team(
+        task,
+        context,
+        environment_factory=environment_for,
         model_factory=model_factory,
         system_prompt=system_prompt,
         max_steps=max_steps,
         agent_spec=agent_spec,
-        harness=selected,
-        root_id=task_agent_root(task.task_id),
-    )
-
-    root_id = task_agent_root(task.task_id)
-    team = await run_team(
-        task.prompt,
-        harness=selected,
+        harness=harness,
         team_size=team_size,
-        agent_builder=agent_for,
-        environment_factory=environment_for,
-        context=context,
-        root_id=root_id,
+        multi_agent=multi_agent,
         max_active_agents=max_active_agents,
         max_total_agents=max_total_agents,
         per_agent_limits=per_agent_limits,
@@ -304,7 +294,6 @@ async def run_web_task(
             for agent_id, base in team.bases().items()
         },
     }
-    assert result is not None
     prediction = {
         "task_id": task.task_id,
         "answer": result.answer,

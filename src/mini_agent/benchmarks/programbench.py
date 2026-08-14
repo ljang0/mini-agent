@@ -22,7 +22,6 @@ from ..environments.bash import (
     SWEArchiveState,
 )
 from ..models import Model
-from ..team import run_team, selected_harness
 from ..runtime import RunContext
 from ..specs import AgentSpecV1
 from ..types import (
@@ -47,8 +46,7 @@ from .base import (
     BenchmarkTask,
     owned_instance_artifacts,
     EvaluationOutcome,
-    task_agent_builder,
-    task_agent_root,
+    run_benchmark_team,
 )
 from .checkout import git as _git, reject_untracked_execution_files
 from .swebench import (
@@ -418,47 +416,36 @@ async def run_programbench_task(
             benchmark_identity=identity,
         )
 
-    selected = selected_harness(harness, multi_agent)
-    agent_for = task_agent_builder(
+    team = await run_benchmark_team(
+        task,
+        context,
+        environment_factory=environment_for,
         model_factory=model_factory,
         system_prompt=system_prompt,
         max_steps=max_steps,
         agent_spec=agent_spec,
-        harness=selected,
-        root_id=task_agent_root(task.task_id),
-    )
-    root_id = task_agent_root(task.task_id)
-    team = await run_team(
-        task.prompt,
-        harness=selected,
+        harness=harness,
         team_size=team_size,
-        agent_builder=agent_for,
-        environment_factory=environment_for,
-        context=context,
-        root_id=root_id,
+        multi_agent=multi_agent,
         max_active_agents=max_active_agents,
         max_total_agents=max_total_agents,
         per_agent_limits=per_agent_limits,
     )
-    result = team.require()
     if not isinstance(team.state, SWEArchiveState):
         raise RuntimeError("root ProgramBench agent produced no workspace archive")
     archive = team.state.archive
-    metadata: Mapping[str, Any] = {
-        **team.metadata(),
-        "environments": {
-            agent_id: dict(base.provenance())
-            for agent_id, base in team.bases().items()
-        },
-    }
-    assert result is not None
+
     atomic_bytes(directory / PROGRAMBENCH_SUBMISSION_NAME, archive)
     return EvaluationOutcome(
         task.task_id,
         "completed",
-        answer=result.answer,
+        answer=team.require().answer,
         metadata={
-            **metadata,
+            **team.metadata(),
+            "environments": {
+                agent_id: dict(base.provenance())
+                for agent_id, base in team.bases().items()
+            },
             "instance_id": instance_id,
             "submission_artifact": PROGRAMBENCH_SUBMISSION_NAME,
             "submission_bytes": len(archive),
