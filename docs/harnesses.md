@@ -71,6 +71,20 @@ chosen, it was chosen once, visibly:
 - **`fixed-team` has no `adopt`.** The described capability list is Send and
   Wait-for-Message only. On SWE-style benchmarks that means peers can transfer
   findings as text but not files; the lead's own workspace is the submission.
+  ProgramBench is the exception: `--agent-git-share` gives the team a shared
+  bare repository to push and pull through, with no network.
+
+## A consequence worth knowing before you run one
+
+The submission is always the lead's own workspace. On file-producing benchmarks
+that interacts with each topology differently, and `orchestrator` is the sharp
+case: its coordinator has no task tools by construction, so its workspace is
+never edited and it produces an **empty patch** unless it explicitly adopts a
+subagent's state. That is the topology behaving as described, not a defect —
+but it means `orchestrator` on SWE-bench measures delegation, not patch
+quality, unless adoption is part of what you are testing. Verified directly: a
+real two-container orchestrator run completes with a 0-byte patch while its
+subagent's own container holds the edit.
 
 ## Capacity
 

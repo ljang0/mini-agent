@@ -319,6 +319,21 @@
       "retrieved_documents": 5,
       "snippet_tokens": 512,
       "note": "same index digest and first result as the pre-harness pass"
+    },
+    "orchestrator_and_async_on_real_images": {
+      "status": "passed",
+      "orchestrator": {
+        "agents": 2,
+        "containers": 2,
+        "patch_bytes": 0,
+        "note": "an empty patch is correct here: the coordinator has no task tools, so its workspace is never edited and the subagent's edit stays in the subagent's own container unless adopted"
+      },
+      "async_subagents": {
+        "agents": 2,
+        "containers": 2,
+        "patch_bytes": 504,
+        "note": "the subagent answered, idled, was woken with new instructions, answered again, and was released before the lead finished"
+      }
     }
   }
 }
