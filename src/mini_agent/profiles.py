@@ -46,6 +46,13 @@ def _resolved_prompt(prompt: str, *, multi_agent: bool) -> str:
 
 @dataclass(frozen=True)
 class Profile:
+    """One resolved set of defaults for a domain, and the spec it becomes.
+
+    Deliberately not a catalog: there is exactly one profile per environment,
+    so a run's prompt, step budget, and limits come from a single place that
+    can be fingerprinted rather than from whichever config happened to load.
+    """
+
     environment: str
     name: str
     model: str

@@ -482,6 +482,11 @@ class SerpAPIBackend:
         self._urls: set[str] = set()
 
     async def search(self, query: str, k: int = 5) -> Sequence[Mapping[str, Any]]:
+        """Query the backend and return the top hits the model may use.
+        
+                Every returned reference is recorded as openable for this session, so
+                a later `open` cannot reach a page the search never surfaced.
+                """
         _require_str(query, "SerpAPI query", error=ProtocolError)
         _require_positive_int(k, "SerpAPI result count", error=ProtocolError)
         try:
@@ -830,6 +835,13 @@ class BrowserEnvironment(BaseEnvironment):
         )
 
     async def execute(self, call: ToolCall) -> ToolExecution:
+        """Run one browser action and return what the model is allowed to see.
+        
+                Results are truncated by the pinned tokenizer rather than by
+                characters, and a session reference is withheld when opening is
+                disabled, so the fixed-retrieval surface matches what the benchmark
+                specifies rather than what the backend happens to return.
+                """
         if self._closed:
             raise RuntimeError("browser environment is closed")
         if call.name != "browser":

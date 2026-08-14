@@ -56,6 +56,11 @@ _Number = TypeVar("_Number", int, float)
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Declare every command and flag the CLI accepts.
+    
+        One parser for all five commands, so a flag means the same thing wherever
+        it appears and the manifest can record the whole invocation.
+        """
     parser = argparse.ArgumentParser(
         prog="mini-agent",
         description="One minimal loop for SWE, web research, and computer use.",

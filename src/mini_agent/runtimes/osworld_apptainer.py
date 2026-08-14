@@ -111,6 +111,15 @@ class _ContainerCollection:
         ports: Mapping[int, int],
         detach: bool,
     ) -> "_ApptainerContainer":
+        """Launch the OSWorld guest under Apptainer instead of a Docker daemon.
+        
+                Every argument upstream would have passed to Docker is checked against
+                what OSWorld actually requires -- the image, the KVM device, the four
+                forwarded ports, the read-only VM mount -- and anything unexpected is
+                refused rather than silently translated. The compatibility surface is
+                narrow on purpose: it stands in for one specific Docker call, not for
+                Docker.
+                """
         if image != "happysixd/osworld-docker":
             raise ValueError(f"unexpected OSWorld container image: {image}")
         if not detach:

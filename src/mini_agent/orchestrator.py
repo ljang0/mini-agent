@@ -211,6 +211,14 @@ class CommunicationEnvironment(BaseEnvironment):
         )
 
     async def execute(self, call: ToolCall) -> ToolExecution:
+        """Dispatch one `agent` action, or hand the call to the domain tool.
+        
+                An action outside this agent's role is refused here, so restricting a
+                role is a real restriction rather than a description. Scheduler
+                refusals come back as recoverable tool results: hitting the agent
+                limit is something the model can react to, not a reason to end the
+                run.
+                """
         if call.name != "agent":
             if not any(tool.name == call.name for tool in self._base_tools):
                 raise InvalidAction(f"unsupported tool {call.name!r}")

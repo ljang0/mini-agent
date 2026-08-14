@@ -426,6 +426,12 @@ class _DesktopPool:
         )
 
     async def environment(self, agent_id: str) -> OSWorldEnvironment:
+        """Lease one desktop for an agent, with its own artifact branch.
+        
+                Each agent gets a whole machine, so the pool is what keeps a
+                multi-agent OSWorld run from sharing one guest between agents that
+                believe they have it to themselves.
+                """
         config = _task_config_for_benchmark(self.task)
         _reject_unsupported_v2_lifecycle(self.task, config)
         digest = hashlib.sha256(agent_id.encode("utf-8")).hexdigest()

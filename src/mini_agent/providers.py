@@ -372,6 +372,13 @@ class OpenAIResponsesBackend(_Backend):
             )
 
     async def complete(self, request: ModelRequest) -> ModelResponse:
+        """Translate one provider-neutral request onto the chat-completions wire.
+
+        The losses this translation incurs are declared on the class rather
+        than discovered at runtime, so a run can record what its provider
+        could not represent instead of quietly dropping it.
+        """
+
         payload: dict[str, Any] = {
             **self.default_body,
             "model": self.model,

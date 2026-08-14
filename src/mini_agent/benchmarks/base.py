@@ -121,6 +121,18 @@ class EvaluationRunner:
     async def run(
         self, worker: TaskWorker, *, resume: bool = False
     ) -> Mapping[str, Any]:
+        """Run every task once and write the evidence for each.
+
+        The commit protocol is what makes ``resume`` safe: a task's artifacts
+        are written first and only then marked complete, so an interrupted run
+        leaves an uncommitted directory that is redone rather than a partial
+        result mistaken for a finished one. Resuming also refuses a manifest
+        that differs from the one the earlier pass recorded.
+
+        One task's failure is recorded and the run continues; the summary
+        reports it rather than the whole evaluation stopping.
+        """
+
         manifest = self._manifest()
         self._prepare(manifest, resume=resume)
         if resume:
@@ -144,6 +156,14 @@ class EvaluationRunner:
                 queue.put_nowait(task)
 
         async def consume() -> None:
+            """Run one task to a committed result, whatever happens to it.
+            
+                        A failure is recorded as this task's outcome rather
+                        than raised, so one bad instance does not end an
+                        evaluation; the artifacts are written before the
+                        completion marker, so an interruption leaves work to
+                        redo rather than a partial result to trust.
+                        """
             while True:
                 try:
                     task = queue.get_nowait()

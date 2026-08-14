@@ -229,6 +229,12 @@ async def run_web_task(
     options: TeamOptions,
     model_name: str | None = None,
 ) -> EvaluationOutcome:
+    """Run one research task and record the answer with its evidence.
+
+    BrowseComp-Plus additionally writes the upstream run artifact its official
+    judge consumes. No score is assigned here for either benchmark.
+    """
+
     _require_callable(browser_factory, "browser_factory")
     if task.data.get("benchmark") == "browsecomp-plus":
         _require_str(model_name, "BrowseComp-Plus generation model_name")
@@ -585,6 +591,11 @@ def official_browsecomp_plus_grader_argv(
     model: str = "Qwen/Qwen3-32B",
     tensor_parallel_size: int = 1,
 ) -> tuple[str, ...]:
+    """Build the exact upstream judge invocation, with nothing added.
+    
+        The command is assembled from the pinned checkout and the recorded run so
+        that scoring is upstream's, not this project's.
+        """
     root = _require_no_symlink(
         checkout.expanduser(), "BrowseComp-Plus checkout"
     ).resolve()

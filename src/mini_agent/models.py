@@ -58,6 +58,12 @@ class BackendModel:
     async def query(
         self, messages: Sequence[Message], tools: Sequence[ToolDefinition]
     ) -> ModelResponse:
+        """Answer from the scripted responses, in order.
+        
+                The point of this model is that a run can exercise the entire loop --
+                tools, budgets, tracing, artifacts -- with no API key and no cost, so
+                every benchmark path in this project is testable offline.
+                """
         if not any(message.role == "assistant" for message in messages):
             self._continuation = None
         system = "\n\n".join(

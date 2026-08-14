@@ -292,6 +292,13 @@ def validate_computer_actions(
     allow_fail: bool = False,
     allow_duration: bool = False,
 ) -> tuple[Mapping[str, Any], ...]:
+    """Check one batch of computer actions before any of it reaches a machine.
+
+    Every field is validated against the screen it will be applied to, because
+    a bad coordinate is not recoverable once clicked: the batch is rejected
+    whole, and the model is told what was wrong.
+    """
+
     if not isinstance(allow_fail, bool) or not isinstance(allow_duration, bool):
         raise ValueError("computer action options must be boolean")
     if not isinstance(value, list) or not 1 <= len(value) <= 32:

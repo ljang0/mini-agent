@@ -26,6 +26,23 @@ from .types import (
 
 
 class MiniAgent:
+    """One agent: a model, an environment, and a linear conversation.
+
+    The loop is deliberately small -- query the model, execute whatever tools
+    it called, append the results, repeat -- because every benchmark, every
+    sandbox, and every multi-agent topology in this project runs through this
+    one implementation. Anything specific to a domain belongs in the
+    environment, and anything specific to a topology belongs in the
+    orchestrator.
+
+    Budgets, tracing, and accounting live on ``context`` rather than here, so
+    an agent that is one of ten shares the run's limits with the other nine.
+
+    ``run`` starts a fresh conversation; ``resume`` continues an existing one,
+    which is how an agent can report a result and stay available for further
+    instructions. ``max_steps`` is a lifetime cap across both.
+    """
+
     def __init__(
         self,
         *,

@@ -667,6 +667,15 @@ class RunContext:
         agent_id: str,
         role: str,
     ) -> ModelResponse:
+        """Sample the model once, charged and recorded against this run.
+
+        Every model call in the project goes through here, which is what makes
+        the ledger and the trace complete: the call is reserved against the
+        budget before it is made, its usage is charged once whatever the
+        outcome, and a failure is recorded rather than silently retried into a
+        second charge.
+        """
+
         # ``asdict`` on these frozen dataclasses is provider-neutral by
         # construction: ``continuation`` (the only raw/native SDK field) lives
         # on ModelResponse/ModelRequest, never on the history or tool types.
@@ -772,6 +781,16 @@ class RunContext:
         agent_id: str,
         role: str,
     ) -> ToolResult:
+        """Run one tool call the model asked for, bounded and recorded.
+
+        The action is checked against the tools the agent was actually given
+        before the environment sees it, so a model cannot reach a tool it was
+        not offered. Output is truncated to the run's byte budget, and an
+        invalid action is returned to the model as a recoverable result rather
+        than raised -- a bad tool call is the model's problem to fix, not the
+        run's reason to stop.
+        """
+
         self._remaining_time(agent_id)
         await self.ledger.reserve_tool_call(agent_id)
         arguments_sha256 = canonical_digest(dict(action.arguments))

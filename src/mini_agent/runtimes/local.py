@@ -102,6 +102,12 @@ class LocalProcessRunner:
         timeout_seconds: float = 60.0,
         max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES,
     ) -> ProcessResult:
+        """Run one command with hard bounds on time and output.
+        
+                A process that outlives its timeout is killed with its whole group,
+                because an agent's runaway command must not survive the call that
+                started it.
+                """
         if (
             isinstance(argv, (str, bytes))
             or not argv
