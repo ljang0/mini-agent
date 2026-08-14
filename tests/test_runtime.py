@@ -460,6 +460,28 @@ class BudgetTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot["model_calls"], 1)
         self.assertEqual(snapshot["usage"]["input_tokens"], 1)
 
+    async def test_agent_ids_include_an_agent_that_never_spent(self) -> None:
+        """A spawned agent that did nothing is a coordination finding, not a gap."""
+
+        ledger = BudgetLedger(BudgetLimits())
+        ledger.configure_agent("/eval/task/root/1", BudgetLimits())
+        await ledger.reserve_call("/eval/task/root")
+        self.assertEqual(
+            ledger.agent_ids(prefix="/eval/task"),
+            ("/eval/task/root", "/eval/task/root/1"),
+        )
+        self.assertEqual(ledger.agent_ids(prefix="/eval/other"), ())
+
+    async def test_including_idle_agents_does_not_move_any_total(self) -> None:
+        """Widening the id set must not change what a prefix snapshot reports."""
+
+        ledger = BudgetLedger(BudgetLimits())
+        await ledger.reserve_call("/eval/task/root")
+        await ledger.record(Usage(input_tokens=3), "/eval/task/root")
+        before = ledger.snapshot(prefix="/eval/task")
+        ledger.configure_agent("/eval/task/root/1", BudgetLimits())
+        self.assertEqual(ledger.snapshot(prefix="/eval/task"), before)
+
     def test_restore_rejects_a_non_object_snapshot(self) -> None:
         ledger = BudgetLedger(BudgetLimits())
         with self.assertRaisesRegex(ValueError, "must be an object"):

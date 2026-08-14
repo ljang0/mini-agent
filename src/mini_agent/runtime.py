@@ -118,6 +118,36 @@ class BudgetLedger:
             "exhausted_reason": self._agent_exhausted.get(agent_id),
         }
 
+    def agent_ids(self, *, prefix: str | None = None) -> tuple[str, ...]:
+        """Every agent this ledger has seen, optionally under one subtree.
+
+        Includes agents that were configured but never spent anything, since
+        an agent that did nothing is exactly what a coordination report needs
+        to show.
+        """
+
+        return tuple(sorted(self._select_agents(prefix)))
+
+    def _select_agents(self, prefix: str | None) -> list[str]:
+        known = {
+            *self._agent_limits,
+            *self._agent_calls,
+            *self._agent_tool_calls,
+            *self._agent_tool_output_bytes,
+            *self._agent_usage,
+        }
+        if prefix is None:
+            return sorted(known)
+        return sorted(
+            agent_id
+            for agent_id in known
+            if (
+                agent_id.startswith("/")
+                if prefix == "/"
+                else agent_id == prefix or agent_id.startswith(prefix + "/")
+            )
+        )
+
     def snapshot(self, *, prefix: str | None = None) -> Mapping[str, Any]:
         if prefix is None:
             return {
@@ -127,21 +157,7 @@ class BudgetLedger:
                 "usage": asdict(self.usage),
                 "exhausted_reason": self._exhausted_reason,
             }
-        agent_ids = {
-            *self._agent_calls,
-            *self._agent_tool_calls,
-            *self._agent_tool_output_bytes,
-            *self._agent_usage,
-        }
-        selected = [
-            agent_id
-            for agent_id in agent_ids
-            if (
-                agent_id.startswith("/")
-                if prefix == "/"
-                else agent_id == prefix or agent_id.startswith(prefix + "/")
-            )
-        ]
+        selected = self._select_agents(prefix)
         usage = Usage()
         for agent_id in selected:
             usage = usage + self._agent_usage.get(agent_id, Usage())
