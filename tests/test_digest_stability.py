@@ -13,9 +13,12 @@ revert the change or treat it as a documented format break.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from mini_agent._hash import (
     canonical_bytes,
@@ -23,6 +26,7 @@ from mini_agent._hash import (
     canonical_text,
     immutable_file_identity,
     immutable_tree_identity,
+    machine_image_identity,
 )
 from mini_agent.environments.web import directory_sha256
 
@@ -116,6 +120,80 @@ class FileAndTreeDigestTests(unittest.TestCase):
             self.assertEqual(directory_sha256(root), baseline)
             (root / "a.txt").rename(root / "renamed.txt")
             self.assertNotEqual(directory_sha256(root), baseline)
+
+
+class MachineImageIdentityCacheTests(unittest.TestCase):
+    """The image cache must never answer for bytes it did not hash.
+
+    Machine images are tens of gigabytes and every desktop launch asks for the
+    same file's identity, so the result is memoized. A cache that outlived the
+    bytes it named would turn the integrity check into a no-op, which is the
+    one failure this layer exists to prevent.
+    """
+
+    def _sidecar(self, image: Path, digest: str) -> Path:
+        sidecar = Path(str(image) + ".provenance.json")
+        sidecar.write_text(
+            json.dumps({"schema": "fixture-v1", "final_image_sha256": digest})
+        )
+        return sidecar
+
+    def test_repeated_identity_of_an_unchanged_image_is_not_rehashed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            image = Path(temporary) / "image.qcow2"
+            image.write_bytes(b"image-bytes")
+            first = machine_image_identity(image, label="fixture image")
+            with mock.patch(
+                "mini_agent._hash.immutable_file_identity",
+                side_effect=AssertionError("re-hashed an unchanged image"),
+            ):
+                second = machine_image_identity(image, label="fixture image")
+            self.assertEqual(second, first)
+
+    def test_rewriting_the_image_invalidates_the_cached_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            image = Path(temporary) / "image.qcow2"
+            image.write_bytes(b"image-bytes")
+            first = machine_image_identity(image, label="fixture image")
+            image.write_bytes(b"different-bytes")
+            second = machine_image_identity(image, label="fixture image")
+            self.assertNotEqual(second["sha256"], first["sha256"])
+            self.assertEqual(
+                second["sha256"], hashlib.sha256(b"different-bytes").hexdigest()
+            )
+
+    def test_a_changed_sidecar_is_not_answered_from_the_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            image = Path(temporary) / "image.qcow2"
+            image.write_bytes(b"image-bytes")
+            digest = hashlib.sha256(b"image-bytes").hexdigest()
+            sidecar = self._sidecar(image, digest)
+            self.assertEqual(
+                machine_image_identity(image, label="fixture image")[
+                    "provenance_schema"
+                ],
+                "fixture-v1",
+            )
+            # The image is untouched; only its provenance moved.
+            sidecar.unlink()
+            sidecar.symlink_to(Path(temporary) / "missing.json")
+            with self.assertRaisesRegex(ValueError, "must not be a symlink"):
+                machine_image_identity(image, label="fixture image")
+
+    def test_a_removed_sidecar_is_not_answered_from_the_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            image = Path(temporary) / "image.qcow2"
+            image.write_bytes(b"image-bytes")
+            sidecar = self._sidecar(
+                image, hashlib.sha256(b"image-bytes").hexdigest()
+            )
+            self.assertIn(
+                "provenance", machine_image_identity(image, label="fixture image")
+            )
+            sidecar.unlink()
+            self.assertNotIn(
+                "provenance", machine_image_identity(image, label="fixture image")
+            )
 
 
 if __name__ == "__main__":

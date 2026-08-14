@@ -185,8 +185,8 @@ The public surface is intentionally small:
 
 ```text
 mini-agent profile
-mini-agent run --environment swe|web|computer
-mini-agent eval --benchmark swebench|programbench|browsecomp|browsecomp-plus|osworld-v1|osworld-v2|cua-speed-run
+mini-agent run --environment swe|web
+mini-agent eval --benchmark swebench|programbench|browsecomp|browsecomp-plus|osworld-v1|osworld-v2
 mini-agent grade --benchmark swebench|programbench|browsecomp-plus
 mini-agent doctor
 ```
@@ -262,20 +262,6 @@ mini-agent run \
   --model openai/MODEL
 ```
 
-Direct computer use expects a trusted cua-speed-run-compatible gateway. Direct
-multi-agent computer use is rejected because it has no machine-lease factory:
-
-```bash
-mini-agent run \
-  --environment computer \
-  --env-url http://127.0.0.1:8000 \
-  --task 'Complete the visible desktop task.' \
-  --model anthropic/MODEL
-```
-
-Non-loopback gateways must use HTTPS and a bearer token supplied only through an
-environment variable, for example `--env-token-env CUA_TASK_TOKEN`.
-
 Use `--max-model-calls`, token limits, `--max-cost-usd`, wall time, tool limits,
 and agent limits for every paid run. A cost cap requires explicit input and output
 prices; unknown or incomplete usage fails closed.
@@ -330,15 +316,6 @@ mini-agent eval \
   --runtime apptainer \
   --path-to-vm /assets/osworld/Ubuntu.qcow2 \
   --osworld-apptainer-image /assets/osworld/osworld-docker.sif \
-  --model openai/MODEL
-
-# Local cua-speed-run environment plane and checker.
-mini-agent eval \
-  --benchmark cua-speed-run \
-  --checkout /src/cua-speed-run \
-  --benchmark-path /data/cua-benchmark \
-  --backend gym-anything-qemu-apptainer \
-  --qemu-cache /assets/gym-anything/qemu \
   --model openai/MODEL
 ```
 
@@ -442,11 +419,6 @@ provenance sidecar contract.
 | `MINI_AGENT_HOME` | storage | durable root for runs, assets, and caches (default `~/.local/share/mini-agent`) |
 | `MINI_AGENT_SCRATCH` | storage | disposable node-local work area (default `$MINI_AGENT_HOME/work`) |
 | `SERPAPI_API_KEY` | live web backend | SerpAPI credential for `--web-backend serpapi` |
-| `GYM_ANYTHING_QEMU_CACHE` | cua-speed-run | upstream QEMU image cache directory (also `--qemu-cache`) |
-| `GYM_ANYTHING_QEMU_WORK_DIR` | cua-speed-run | set by the CLI to the run's scratch QEMU work area |
-| `OSWORLD_QEMU_BASE_IMAGE` | cua-speed-run | optional base-image override honored by the upstream runner |
-| `CS_ALLOW_QEMU_TCG` | cua-speed-run | opt-in to software-emulated QEMU when KVM is unavailable (slow) |
-| `GYM_ANYTHING_QEMU_CONTAINER` | cua-speed-run (upstream) | runtime container reference; pin a SIF path or `@sha256:` digest for comparable runs |
 | `DOCKER_HOST` | SWE-bench / OSWorld docker paths | explicit Docker engine endpoint; required for official SWE-bench grading |
 
 ## What results mean
@@ -462,8 +434,6 @@ harnesses. In particular:
   is opt-in, not the pinned upstream runner's default.
 - OSWorld uses a batched native-pixel `computer` action protocol adapted onto the
   official reset/step/evaluate lifecycle.
-- cua-speed-run executes the environment plane and checker in process; it is not
-  the upstream two-file submission/executor protocol.
 - Multi-agent mode is a bounded scheduler, not best-of-N, a trained recursive
   policy, or a simulation of proprietary team runtimes.
 

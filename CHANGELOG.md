@@ -92,8 +92,6 @@ First public release.
   runs unsandboxed as the current user).
 - Provider HTTP errors surface allowlisted `error.type`/`error.code` tokens
   only; free-form response text stays out of durable artifacts.
-- `cua-speed-run` step-budget exhaustion now runs the hidden checker
-  (`finish_reason: step_budget`), matching OSWorld semantics.
 - Lint gate enforces line length (E501); grading, doctor, and the isolated
   grader probe moved out of the CLI into dedicated modules.
 

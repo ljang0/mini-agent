@@ -3,12 +3,9 @@
 Machine images are benchmark inputs, not package data. Keep them outside the
 repository, pass their paths explicitly, and put disposable overlays on local
 scratch. OSWorld hashes the complete selected image before evaluation and stores
-that identity in the immutable run manifest. cua-speed-run can select its image
-only while the pinned upstream runner prepares an environment; its manifest
-therefore labels preflight cache files as unverified candidates, and each task
-records the effective prepared-runner inputs before the first model call. If
-`IMAGE.provenance.json` exists, it must be a regular non-symlink JSON file whose
-top-level `final_image_sha256` matches `IMAGE`.
+that identity in the immutable run manifest. If `IMAGE.provenance.json` exists,
+it must be a regular non-symlink JSON file whose top-level
+`final_image_sha256` matches `IMAGE`.
 
 ## OSWorld v1
 
@@ -75,68 +72,18 @@ image through the pinned v2 checkout and returned a valid 1920×1080 controller
 screenshot. This establishes the machine/controller path only: no v2 task or
 score is claimed without the gated `xlangai/osworld_v2_tasks` release data.
 
-## cua-speed-run
-
-Use cua-speed-run commit
-`7230223cbc57df68331cad32889adf01f3601651` with gym-anything submodule commit
-`70d9e51d2517049d995cc820a319a355c3c6e979`. The pinned upstream builder is the
-source of truth:
-
-```bash
-python third_party/gym-anything/src/gym_anything/runtime/runners/build_base_qcow2_nodocker.py \
-  --output /assets/gym-anything/qemu/base_ubuntu_gnome.qcow2 \
-  --timeout 7200 \
-  --memory 8G \
-  --cpus 4
-```
-
-That builder downloads Ubuntu Jammy's current cloud image and uses a container
-input, so its output is not a universal reproducible hash unless those mutable
-inputs are separately frozen. The 2026-08-12 node build records all observed
-input digests in its sidecar. Its output is 6,701,187,072 bytes, has a 50 GiB
-virtual size, and SHA-256
-`a9d802e021ac883fc4877bf334aaef48505502d23ac51b097e39ed7b3bb8d85f`.
-
-Pass the containing directory with `--qemu-cache` (or the
-`GYM_ANYTHING_QEMU_CACHE` environment variable). If `OSWORLD_QEMU_BASE_IMAGE`
-is set — a base-image override honored by the runner despite its
-OSWorld-flavored name — the cua-speed-run adapter also lists that image as a
-candidate. Evaluation runs the real upstream backend preflight before writing
-the task manifest and records any conventional cache images only as
-candidates, not as the runner's eventual selection. After each environment is prepared, the task evidence records and
-hashes the effective base image, selected checkpoint, and local container (or
-flags a mutable remote container reference) before the first model call. It then
-creates one independent overlay per agent. This is honest post-prepare evidence,
-not a claim that the upstream runner exposes its eventual image selection early
-enough to bind it into the immutable run manifest. `doctor` remains
-non-provisioning and never claims a machine boot.
-
-The cua-speed-run upstream repository must be obtainable by the operator. It is
-not vendored here; redistributing a checkout or image requires its own license
-and access review.
-
-The pinned gym-anything QEMU/Apptainer runner defaults
-`GYM_ANYTHING_QEMU_CONTAINER` to the floating reference
-`docker://ghcr.io/dockur/windows:latest`. The adapter records that reference as
-`content_addressed: false`; a base-image hash does not make the separately
-selected runtime container immutable. For comparable runs, set the variable
-before Python imports gym-anything to either a verified local SIF path or a
-registry reference ending in a full `@sha256:<64 hex>` manifest digest. Local
-files and directories are hashed from the effective prepared runner and checked
-again when the lease is assigned to an agent.
-
 ## Validation-node storage boundary
 
 (The "validation node" is the shared-cluster host the recorded hashes
 were produced on; the layout below is a record of that machine, not a
 required layout for yours.)
 
-On the 2026-08-12 validation node, all three extracted qcow2 files are complete,
+On the 2026-08-12 validation node, both extracted qcow2 files are complete,
 match the hashes above, and currently pass `qemu-img check`; the OSWorld SIF also
 matches its recorded hash and source OCI manifest. The extracted qcow2 files are
 on local NVMe under `/tmp/mini-agent/assets`, not durable storage. The requested
-user-owned durable NFS area had only 3.3 GiB free while the three
-images require about 55 GiB, so only provenance sidecars and the 81 MB OSWorld
+user-owned durable NFS area had only 3.3 GiB free while the two
+images require about 48 GiB, so only provenance sidecars and the 81 MB OSWorld
 SIF fit there. Do not treat those sidecars as an image backup. Before relying on
 this node after scratch cleanup, either allocate durable capacity and copy the
 full files with their sidecars or rerun the hash-pinned acquisition commands.

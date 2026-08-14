@@ -7,22 +7,18 @@ import tempfile
 import threading
 import time
 import unittest
-import httpx
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping, Sequence
 from unittest.mock import AsyncMock, patch
 
 from mini_agent.environments.cua import (
-    AdapterLiveState,
     CUAEnvironment,
-    CUASpeedRunClient,
     ComputerObservation,
     OSWorldClient,
     OSWorldEnvironment,
     complete_in_thread,
     encode_osworld_action,
-    to_cua_speedrun_actions,
     validate_computer_actions,
     validate_png,
 )
@@ -1037,9 +1033,6 @@ class ComputerEnvironmentTests(unittest.IsolatedAsyncioTestCase):
             ],
             (8, 6),
         )
-        translated = to_cua_speedrun_actions(actions)
-        self.assertEqual(translated[0], {"mouse": {"double_click": [1, 2]}})
-        self.assertIn({"mouse": {"scroll": 4}}, translated)
         self.assertEqual(
             encode_osworld_action(actions[1]),
             "pyautogui.scroll(-4)\npyautogui.hscroll(3)",
@@ -1181,171 +1174,6 @@ class ComputerEnvironmentTests(unittest.IsolatedAsyncioTestCase):
             await environment.close()
         self.assertEqual(client.done_calls, 1)
         self.assertEqual(client.close_calls, 1)
-
-    async def test_gateway_client_uses_nested_upstream_action_schema(self) -> None:
-        import base64
-
-        http = FakeHTTPClient(
-            [
-                FakeResponse(
-                    {
-                        "png_b64": base64.b64encode(png()).decode("ascii"),
-                        "meta": {"runner": "fixture"},
-                    }
-                ),
-                FakeResponse({"ok": True, "info": {"done": True}}),
-                FakeResponse({"ok": True}),
-            ]
-        )
-        client = CUASpeedRunClient(
-            "https://example.test/task-token",
-            client=http,  # type: ignore[arg-type]
-        )
-        observed = await client.observe()
-        self.assertEqual(validate_png(observed.png), (8, 6))
-        self.assertEqual(observed.metadata["runner"], "fixture")
-        actions = validate_computer_actions([{"type": "click", "x": 1, "y": 2}], (8, 6))
-        result = await client.step(actions)
-        self.assertTrue(result["done"])
-        self.assertTrue(client.episode_done)
-        await client.done()
-        self.assertEqual(
-            http.requests[1][3],
-            {"actions": [{"mouse": {"left_click": [1, 2]}}]},
-        )
-        self.assertEqual(
-            http.requests[0][2], {}
-        )
-        self.assertEqual(client.provenance()["authentication"], "url_path_token")
-        self.assertTrue(http.requests[2][1].endswith("/done"))
-        with self.assertRaisesRegex(ValueError, "origin"):
-            CUASpeedRunClient("https://user:password@example.test")
-        with self.assertRaisesRegex(ValueError, "invalid port"):
-            CUASpeedRunClient("https://example.test:bad", bearer_token="secret")
-        with self.assertRaisesRegex(ValueError, "HTTPS"):
-            CUASpeedRunClient("http://example.test", bearer_token="secret")
-        with self.assertRaisesRegex(ValueError, "run-path or bearer"):
-            CUASpeedRunClient("https://example.test")
-        with self.assertRaisesRegex(ValueError, "URL-safe"):
-            CUASpeedRunClient("https://example.test/two/segments")
-        bearer = CUASpeedRunClient(
-            "https://example.test",
-            bearer_token="task-secret",
-            client=http,  # type: ignore[arg-type]
-        )
-        self.assertEqual(bearer.provenance()["authentication"], "bearer")
-        self.assertFalse(
-            CUASpeedRunClient(
-                "http://127.0.0.1:8000", client=http  # type: ignore[arg-type]
-            ).provenance()["authenticated"]
-        )
-
-    async def test_gateway_done_is_never_replayed_after_ambiguous_failure(self) -> None:
-        class AmbiguousFailure:
-            async def __aenter__(self) -> None:
-                raise httpx.RemoteProtocolError("response connection failed")
-
-            async def __aexit__(self, *args: object) -> None:
-                del args
-
-        class Client:
-            def __init__(self) -> None:
-                self.attempts = 0
-
-            def stream(self, *args: object, **kwargs: object) -> AmbiguousFailure:
-                del args, kwargs
-                self.attempts += 1
-                return AmbiguousFailure()
-
-        http = Client()
-        gateway = CUASpeedRunClient(
-            "https://example.test/task-token",
-            connect_retries=2,
-            client=http,  # type: ignore[arg-type]
-        )
-        with self.assertRaisesRegex(InfrastructureError, "done request failed"):
-            await gateway.done()
-        self.assertEqual(http.attempts, 1)
-
-    async def test_gateway_stream_and_decoded_screenshot_limits_are_terminal(
-        self,
-    ) -> None:
-        oversized_body = FakeHTTPClient([FakeResponse(content=b"123456789")])
-        gateway = CUASpeedRunClient(
-            "https://example.test",
-            bearer_token="secret",
-            client=oversized_body,  # type: ignore[arg-type]
-        )
-        with patch("mini_agent.environments.cua.MAX_CUA_OBSERVE_RESPONSE_BYTES", 8):
-            with self.assertRaisesRegex(InfrastructureError, "byte limit"):
-                await gateway.observe()
-
-        redirect = FakeHTTPClient(
-            [FakeResponse(content=b"{}", status_code=302)]
-        )
-        gateway = CUASpeedRunClient(
-            "https://example.test",
-            bearer_token="secret",
-            client=redirect,  # type: ignore[arg-type]
-        )
-        with self.assertRaisesRegex(InfrastructureError, "HTTP 302"):
-            await gateway.done()
-
-        screenshot = png()
-        screenshot_body = FakeHTTPClient(
-            [
-                FakeResponse(
-                    {
-                        "png_b64": __import__("base64").b64encode(screenshot).decode(),
-                        "meta": {},
-                    }
-                )
-            ]
-        )
-        gateway = CUASpeedRunClient(
-            "https://example.test",
-            bearer_token="secret",
-            client=screenshot_body,  # type: ignore[arg-type]
-        )
-        with patch(
-            "mini_agent.environments.cua.MAX_SCREENSHOT_BYTES", len(screenshot) - 1
-        ):
-            with self.assertRaisesRegex(InfrastructureError, "decoded byte limit"):
-                await gateway.observe()
-
-    async def test_gateway_rejects_excessive_png_dimensions_as_infrastructure(
-        self,
-    ) -> None:
-        import base64
-
-        screenshot = png(8193, 1)
-        http = FakeHTTPClient(
-            [
-                FakeResponse(
-                    {
-                        "png_b64": base64.b64encode(screenshot).decode(),
-                        "meta": {},
-                    }
-                )
-            ]
-        )
-        gateway = CUASpeedRunClient(
-            "https://example.test",
-            bearer_token="secret",
-            client=http,  # type: ignore[arg-type]
-        )
-        with self.assertRaisesRegex(InfrastructureError, "invalid PNG"):
-            await gateway.observe()
-
-    async def test_live_adapter_state_is_single_claim(self) -> None:
-        state = AdapterLiveState(
-            adapter=object(),
-            observation=ComputerObservation(png()),
-            resource_identity="resource",
-        )
-        state.claim()
-        with self.assertRaisesRegex(ProtocolError, "already adopted"):
-            state.claim()
 
     async def test_blocking_cancellation_waits_before_cleanup(self) -> None:
         started = threading.Event()

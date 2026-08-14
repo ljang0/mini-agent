@@ -111,8 +111,8 @@ model plane.
 The environment tracks episode termination, sends `done` at most once without
 transport retries, rejects actions after termination, and makes live state
 single-claim during adoption.
-OSWorld and cua-speed-run allocate one independent machine/environment lease per
-agent. Their hidden checkers run only after agent execution.
+OSWorld allocates one independent machine/environment lease per agent. Its
+hidden checker runs only after agent execution.
 
 ## Shared accounting and evidence
 

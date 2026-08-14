@@ -12,10 +12,7 @@ from typing import Any
 from .base import BaseEnvironment, Environment
 
 _LAZY_EXPORTS = {
-    "AdapterLiveState": "cua",
     "CUAEnvironment": "cua",
-    "CUASpeedRunAdapterClient": "cua",
-    "CUASpeedRunClient": "cua",
     "ComputerObservation": "cua",
     "OSWorldClient": "cua",
     "OSWorldEnvironment": "cua",

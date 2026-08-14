@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
-import hashlib
-import ipaddress
 import inspect
 import json
 import math
@@ -15,18 +12,13 @@ import zlib
 from dataclasses import dataclass, field
 from typing import (
     Any,
-    Awaitable,
     Callable,
     Mapping,
     Protocol,
     Sequence,
     TypeGuard,
 )
-from urllib.parse import urlsplit
 
-import httpx
-
-from .._http import ResponseBodyTooLarge, read_bounded_body
 from ..types import (
     InfrastructureError,
     InvalidAction,
@@ -40,12 +32,10 @@ from ..types import (
     _require_int,
     _require_mapping,
     _require_str,
-    strict_json_loads,
 )
 from .base import BaseEnvironment, complete_in_thread, raise_lifecycle_errors
 
 
-CUA_SPEED_RUN_REVISION = "7230223cbc57df68331cad32889adf01f3601651"
 OSWORLD_V1_REVISION = "091f5ef1d5544bc74953c77875d5feb5bed30108"
 OSWORLD_V2_REVISION = "v2026.06.24"
 OSWORLD_V2_COMMIT = "2b9b7b4eb73243d557bdbf2998fe18d8e18e19c6"
@@ -55,9 +45,6 @@ MAX_SCREENSHOT_BYTES = 16 * 1024 * 1024
 MAX_SCREENSHOT_WIDTH = 8192
 MAX_SCREENSHOT_HEIGHT = 8192
 MAX_SCREENSHOT_PIXELS = 16 * 1024 * 1024
-MAX_SCREENSHOT_BASE64_CHARS = 4 * ((MAX_SCREENSHOT_BYTES + 2) // 3)
-MAX_CUA_OBSERVE_RESPONSE_BYTES = MAX_SCREENSHOT_BASE64_CHARS + 1024 * 1024
-MAX_CUA_RESPONSE_BYTES = 2 * 1024 * 1024
 _BUTTONS = frozenset({"left", "middle", "right"})
 _NO_OWNER_EXPORT = "live state export requires an external benchmark session owner"
 _NO_OWNER_ADOPT = "live state adoption requires an external benchmark session owner"
@@ -169,29 +156,6 @@ class OSWorldLiveState:
             self.steps,
             self.done,
         )
-
-
-@dataclass
-class AdapterLiveState:
-    """A single-claim pointer to a benchmark-owned cua-speed-run adapter."""
-
-    adapter: Any
-    observation: ComputerObservation
-    resource_identity: str
-    done: bool = False
-    _claimed: bool = field(default=False, init=False, repr=False)
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.observation, ComputerObservation):
-            raise ValueError("adapter live observation must be ComputerObservation")
-        _require_str(self.resource_identity, "adapter live resource identity")
-        _require_bool(self.done, "adapter live done flag")
-
-    def claim(self) -> tuple[Any, ComputerObservation, str, bool]:
-        if self._claimed:
-            raise ProtocolError("computer adapter state was already adopted")
-        self._claimed = True
-        return self.adapter, self.observation, self.resource_identity, self.done
 
 
 class ComputerClient(Protocol):
@@ -421,356 +385,6 @@ def _key(value: Any) -> str:
     return compact
 
 
-class CUASpeedRunClient:
-    """Agent-plane HTTP client; reset and verification stay outside this API."""
-
-    def __init__(
-        self,
-        env_url: str,
-        *,
-        bearer_token: str | None = None,
-        timeout_seconds: float = 120,
-        connect_retries: int = 2,
-        client: httpx.AsyncClient | None = None,
-        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
-    ) -> None:
-        parsed = urlsplit(env_url)
-        try:
-            parsed.port
-        except ValueError as exc:
-            raise ValueError("env_url has an invalid port") from exc
-        if (
-            parsed.scheme not in {"http", "https"}
-            or not parsed.netloc
-            or parsed.hostname is None
-            or parsed.username is not None
-            or parsed.password is not None
-        ):
-            raise ValueError("env_url must be an HTTP(S) origin")
-        loopback = _loopback_hostname(parsed.hostname)
-        path_token = _cua_path_token(parsed.path)
-        if (
-            parsed.query
-            or parsed.fragment
-            or not _integer(connect_retries)
-            or connect_retries < 0
-            or not _finite(timeout_seconds)
-            or timeout_seconds <= 0
-        ):
-            raise ValueError("invalid CUA gateway configuration")
-        if parsed.scheme == "http" and not loopback:
-            raise ValueError("non-loopback CUA gateways require HTTPS")
-        if not loopback and bearer_token is None and path_token is None:
-            raise ValueError(
-                "non-loopback CUA gateways require a run-path or bearer token"
-            )
-        if bearer_token is not None and (
-            not isinstance(bearer_token, str)
-            or not 0 < len(bearer_token) <= 8192
-            or any(ord(item) < 32 or ord(item) == 127 for item in bearer_token)
-        ):
-            raise ValueError("CUA gateway bearer token is invalid")
-        self.env_url = env_url.rstrip("/")
-        self._headers = (
-            {"Authorization": f"Bearer {bearer_token}"}
-            if bearer_token is not None
-            else {}
-        )
-        self._authentication = (
-            "url_path_token"
-            if path_token is not None
-            else "bearer"
-            if bearer_token is not None
-            else "loopback_none"
-        )
-        self.connect_retries = connect_retries
-        if client is not None and not callable(getattr(client, "stream", None)):
-            raise ValueError("CUA gateway client must expose stream")
-        self._client = client or httpx.AsyncClient(timeout=timeout_seconds)
-        self._owns_client = client is None
-        if not callable(sleep):
-            raise ValueError("sleep must be callable")
-        self._sleep = sleep
-        self._done = False
-
-    async def _request(
-        self,
-        method: str,
-        path: str,
-        *,
-        json_body: Any = None,
-        retry_connection: bool,
-        retry_connect_timeout: bool = False,
-        max_response_bytes: int = MAX_CUA_RESPONSE_BYTES,
-    ) -> bytes:
-        gateway = f"CUA gateway {path}"
-        offline = f"could not connect to CUA gateway for {path}"
-        for attempt in range(self.connect_retries + 1):
-            try:
-                async with self._client.stream(
-                    method,
-                    f"{self.env_url}/{path}",
-                    headers=self._headers,
-                    json=json_body,
-                ) as response:
-                    if not 200 <= response.status_code < 300:
-                        raise _infra(gateway, f"returned HTTP {response.status_code}")
-                    return await read_bounded_body(response, max_response_bytes)
-            except ResponseBodyTooLarge as exc:
-                raise _infra(gateway, "response exceeds its byte limit") from exc
-            except (TypeError, ValueError) as exc:
-                raise _infra(gateway, "response transport failed") from exc
-            except (httpx.ConnectTimeout, httpx.ConnectError) as exc:
-                retry = retry_connection or (
-                    retry_connect_timeout and isinstance(exc, httpx.ConnectTimeout)
-                )
-                if not retry or attempt == self.connect_retries:
-                    raise InfrastructureError(offline) from exc
-                await self._sleep(attempt + 1)
-            except (httpx.NetworkError, httpx.RemoteProtocolError) as exc:
-                if not retry_connection or attempt == self.connect_retries:
-                    raise _infra(gateway, "request failed") from exc
-                await self._sleep(attempt + 1)
-            except httpx.HTTPError as exc:
-                raise _infra(gateway, "request failed") from exc
-        raise AssertionError("unreachable")
-
-    async def observe(self) -> ComputerObservation:
-        content = await self._request(
-            "GET",
-            "observe",
-            retry_connection=True,
-            max_response_bytes=MAX_CUA_OBSERVE_RESPONSE_BYTES,
-        )
-        try:
-            payload = strict_json_loads(content)
-        except ValueError as exc:
-            raise _infra("gateway", "observe returned invalid JSON") from exc
-        if (
-            not isinstance(payload, Mapping)
-            or not isinstance(payload.get("png_b64"), str)
-            or not isinstance(payload.get("meta"), Mapping)
-        ):
-            raise _infra("gateway", "observe response requires png_b64 and meta")
-        encoded = payload["png_b64"]
-        if len(encoded) > MAX_SCREENSHOT_BASE64_CHARS:
-            raise _infra("gateway", "observe screenshot exceeds the base64 byte limit")
-        try:
-            png = base64.b64decode(encoded, validate=True)
-        except (TypeError, ValueError) as exc:
-            raise _infra("gateway", "observe returned invalid base64") from exc
-        if len(png) > MAX_SCREENSHOT_BYTES:
-            raise _infra("gateway", "observe screenshot exceeds the decoded byte limit")
-        try:
-            width, height = validate_png(png)
-        except InfrastructureError as exc:
-            raise _infra("gateway", "observe returned an invalid PNG") from exc
-        metadata = dict(payload["meta"])
-        metadata.update({"width": width, "height": height})
-        return ComputerObservation(png, metadata)
-
-    async def step(self, actions: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
-        translated = to_cua_speedrun_actions(actions)
-        if not translated:
-            return {}
-        content = await self._request(
-            "POST",
-            "step",
-            json_body={"actions": translated},
-            retry_connection=False,
-            retry_connect_timeout=True,
-        )
-        try:
-            payload = strict_json_loads(content)
-        except ValueError as exc:
-            raise _infra("gateway", "step returned invalid JSON") from exc
-        if not isinstance(payload, Mapping):
-            raise _infra("gateway", "step response must be an object")
-        if "ok" in payload:
-            info = payload.get("info")
-            if payload.get("ok") is not True or not isinstance(info, Mapping):
-                raise _infra("gateway", "step response has an invalid envelope")
-            result = dict(info)
-        else:
-            result = dict(payload)
-        done = result.get("done", False)
-        if not isinstance(done, bool):
-            raise _infra("gateway", "step done must be a boolean")
-        self._done = done
-        result["done"] = done
-        return result
-
-    @property
-    def episode_done(self) -> bool:
-        return self._done
-
-    async def done(self) -> None:
-        content = await self._request(
-            # Finalization is not idempotent.  A transport failure after the
-            # request was sent is ambiguous, so never replay it automatically.
-            "POST",
-            "done",
-            retry_connection=False,
-        )
-        try:
-            payload = strict_json_loads(content)
-        except ValueError as exc:
-            raise _infra("gateway", "done returned invalid JSON") from exc
-        if not isinstance(payload, Mapping) or payload.get("ok") is not True:
-            raise _infra("gateway", "done response requires ok=true")
-
-    async def close(self) -> None:
-        if self._owns_client:
-            await self._client.aclose()
-
-    def resource_identity(self) -> str:
-        return "cua-gateway:" + hashlib.sha256(self.env_url.encode()).hexdigest()
-
-    def provenance(self) -> Mapping[str, Any]:
-        parsed = urlsplit(self.env_url)
-        return {
-            "client": "cua_speed_run",
-            "origin": f"{parsed.scheme}://{parsed.netloc}",
-            "revision": CUA_SPEED_RUN_REVISION,
-            "authenticated": self._authentication != "loopback_none",
-            "authentication": self._authentication,
-            "max_response_bytes": MAX_CUA_RESPONSE_BYTES,
-            "max_observe_response_bytes": MAX_CUA_OBSERVE_RESPONSE_BYTES,
-            "max_screenshot_bytes": MAX_SCREENSHOT_BYTES,
-            "max_screenshot_width": MAX_SCREENSHOT_WIDTH,
-            "max_screenshot_height": MAX_SCREENSHOT_HEIGHT,
-            "max_screenshot_pixels": MAX_SCREENSHOT_PIXELS,
-        }
-
-
-def _loopback_hostname(hostname: str) -> bool:
-    if hostname.casefold() == "localhost":
-        return True
-    try:
-        return ipaddress.ip_address(hostname).is_loopback
-    except ValueError:
-        return False
-
-
-def _cua_path_token(path: str) -> str | None:
-    if path in {"", "/"}:
-        return None
-    parts = path.split("/")
-    token = parts[1] if len(parts) == 2 and not parts[0] else ""
-    if (
-        not token
-        or len(token) > 512
-        or not all(
-            item.isascii() and (item.isalnum() or item in {"-", "_"}) for item in token
-        )
-    ):
-        raise ValueError("env_url path must be one URL-safe cua-speed-run token")
-    return token
-
-
-class CUASpeedRunAdapterClient:
-    """In-process client for a benchmark-owned cua-speed-run EnvAdapter."""
-
-    def __init__(
-        self,
-        adapter: Any,
-        *,
-        owns_adapter: bool = True,
-        resource_identity: str | None = None,
-        observation_sink: Callable[[ComputerObservation], Any] | None = None,
-        transition_sink: Callable[[Mapping[str, Any]], Any] | None = None,
-    ) -> None:
-        for name in ("observe", "step", "close"):
-            if not callable(getattr(adapter, name, None)):
-                raise ValueError(f"cua-speed-run adapter must expose {name}")
-        if not isinstance(owns_adapter, bool):
-            raise ValueError("owns_adapter must be boolean")
-        _optional_identity(resource_identity)
-        _optional_callable(observation_sink, "observation_sink")
-        _optional_callable(transition_sink, "transition_sink")
-        self.adapter = adapter
-        self.owns_adapter = owns_adapter
-        self._identity = resource_identity or f"cua-adapter:{uuid.uuid4().hex}"
-        self._observation: ComputerObservation | None = None
-        self.observation_sink = observation_sink
-        self.transition_sink = transition_sink
-        self._done = False
-
-    async def observe(self) -> ComputerObservation:
-        observed = await complete_in_thread(self.adapter.observe)
-        png = getattr(observed, "png", None)
-        metadata = getattr(observed, "meta", {})
-        if not isinstance(png, bytes) or not isinstance(metadata, Mapping):
-            raise _infra("cua-speed-run adapter", "returned an invalid observation")
-        try:
-            validate_png(png)
-        except InfrastructureError as exc:
-            raise _infra("cua-speed-run adapter", "returned an invalid PNG") from exc
-        self._observation = ComputerObservation(png, dict(metadata))
-        if self.observation_sink is not None:
-            emitted = self.observation_sink(self._observation)
-            if inspect.isawaitable(emitted):
-                await emitted
-        return self._observation
-
-    async def step(self, actions: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
-        translated = to_cua_speedrun_actions(actions)
-        if not translated:
-            return {}
-        result = await complete_in_thread(self.adapter.step, translated)
-        if not isinstance(result, Mapping):
-            raise _infra("cua-speed-run adapter", "step must return an object")
-        done = result.get("done", False)
-        if not isinstance(done, bool):
-            raise _infra("cua-speed-run adapter", "done must be a boolean")
-        self._done = done
-        if self.transition_sink is not None:
-            emitted = self.transition_sink(
-                {"actions": translated, "result": dict(result)}
-            )
-            if inspect.isawaitable(emitted):
-                await emitted
-        return dict(result)
-
-    @property
-    def episode_done(self) -> bool:
-        return self._done
-
-    async def done(self) -> None:
-        return None
-
-    async def close(self) -> None:
-        if self.owns_adapter:
-            await complete_in_thread(self.adapter.close)
-
-    async def export_state(self) -> AdapterLiveState:
-        if self.owns_adapter:
-            raise NotImplementedError(_NO_OWNER_EXPORT)
-        observation = self._observation or await self.observe()
-        return AdapterLiveState(self.adapter, observation, self._identity, self._done)
-
-    async def adopt_state(self, state: Any) -> ComputerObservation:
-        if self.owns_adapter:
-            raise NotImplementedError(_NO_OWNER_ADOPT)
-        if not isinstance(state, AdapterLiveState):
-            raise ProtocolError("computer adapter can adopt only adapter live state")
-        adapter, observation, identity, done = state.claim()
-        self.adapter = adapter
-        self._observation = observation
-        self._identity = identity
-        self._done = done
-        return observation
-
-    def resource_identity(self) -> str:
-        return self._identity
-
-    def provenance(self) -> Mapping[str, Any]:
-        return {
-            "client": "cua_speed_run_adapter",
-            "revision": CUA_SPEED_RUN_REVISION,
-        }
-
-
 class OSWorldClient:
     """Wrap DesktopEnv while keeping reset and evaluate outside the agent plane."""
 
@@ -957,77 +571,6 @@ def encode_osworld_action(action: Mapping[str, Any]) -> str:
     if kind == "wait":
         return f"time.sleep({action['seconds']!r})"
     raise InvalidAction(f"cannot encode OSWorld action {kind!r}")
-
-
-def to_cua_speedrun_actions(
-    actions: Sequence[Mapping[str, Any]],
-) -> list[Mapping[str, Any]]:
-    """Translate the public computer schema to cua-speed-run's agent plane."""
-
-    translated: list[Mapping[str, Any]] = []
-    click_names = {
-        ("left", 1): "left_click",
-        ("left", 2): "double_click",
-        ("left", 3): "triple_click",
-        ("right", 1): "right_click",
-        ("middle", 1): "middle_click",
-    }
-    for action in actions:
-        kind = action["type"]
-        if kind == "screenshot":
-            continue
-        if kind == "click":
-            button = str(action["button"])
-            clicks = int(action["clicks"])
-            name = click_names.get((button, clicks))
-            if name is not None:
-                translated.append(
-                    {"mouse": {name: [int(action["x"]), int(action["y"])]}}
-                )
-            else:
-                fallback = f"{button}_click"
-                translated.extend(
-                    {"mouse": {fallback: [int(action["x"]), int(action["y"])]}}
-                    for _ in range(clicks)
-                )
-        elif kind == "move":
-            translated.append({"mouse": {"move": [int(action["x"]), int(action["y"])]}})
-        elif kind == "drag":
-            if action["button"] == "middle":
-                raise InvalidAction("cua-speed-run does not support middle-button drag")
-            name = f"{action['button']}_click_drag"
-            translated.append(
-                {
-                    "mouse": {
-                        name: [
-                            [int(action["x"]), int(action["y"])],
-                            [int(action["to_x"]), int(action["to_y"])],
-                        ]
-                    }
-                }
-            )
-        elif kind == "scroll":
-            if action["dy"]:
-                translated.append({"mouse": {"scroll": int(action["dy"])}})
-            if action["dx"]:
-                translated.extend(
-                    (
-                        {"keyboard": {"key_down": "shift"}},
-                        {"mouse": {"scroll": int(action["dx"])}},
-                        {"keyboard": {"key_up": "shift"}},
-                    )
-                )
-        elif kind == "type":
-            translated.append({"keyboard": {"text": str(action["text"])}})
-        elif kind == "key":
-            translated.append({"keyboard": {"keys": list(action["keys"])}})
-        elif kind in {"key_down", "key_up"}:
-            translated.append({"keyboard": {kind: str(action["key"])}})
-        elif kind == "wait":
-            translated.append({"action": "wait", "time": float(action["seconds"])})
-        else:
-            raise InvalidAction(f"cannot translate computer action {kind!r}")
-    return translated
 
 
 class CUAEnvironment(BaseEnvironment):
@@ -1221,15 +764,9 @@ class OSWorldEnvironment(CUAEnvironment):
 
 
 __all__ = [
-    "AdapterLiveState",
     "CUAEnvironment",
-    "CUASpeedRunClient",
-    "CUASpeedRunAdapterClient",
-    "CUA_SPEED_RUN_REVISION",
     "ComputerClient",
     "ComputerObservation",
-    "MAX_CUA_OBSERVE_RESPONSE_BYTES",
-    "MAX_CUA_RESPONSE_BYTES",
     "MAX_SCREENSHOT_BYTES",
     "MAX_SCREENSHOT_HEIGHT",
     "MAX_SCREENSHOT_PIXELS",
@@ -1244,7 +781,6 @@ __all__ = [
     "computer_action_schema",
     "complete_in_thread",
     "encode_osworld_action",
-    "to_cua_speedrun_actions",
     "validate_computer_actions",
     "validate_png",
 ]

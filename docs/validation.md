@@ -27,7 +27,7 @@ provenance records may be retained under a user-owned durable data directory.
 
 ## Deterministic gates
 
-The frozen source passed **396 tests on CPython 3.12.5**, the only
+The frozen source passed **369 tests on CPython 3.12.5**, the only
 interpreter installed on the current node; the four-interpreter 3.10–3.13
 matrix remains enforced in CI. The suite covers full CLI evaluation paths for every benchmark
 (argparse through worker, spec binding, agent loop, and artifact
@@ -83,7 +83,7 @@ paid model call. They were run during the reference audit, before the final
 source freeze. The computer evaluations bind their exact pre-freeze harness
 identity in saved manifests; the web artifacts bind their exact retrieval
 inputs and trace bytes. Later source hardening — including the audit/cleanup, ProgramBench, and
-flattening passes — is covered by the deterministic 396-test gate,
+flattening passes — is covered by the deterministic 369-test gate,
 not by retroactively relabelling these as final-source E2E runs. Scores of zero
 below are deliberate and say nothing about agent quality.
 
@@ -93,20 +93,33 @@ below are deliberate and say nothing about agent quality.
 | BrowseComp-Plus fixed retrieval, single | pass | exact 2.17 GB Lucene index, Anserini 1.1.1 and Qwen tokenizer; one search returned the canonical five 512-token snippets and official run schema; 2 model calls and 1 tool call; trace SHA `b517ef8d…`; no judge score |
 | BrowseComp-Plus fixed retrieval, two agents | pass | the same real Lucene backend plus child spawn, message/read/wait and result production; 2 completed agents, 6 model calls and 4 tool calls; trace SHA `696cde45…`; no judge score |
 | Chromium page reader | pass | real Chromium opened `https://example.com`, checked the successful response and final public URL, extracted bounded title/text, and cleaned up; transport smoke only |
-| cua-speed-run, single | pass in 24.26 s | exact upstream checkout and submodule, real QEMU/KVM guest, 1600×900 observation, one deliberate wait action, hidden checker, artifact commit, and cleanup; 2 model calls and 1 tool call; score 0; manifest SHA `0f919dc5…`, harness `28c22d61…` |
 | OSWorld v1, single | pass in 151.15 s | exact checkout, real official guest, Apptainer compatibility client, official reset/setup/action/evaluate lifecycle including the reference 60-second initial settle, fresh observation, and 20-second pre-evaluation settle, artifact commit, and cleanup; 2 model calls and 1 tool call; score 0; manifest SHA `eb1240eb…`, harness `69a9393c…` |
-| cua-speed-run, two agents | pass in 25.23 s | two independent QEMU/KVM guests; child spawn, mailbox delivery, wait, explicit live-session adoption, post-adoption action, hidden checker on the adopted child session, and cleanup; 7 model calls and 5 tool calls; score 0; manifest SHA `3d422efa…`, harness `42039442…` |
 | OSWorld v2 boot | machine/controller pass only | exact tagged checkout and v2 image booted through the pinned runtime; the controller reported Linux and returned a valid 1920×1080 screenshot; no task reset, action, evaluation, or score was attempted |
-
-The successful two-agent trace contains exactly two `agent_spawned`, two
-`agent_completed`, two `message_sent`, and one `agent_state_adopted` event. The
-two message events are the child's explicit message to the root and its
-automatically delivered terminal result.
 
 OSWorld v2's task-class dataset is separately gated. The node received HTTP
 401 when acquiring it, so the adapter correctly refuses to replace it with v1
 or synthetic tasks. The v2 result proves only image boot and controller
 connectivity.
+
+## Post-slim re-verification
+
+The canaries above predate the current source. After removing cua-speed-run
+and splitting the two longest functions, every benchmark the harness still
+ships was re-acquired from upstream and re-run against the final tree, again
+with scripted models and no API key. Full byte values are in
+`post_slim_reverification` in `validation-record.json`.
+
+| Canary | Result | What was exercised |
+|---|---|---|
+| SWE-bench generation | pass | official `astropy__astropy-12907` image through Apptainer; 4 model calls, 3 `bash` calls, 506-byte exported patch carrying the agent's edit; image SHA `28717945…` — note this differs from the `3c2e9eb1…` above because the upstream `:latest` tag moved, which is exactly what image-identity binding exists to catch |
+| ProgramBench generation | pass | real `task_cleanroom_v6` image through the new Apptainer backend; DNS resolution inside the container failed as required; whole-workspace `submission.tar.gz` of 374,426 bytes over 64 members containing the agent's file |
+| BrowseComp-Plus fixed retrieval | pass | 2.1 GB Lucene index, Anserini fat JAR whose SHA-256 equals the pinned constant, tokenizer at the pinned commit; five hits, snippets truncated at exactly the 512-token budget, and the session reference withheld from the model |
+| OSWorld v1 boot | pass | pinned checkout, real 24 GB `Ubuntu.qcow2`, QEMU 9.1.0 under KVM through the Apptainer shim with no Docker daemon; a 1,668,417-byte PNG screenshot and a second frame after a `pyautogui` step. Reset without a `task_config`, so this proves the machine and observation path, not a task's setup steps |
+
+Two limits of this pass are worth stating plainly. No official grader ran:
+both the SWE-bench and ProgramBench graders require Docker, which this node
+does not have, so no score is claimed for any benchmark. And live BrowseComp
+was not exercised, because it needs a SerpAPI key that was never supplied.
 
 ## Machine-image evidence
 
@@ -120,12 +133,8 @@ The full acquisition commands and provenance contract are documented in
 | OSWorld runtime SIF | 80,822,272 bytes | `8a9ee8e99bae986e3b7633419bce2043906c9892bd555f4765b7fa6b2adebccd`; source OCI manifest `sha256:0e6497a9295647cf05bf2b2af522fdd79bdeba2737595259cab310a3bcf6baa9` |
 | OSWorld v2 official archive | 14,189,763,267 bytes | `eb737ae70b49849e24af407de6a518439a23de05a8497096a948334ce0a909aa` |
 | OSWorld v2 extracted qcow2 | 27,402,633,216 bytes | `3d632f031459583cf936e0c4c5bb939122df0fec85aecb0d044ef2d3e5863335` |
-| cua-speed-run node build | 6,701,187,072 bytes | `a9d802e021ac883fc4877bf334aaef48505502d23ac51b097e39ed7b3bb8d85f` |
 
-Both extracted OSWorld images passed `qemu-img check`. The cua-speed-run image
-was produced by the pinned upstream builder; because that builder consumes
-mutable network inputs, its hash is an observed node-build identity rather than
-a universal upstream release hash.
+Both extracted OSWorld images passed `qemu-img check`.
 
 ## Earlier operator narrative
 
@@ -138,7 +147,7 @@ as deterministic gate results, and should not be used for model comparisons.
 |---|---|---|
 | credentialed provider adapter | direct SWE, fixture web, and recursive SWE runs completed against an OpenAI-compatible deployment; the recursive run exercised child messaging and patch adoption | not rerun after final changes; no model credential is available for a fresh run; private endpoint, model, session-header, and credential details are intentionally not recorded |
 | SWE-bench Verified, single | a paid-model patch for one official instance passed its `FAIL_TO_PASS` test inside the task image | the official 4.1.0 scoring harness was not run because this node has no Docker; this is operator narrative, not an official score |
-| SWE-bench Verified, multi-agent mode | the same instance completed through the multi-agent harness and its exported patch passed the target test; the model did not spawn a child | no official Docker grading and no release score; live child communication is evidenced separately by the reference-pass cua-speed-run canary |
+| SWE-bench Verified, multi-agent mode | the same instance completed through the multi-agent harness and its exported patch passed the target test; the model did not spawn a child | no official Docker grading and no release score; live child communication is evidenced separately by the reference-pass two-agent BrowseComp-Plus canary |
 | BrowseComp-Plus, paid multi-agent mode | a root plus three children used the real Lucene backend and adopted a child's browser state, but the team hit its 3600-second wall clock | incomplete run; no official score and no claim of superiority |
 | BrowseComp live web | no run | `SERPAPI_API_KEY` is not configured; the fixture web canary is protocol evidence only |
 
@@ -146,18 +155,17 @@ as deterministic gate results, and should not be used for model comparisons.
 
 Multi-agent mode adds one model-facing tool, `agent`, with six actions:
 `spawn`, `send`, `inbox`, `wait`, `stop`, and `adopt`. The benchmark runners
-accept the same mode, while direct `run --environment computer` correctly
-refuses it because that path has no isolated machine factory. State adoption is
-domain-specific: SWE patches, browser reference sets with backend-identity
-checks, and pool-owned live computer sessions.
+accept the same mode. State adoption is domain-specific: SWE patches, browser
+reference sets with backend-identity checks, and pool-owned live computer
+sessions.
 
 Deterministic tests cover blocking inbox delivery, direct messaging, delivery ordering,
 terminal-recipient rejection, descendant-only subtree stopping, capacity
 release after cleanup, message byte/hash trace identity, invalid actions, and
 ordered state-adoption history. A depth-12 recursion test proves there is no
 hard-coded topology depth; active and total agent limits remain configurable
-resource budgets. The reference two-machine canary supplies real
-VM evidence for spawn/message/wait/adopt; it is still a topology and plumbing
+resource budgets. The reference two-agent canary supplies real backend
+evidence for spawn/message/wait/adopt; it is still a topology and plumbing
 test, not evidence of improved benchmark performance.
 
 ## Explicitly unvalidated boundaries
@@ -172,14 +180,6 @@ test, not evidence of improved benchmark performance.
 - OSWorld v2 multi-phase tasks and `ASK_USER`/user-simulator tasks are rejected
   before machine or model startup because the minimal protocol does not yet
   implement those official lifecycles.
-- The maintained in-process cua-speed-run adapter preserves official clock,
-  grace, and checker semantics, but cannot safely reproduce the official
-  executor's separate-process 90-second environment and 300-second verifier
-  watchdogs. Operators requiring those watchdog guarantees must use the
-  upstream executor topology.
-- The default Gym-Anything QEMU runtime reference is mutable upstream; the run
-  manifest records the effective reference, and comparable runs should pin a
-  local SIF or digest-qualified OCI image.
 - No full benchmark suite or statistically meaningful model comparison was
   run.
 - Real environment canaries predate the final source freeze; the final source

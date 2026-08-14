@@ -16,6 +16,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -31,6 +32,16 @@ from .types import _require_finite_number, _require_mapping, strict_json_loads
 
 _FILE_IDENTITY_FIELDS = ("size_bytes", "sha256")
 _TREE_IDENTITY_FIELDS = ("file_count", "size_bytes", "sha256")
+
+
+@dataclass(frozen=True)
+class _GradePlan:
+    """What a per-benchmark grade helper hands back to ``_grade``."""
+
+    inputs: Mapping[str, Any]
+    grader: Mapping[str, Any]
+    argv: tuple[str, ...]
+    verify_grader_assets: Callable[[], Mapping[str, Any]] | None
 
 
 def _required_path(value: Path | None, option: str) -> Path:
@@ -79,7 +90,6 @@ def _grade(args: argparse.Namespace) -> int:
             },
         },
     }
-    verify_grader_assets: Callable[[], Mapping[str, Any]] | None = None
 
     def observed_grader_runtime(project: str) -> Mapping[str, Any]:
         observed = _grader_runtime_identity(
@@ -92,291 +102,59 @@ def _grade(args: argparse.Namespace) -> int:
         return observed
 
     if args.benchmark == "swebench":
-        from .benchmarks.swebench import (
-            collect_predictions,
-            inspect_swebench_grade_inputs,
-            official_grader_argv,
-            swebench_grader_source_identity,
-            verify_swebench_grader_images,
-        )
-
-        if args.dataset is None:
-            raise ValueError(
-                "SWE-bench grading requires --dataset with a local .json/.jsonl file"
-            )
-        dataset = _required_path(args.dataset, "--dataset")
-        predictions = evaluation / "predictions.jsonl"
-        _reject_grade_output_overlap(
-            grade_output, evaluation / "instances", "evaluation instances"
-        )
-        collect_predictions(evaluation, predictions)
-        source_inputs = inspect_swebench_grade_inputs(
-            predictions=predictions, dataset=dataset
-        )
-        _verify_grade_prompt_binding(generation_manifest, source_inputs)
-        _create_private_grade_output(grade_output)
-        input_root = grade_output / "inputs" / "swebench"
-        snapshot_predictions = input_root / "predictions.jsonl"
-        snapshot_dataset = input_root / ("dataset" + dataset.suffix.casefold())
-        _snapshot_grade_input(
-            predictions,
-            snapshot_predictions,
-            source_inputs["predictions"],
-            label="SWE-bench predictions",
-        )
-        _snapshot_grade_input(
-            dataset,
-            snapshot_dataset,
-            source_inputs["dataset"],
-            label="SWE-bench dataset",
-        )
-        inputs = {
-            **inspect_swebench_grade_inputs(
-                predictions=snapshot_predictions, dataset=snapshot_dataset
-            ),
-            "sources": source_inputs,
-        }
-        _verify_grade_prompt_binding(generation_manifest, inputs)
-        argv = official_grader_argv(
-            predictions=snapshot_predictions,
-            dataset_name=str(snapshot_dataset),
-            run_id=args.run_id,
-            max_workers=args.max_workers,
-            python_executable=str(isolated_runtime["python_executable"]),
-        )
-        swebench_root = _isolated_module_root(isolated_runtime, "swebench")
-        grader_source = swebench_grader_source_identity(swebench_root)
-        grader_images = verify_swebench_grader_images(
-            generation_manifest,
-            python_executable=str(isolated_runtime["python_executable"]),
+        plan = _grade_swebench(
+            args,
+            evaluation=evaluation,
+            generation_manifest=generation_manifest,
+            grade_output=grade_output,
             grader_environment=grader_environment,
+            isolated_runtime=isolated_runtime,
+            runtime=runtime,
+            observed_grader_runtime=observed_grader_runtime,
         )
-        grader = {
-            "project": "SWE-bench",
-            "version": runtime["packages"]["swebench"],
-            "source": grader_source,
-            "images": grader_images,
-        }
-
-        def verify_swebench_grader_assets() -> Mapping[str, Any]:
-            observed_runtime = observed_grader_runtime("SWE-bench")
-            observed_source = swebench_grader_source_identity(
-                _isolated_module_root(observed_runtime, "swebench")
-            )
-            if observed_source != grader_source:
-                raise RuntimeError("SWE-bench grader source changed during grading")
-            observed_images = verify_swebench_grader_images(
-                generation_manifest,
-                python_executable=str(observed_runtime["python_executable"]),
-                grader_environment=grader_environment,
-            )
-            if observed_images != grader_images:
-                raise RuntimeError("SWE-bench grader images changed during grading")
-            return {
-                "runtime": observed_runtime,
-                "source": observed_source,
-                "images": observed_images,
-            }
-
-        verify_grader_assets = verify_swebench_grader_assets
     elif args.benchmark == "programbench":
-        from .benchmarks.programbench import (
-            PROGRAMBENCH_IMAGE_TAG,
-            PROGRAMBENCH_REVISION,
-            PROGRAMBENCH_VERSION,
-            collect_submissions,
-            inspect_programbench_checkout,
-            inspect_programbench_grade_inputs,
-            official_programbench_grader_argv,
+        plan = _grade_programbench(
+            args,
+            evaluation=evaluation,
+            generation_manifest=generation_manifest,
+            grade_output=grade_output,
+            isolated_runtime=isolated_runtime,
+            runtime=runtime,
+            observed_grader_runtime=observed_grader_runtime,
         )
-
-        checkout = _required_path(args.checkout, "--checkout")
-        run_directory = evaluation / "official_run"
-        for protected, label in (
-            (evaluation / "instances", "evaluation instances"),
-            (run_directory, "collected ProgramBench submissions"),
-            (checkout, "ProgramBench checkout"),
-        ):
-            _reject_grade_output_overlap(grade_output, protected, label)
-        collect_submissions(evaluation, run_directory)
-        source_inputs = inspect_programbench_grade_inputs(
-            run_directory=run_directory, checkout=checkout
-        )
-        _verify_grade_prompt_binding(generation_manifest, source_inputs)
-        _create_private_grade_output(grade_output)
-        snapshot_run = grade_output / "inputs" / "programbench" / "run"
-        _snapshot_grade_input(
-            run_directory,
-            snapshot_run,
-            source_inputs["runs"],
-            label="ProgramBench submissions",
-            tree=True,
-        )
-        inputs = {
-            **inspect_programbench_grade_inputs(
-                run_directory=snapshot_run, checkout=checkout
-            ),
-            "sources": source_inputs,
-        }
-        _verify_grade_prompt_binding(generation_manifest, inputs)
-        eval_dir = _grade_eval_directory(grade_output, args.eval_dir)
-        eval_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        argv = official_programbench_grader_argv(
-            run_directory=snapshot_run,
-            output=eval_dir,
-            python_executable=str(isolated_runtime["python_executable"]),
-            workers=args.max_workers,
-        )
-        grader_checkout = inspect_programbench_checkout(checkout)
-        grader = {
-            "project": "ProgramBench",
-            "revision": PROGRAMBENCH_REVISION,
-            "version": runtime["packages"]["programbench"],
-            "image_tag": PROGRAMBENCH_IMAGE_TAG,
-            "checkout": grader_checkout,
-            "package_root": str(
-                _isolated_module_root(isolated_runtime, "programbench")
-            ),
-        }
-        if grader_checkout["version"] != PROGRAMBENCH_VERSION:
-            raise ValueError(
-                f"official ProgramBench grading requires {PROGRAMBENCH_VERSION}"
-            )
-
-        def verify_programbench_grader_assets() -> Mapping[str, Any]:
-            observed_runtime = observed_grader_runtime("ProgramBench")
-            observed_checkout = inspect_programbench_checkout(checkout)
-            if observed_checkout != grader_checkout:
-                raise RuntimeError(
-                    "ProgramBench grader checkout changed during grading"
-                )
-            revalidated_argv = official_programbench_grader_argv(
-                run_directory=snapshot_run,
-                output=eval_dir,
-                python_executable=str(observed_runtime["python_executable"]),
-                workers=args.max_workers,
-            )
-            if revalidated_argv != argv:
-                raise RuntimeError("ProgramBench grader command changed during grading")
-            return {"runtime": observed_runtime, "checkout": observed_checkout}
-
-        verify_grader_assets = verify_programbench_grader_assets
     else:
-        from .benchmarks.web import (
-            collect_browsecomp_plus_runs,
-            inspect_browsecomp_plus_grade_inputs,
-            official_browsecomp_plus_grader_argv,
+        plan = _grade_browsecomp_plus(
+            args,
+            evaluation=evaluation,
+            generation_manifest=generation_manifest,
+            grade_output=grade_output,
+            isolated_runtime=isolated_runtime,
+            observed_grader_runtime=observed_grader_runtime,
         )
+    return _run_official_grader(
+        args,
+        plan,
+        generation_manifest_path=generation_manifest_path,
+        generation_manifest=generation_manifest,
+        grade_output=grade_output,
+        grader_environment=grader_environment,
+        runtime=runtime,
+    )
 
-        if args.judge_model is None:
-            raise ValueError(
-                "BrowseComp-Plus grading requires --judge-model as a local "
-                "immutable model snapshot directory"
-            )
-        judge_model_argument = Path(args.judge_model).expanduser()
-        judge_model = judge_model_argument.resolve()
-        if judge_model_argument.is_symlink() or not judge_model.is_dir():
-            raise ValueError("--judge-model must be a local non-symlink directory")
-        checkout = _required_path(args.checkout, "--checkout")
-        ground_truth = _required_path(args.ground_truth, "--ground-truth")
-        qrel = _required_path(args.qrel_evidence, "--qrel-evidence")
-        input_dir = evaluation / "official_runs"
-        for protected, label in (
-            (evaluation / "instances", "evaluation instances"),
-            (input_dir, "collected BrowseComp-Plus runs"),
-            (checkout, "BrowseComp-Plus checkout"),
-            (judge_model, "BrowseComp-Plus judge model"),
-        ):
-            _reject_grade_output_overlap(grade_output, protected, label)
-        collect_browsecomp_plus_runs(evaluation, input_dir)
-        source_inputs = inspect_browsecomp_plus_grade_inputs(
-            input_dir=input_dir,
-            ground_truth=ground_truth,
-            qrel_evidence=qrel,
-        )
-        _verify_grade_prompt_binding(generation_manifest, source_inputs)
-        _create_private_grade_output(grade_output)
-        input_root = grade_output / "inputs" / "browsecomp-plus"
-        snapshot_runs = input_root / "runs"
-        snapshot_truth = input_root / ("ground_truth" + ground_truth.suffix.casefold())
-        snapshot_qrel = input_root / ("qrel_evidence" + qrel.suffix.casefold())
-        _snapshot_grade_input(
-            input_dir,
-            snapshot_runs,
-            source_inputs["runs"],
-            label="BrowseComp-Plus runs",
-            tree=True,
-        )
-        _snapshot_grade_input(
-            ground_truth,
-            snapshot_truth,
-            source_inputs["ground_truth"],
-            label="BrowseComp-Plus ground truth",
-        )
-        _snapshot_grade_input(
-            qrel,
-            snapshot_qrel,
-            source_inputs["qrel_evidence"],
-            label="BrowseComp-Plus qrel evidence",
-        )
-        inputs = {
-            **inspect_browsecomp_plus_grade_inputs(
-                input_dir=snapshot_runs,
-                ground_truth=snapshot_truth,
-                qrel_evidence=snapshot_qrel,
-            ),
-            "sources": source_inputs,
-        }
-        _verify_grade_prompt_binding(generation_manifest, inputs)
-        eval_dir = _grade_eval_directory(grade_output, args.eval_dir)
-        eval_dir.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        argv = official_browsecomp_plus_grader_argv(
-            checkout=checkout,
-            input_dir=snapshot_runs,
-            ground_truth=snapshot_truth,
-            eval_dir=eval_dir,
-            qrel_evidence=snapshot_qrel,
-            python_executable=str(isolated_runtime["python_executable"]),
-            model=str(judge_model),
-            tensor_parallel_size=args.tensor_parallel_size,
-        )
-        grader = {
-            "project": "BrowseComp-Plus",
-            "revision": "046949032b0328319cc9a02663a759ec601d9402",
-            "grader_script": immutable_file_identity(
-                checkout / "scripts_evaluation" / "evaluate_run.py",
-                label="BrowseComp-Plus grader script",
-            ),
-            "dependency_lock": immutable_file_identity(
-                checkout / "uv.lock", label="BrowseComp-Plus dependency lock"
-            ),
-            "judge_model": immutable_tree_identity(
-                judge_model, label="BrowseComp-Plus judge model"
-            ),
-        }
 
-        def verify_browsecomp_plus_grader_assets() -> Mapping[str, Any]:
-            observed_runtime = observed_grader_runtime("BrowseComp-Plus")
-            revalidated_argv = official_browsecomp_plus_grader_argv(
-                checkout=checkout,
-                input_dir=snapshot_runs,
-                ground_truth=snapshot_truth,
-                eval_dir=eval_dir,
-                qrel_evidence=snapshot_qrel,
-                python_executable=str(observed_runtime["python_executable"]),
-                model=str(judge_model),
-                tensor_parallel_size=args.tensor_parallel_size,
-            )
-            if revalidated_argv != argv:
-                raise RuntimeError(
-                    "BrowseComp-Plus grader command changed during grading"
-                )
-            return {
-                **_verify_browsecomp_plus_grader_assets(grader),
-                "runtime": observed_runtime,
-            }
+def _run_official_grader(
+    args: argparse.Namespace,
+    plan: _GradePlan,
+    *,
+    generation_manifest_path: Path,
+    generation_manifest: Mapping[str, Any],
+    grade_output: Path,
+    grader_environment: Mapping[str, str],
+    runtime: Mapping[str, Any],
+) -> int:
+    """Write the grade manifest, run the grader, and record its sealed result."""
 
-        verify_grader_assets = verify_browsecomp_plus_grader_assets
+    verify_grader_assets = plan.verify_grader_assets
     manifest_value = {
         "schema": "mini-agent-grade-v1",
         "benchmark": args.benchmark,
@@ -385,10 +163,10 @@ def _grade(args: argparse.Namespace) -> int:
             generation_manifest_path, label="evaluation manifest"
         ),
         "evaluation_fingerprint": generation_manifest.get("fingerprint"),
-        "inputs": inputs,
-        "grader": grader,
+        "inputs": plan.inputs,
+        "grader": plan.grader,
         "runtime": runtime,
-        "argv": list(argv),
+        "argv": list(plan.argv),
     }
     manifest_encoded = canonical_bytes(manifest_value)
     manifest = {
@@ -410,7 +188,7 @@ def _grade(args: argparse.Namespace) -> int:
         stdout_path.chmod(0o600)
         stderr_path.chmod(0o600)
         completed = subprocess.run(
-            argv,
+            plan.argv,
             cwd=grade_output,
             check=False,
             stdout=stdout,
@@ -420,7 +198,7 @@ def _grade(args: argparse.Namespace) -> int:
     verified_grader = (
         verify_grader_assets() if verify_grader_assets is not None else None
     )
-    verified_inputs = _verify_grade_snapshot_identities(inputs)
+    verified_inputs = _verify_grade_snapshot_identities(plan.inputs)
     observed_manifest_identity = immutable_file_identity(
         grade_output / "manifest.json", label="grade manifest"
     )
@@ -453,6 +231,340 @@ def _grade(args: argparse.Namespace) -> int:
     )
     print(json.dumps({"output": str(grade_output), **result}, indent=2, sort_keys=True))
     return int(completed.returncode)
+
+
+def _grade_swebench(
+    args: argparse.Namespace,
+    *,
+    evaluation: Path,
+    generation_manifest: Mapping[str, Any],
+    grade_output: Path,
+    grader_environment: Mapping[str, str],
+    isolated_runtime: Mapping[str, Any],
+    runtime: Mapping[str, Any],
+    observed_grader_runtime: Callable[[str], Mapping[str, Any]],
+) -> _GradePlan:
+    from .benchmarks.swebench import (
+        collect_predictions,
+        inspect_swebench_grade_inputs,
+        official_grader_argv,
+        swebench_grader_source_identity,
+        verify_swebench_grader_images,
+    )
+
+    if args.dataset is None:
+        raise ValueError(
+            "SWE-bench grading requires --dataset with a local .json/.jsonl file"
+        )
+    dataset = _required_path(args.dataset, "--dataset")
+    predictions = evaluation / "predictions.jsonl"
+    _reject_grade_output_overlap(
+        grade_output, evaluation / "instances", "evaluation instances"
+    )
+    collect_predictions(evaluation, predictions)
+    source_inputs = inspect_swebench_grade_inputs(
+        predictions=predictions, dataset=dataset
+    )
+    _verify_grade_prompt_binding(generation_manifest, source_inputs)
+    _create_private_grade_output(grade_output)
+    input_root = grade_output / "inputs" / "swebench"
+    snapshot_predictions = input_root / "predictions.jsonl"
+    snapshot_dataset = input_root / ("dataset" + dataset.suffix.casefold())
+    _snapshot_grade_input(
+        predictions,
+        snapshot_predictions,
+        source_inputs["predictions"],
+        label="SWE-bench predictions",
+    )
+    _snapshot_grade_input(
+        dataset,
+        snapshot_dataset,
+        source_inputs["dataset"],
+        label="SWE-bench dataset",
+    )
+    inputs = {
+        **inspect_swebench_grade_inputs(
+            predictions=snapshot_predictions, dataset=snapshot_dataset
+        ),
+        "sources": source_inputs,
+    }
+    _verify_grade_prompt_binding(generation_manifest, inputs)
+    argv = official_grader_argv(
+        predictions=snapshot_predictions,
+        dataset_name=str(snapshot_dataset),
+        run_id=args.run_id,
+        max_workers=args.max_workers,
+        python_executable=str(isolated_runtime["python_executable"]),
+    )
+    swebench_root = _isolated_module_root(isolated_runtime, "swebench")
+    grader_source = swebench_grader_source_identity(swebench_root)
+    grader_images = verify_swebench_grader_images(
+        generation_manifest,
+        python_executable=str(isolated_runtime["python_executable"]),
+        grader_environment=grader_environment,
+    )
+    grader = {
+        "project": "SWE-bench",
+        "version": runtime["packages"]["swebench"],
+        "source": grader_source,
+        "images": grader_images,
+    }
+
+    def verify_swebench_grader_assets() -> Mapping[str, Any]:
+        observed_runtime = observed_grader_runtime("SWE-bench")
+        observed_source = swebench_grader_source_identity(
+            _isolated_module_root(observed_runtime, "swebench")
+        )
+        if observed_source != grader_source:
+            raise RuntimeError("SWE-bench grader source changed during grading")
+        observed_images = verify_swebench_grader_images(
+            generation_manifest,
+            python_executable=str(observed_runtime["python_executable"]),
+            grader_environment=grader_environment,
+        )
+        if observed_images != grader_images:
+            raise RuntimeError("SWE-bench grader images changed during grading")
+        return {
+            "runtime": observed_runtime,
+            "source": observed_source,
+            "images": observed_images,
+        }
+
+    return _GradePlan(
+        inputs=inputs,
+        grader=grader,
+        argv=argv,
+        verify_grader_assets=verify_swebench_grader_assets,
+    )
+
+
+def _grade_programbench(
+    args: argparse.Namespace,
+    *,
+    evaluation: Path,
+    generation_manifest: Mapping[str, Any],
+    grade_output: Path,
+    isolated_runtime: Mapping[str, Any],
+    runtime: Mapping[str, Any],
+    observed_grader_runtime: Callable[[str], Mapping[str, Any]],
+) -> _GradePlan:
+    from .benchmarks.programbench import (
+        PROGRAMBENCH_IMAGE_TAG,
+        PROGRAMBENCH_REVISION,
+        PROGRAMBENCH_VERSION,
+        collect_submissions,
+        inspect_programbench_checkout,
+        inspect_programbench_grade_inputs,
+        official_programbench_grader_argv,
+    )
+
+    checkout = _required_path(args.checkout, "--checkout")
+    run_directory = evaluation / "official_run"
+    for protected, label in (
+        (evaluation / "instances", "evaluation instances"),
+        (run_directory, "collected ProgramBench submissions"),
+        (checkout, "ProgramBench checkout"),
+    ):
+        _reject_grade_output_overlap(grade_output, protected, label)
+    collect_submissions(evaluation, run_directory)
+    source_inputs = inspect_programbench_grade_inputs(
+        run_directory=run_directory, checkout=checkout
+    )
+    _verify_grade_prompt_binding(generation_manifest, source_inputs)
+    _create_private_grade_output(grade_output)
+    snapshot_run = grade_output / "inputs" / "programbench" / "run"
+    _snapshot_grade_input(
+        run_directory,
+        snapshot_run,
+        source_inputs["runs"],
+        label="ProgramBench submissions",
+        tree=True,
+    )
+    inputs = {
+        **inspect_programbench_grade_inputs(
+            run_directory=snapshot_run, checkout=checkout
+        ),
+        "sources": source_inputs,
+    }
+    _verify_grade_prompt_binding(generation_manifest, inputs)
+    eval_dir = _grade_eval_directory(grade_output, args.eval_dir)
+    eval_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    argv = official_programbench_grader_argv(
+        run_directory=snapshot_run,
+        output=eval_dir,
+        python_executable=str(isolated_runtime["python_executable"]),
+        workers=args.max_workers,
+    )
+    grader_checkout = inspect_programbench_checkout(checkout)
+    grader = {
+        "project": "ProgramBench",
+        "revision": PROGRAMBENCH_REVISION,
+        "version": runtime["packages"]["programbench"],
+        "image_tag": PROGRAMBENCH_IMAGE_TAG,
+        "checkout": grader_checkout,
+        "package_root": str(
+            _isolated_module_root(isolated_runtime, "programbench")
+        ),
+    }
+    if grader_checkout["version"] != PROGRAMBENCH_VERSION:
+        raise ValueError(
+            f"official ProgramBench grading requires {PROGRAMBENCH_VERSION}"
+        )
+
+    def verify_programbench_grader_assets() -> Mapping[str, Any]:
+        observed_runtime = observed_grader_runtime("ProgramBench")
+        observed_checkout = inspect_programbench_checkout(checkout)
+        if observed_checkout != grader_checkout:
+            raise RuntimeError(
+                "ProgramBench grader checkout changed during grading"
+            )
+        revalidated_argv = official_programbench_grader_argv(
+            run_directory=snapshot_run,
+            output=eval_dir,
+            python_executable=str(observed_runtime["python_executable"]),
+            workers=args.max_workers,
+        )
+        if revalidated_argv != argv:
+            raise RuntimeError("ProgramBench grader command changed during grading")
+        return {"runtime": observed_runtime, "checkout": observed_checkout}
+
+    return _GradePlan(
+        inputs=inputs,
+        grader=grader,
+        argv=argv,
+        verify_grader_assets=verify_programbench_grader_assets,
+    )
+
+
+def _grade_browsecomp_plus(
+    args: argparse.Namespace,
+    *,
+    evaluation: Path,
+    generation_manifest: Mapping[str, Any],
+    grade_output: Path,
+    isolated_runtime: Mapping[str, Any],
+    observed_grader_runtime: Callable[[str], Mapping[str, Any]],
+) -> _GradePlan:
+    from .benchmarks.web import (
+        collect_browsecomp_plus_runs,
+        inspect_browsecomp_plus_grade_inputs,
+        official_browsecomp_plus_grader_argv,
+    )
+
+    if args.judge_model is None:
+        raise ValueError(
+            "BrowseComp-Plus grading requires --judge-model as a local "
+            "immutable model snapshot directory"
+        )
+    judge_model_argument = Path(args.judge_model).expanduser()
+    judge_model = judge_model_argument.resolve()
+    if judge_model_argument.is_symlink() or not judge_model.is_dir():
+        raise ValueError("--judge-model must be a local non-symlink directory")
+    checkout = _required_path(args.checkout, "--checkout")
+    ground_truth = _required_path(args.ground_truth, "--ground-truth")
+    qrel = _required_path(args.qrel_evidence, "--qrel-evidence")
+    input_dir = evaluation / "official_runs"
+    for protected, label in (
+        (evaluation / "instances", "evaluation instances"),
+        (input_dir, "collected BrowseComp-Plus runs"),
+        (checkout, "BrowseComp-Plus checkout"),
+        (judge_model, "BrowseComp-Plus judge model"),
+    ):
+        _reject_grade_output_overlap(grade_output, protected, label)
+    collect_browsecomp_plus_runs(evaluation, input_dir)
+    source_inputs = inspect_browsecomp_plus_grade_inputs(
+        input_dir=input_dir,
+        ground_truth=ground_truth,
+        qrel_evidence=qrel,
+    )
+    _verify_grade_prompt_binding(generation_manifest, source_inputs)
+    _create_private_grade_output(grade_output)
+    input_root = grade_output / "inputs" / "browsecomp-plus"
+    snapshot_runs = input_root / "runs"
+    snapshot_truth = input_root / ("ground_truth" + ground_truth.suffix.casefold())
+    snapshot_qrel = input_root / ("qrel_evidence" + qrel.suffix.casefold())
+    _snapshot_grade_input(
+        input_dir,
+        snapshot_runs,
+        source_inputs["runs"],
+        label="BrowseComp-Plus runs",
+        tree=True,
+    )
+    _snapshot_grade_input(
+        ground_truth,
+        snapshot_truth,
+        source_inputs["ground_truth"],
+        label="BrowseComp-Plus ground truth",
+    )
+    _snapshot_grade_input(
+        qrel,
+        snapshot_qrel,
+        source_inputs["qrel_evidence"],
+        label="BrowseComp-Plus qrel evidence",
+    )
+    inputs = {
+        **inspect_browsecomp_plus_grade_inputs(
+            input_dir=snapshot_runs,
+            ground_truth=snapshot_truth,
+            qrel_evidence=snapshot_qrel,
+        ),
+        "sources": source_inputs,
+    }
+    _verify_grade_prompt_binding(generation_manifest, inputs)
+    eval_dir = _grade_eval_directory(grade_output, args.eval_dir)
+    eval_dir.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    argv = official_browsecomp_plus_grader_argv(
+        checkout=checkout,
+        input_dir=snapshot_runs,
+        ground_truth=snapshot_truth,
+        eval_dir=eval_dir,
+        qrel_evidence=snapshot_qrel,
+        python_executable=str(isolated_runtime["python_executable"]),
+        model=str(judge_model),
+        tensor_parallel_size=args.tensor_parallel_size,
+    )
+    grader = {
+        "project": "BrowseComp-Plus",
+        "revision": "046949032b0328319cc9a02663a759ec601d9402",
+        "grader_script": immutable_file_identity(
+            checkout / "scripts_evaluation" / "evaluate_run.py",
+            label="BrowseComp-Plus grader script",
+        ),
+        "dependency_lock": immutable_file_identity(
+            checkout / "uv.lock", label="BrowseComp-Plus dependency lock"
+        ),
+        "judge_model": immutable_tree_identity(
+            judge_model, label="BrowseComp-Plus judge model"
+        ),
+    }
+
+    def verify_browsecomp_plus_grader_assets() -> Mapping[str, Any]:
+        observed_runtime = observed_grader_runtime("BrowseComp-Plus")
+        revalidated_argv = official_browsecomp_plus_grader_argv(
+            checkout=checkout,
+            input_dir=snapshot_runs,
+            ground_truth=snapshot_truth,
+            eval_dir=eval_dir,
+            qrel_evidence=snapshot_qrel,
+            python_executable=str(observed_runtime["python_executable"]),
+            model=str(judge_model),
+            tensor_parallel_size=args.tensor_parallel_size,
+        )
+        if revalidated_argv != argv:
+            raise RuntimeError(
+                "BrowseComp-Plus grader command changed during grading"
+            )
+        return {
+            **_verify_browsecomp_plus_grader_assets(grader),
+            "runtime": observed_runtime,
+        }
+
+    return _GradePlan(
+        inputs=inputs,
+        grader=grader,
+        argv=argv,
+        verify_grader_assets=verify_browsecomp_plus_grader_assets,
+    )
 
 
 _GRADER_RUNTIME_PROBE_MAX_BYTES = 64 * 1024

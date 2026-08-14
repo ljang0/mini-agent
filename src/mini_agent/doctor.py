@@ -12,7 +12,6 @@ import tempfile
 from pathlib import Path
 from typing import Any, Mapping
 
-from .runtimes.qemu import configure_qemu_runtime
 from .storage import StorageLayout
 
 
@@ -336,31 +335,7 @@ async def _computer_doctor(args: argparse.Namespace) -> Mapping[str, Any]:
                 "runtime": dict(runtime),
                 "machine_launch_canary_run": False,
             }
-        if args.benchmark_path is None:
-            return {
-                "ok": False,
-                "benchmark": "cua-speed-run",
-                "detail": "--benchmark-path not provided",
-            }
-        from .benchmarks.cua_speedrun import preflight_cua_speedrun
-
-        configure_qemu_runtime(args.qemu_cache)
-        report = dict(
-            preflight_cua_speedrun(
-                args.checkout,
-                args.benchmark_path,
-                backend_name=args.backend,
-            )
-        )
-        if args.qemu_cache is not None:
-            from .benchmarks.cua_speedrun import _cua_machine_images
-
-            report["machine_images"] = _cua_machine_images()
-        return {
-            "ok": True,
-            **report,
-            "machine_launch_canary_run": False,
-        }
+        return {"ok": False, "detail": "--osworld-version not provided"}
     except Exception as exc:
         return _failure(exc)
 

@@ -11,7 +11,7 @@ import re
 import sys
 import uuid
 from contextlib import contextmanager
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Sequence, TypeVar
@@ -25,6 +25,7 @@ from .storage import (
     atomic_json,
 )
 from .benchmarks.base import (
+    BenchmarkTask,
     EvaluationRunner,
     raise_after_cleanup,
     spec_bound_agent,
@@ -32,7 +33,6 @@ from .benchmarks.base import (
 )
 from .doctor import _doctor
 from .environments.base import AgentEnvironment
-from .runtimes.qemu import configure_qemu_runtime
 from .grading import _grade, _required_path
 from .models import BackendModel, Model, build_model
 from .orchestrator import AgentBuilder, Orchestrator
@@ -82,7 +82,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     run = commands.add_parser("run", help="Run one task with a domain environment.")
-    run.add_argument("--environment", choices=("swe", "web", "computer"), required=True)
+    run.add_argument("--environment", choices=("swe", "web"), required=True)
     run.add_argument("--task", required=True)
     run.add_argument("--workspace", type=Path)
     run.add_argument(
@@ -99,8 +99,6 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--snippet-tokens", type=_positive_int)
     run.add_argument("--snippet-tokenizer", default="Qwen/Qwen3-0.6B")
     run.add_argument("--snippet-tokenizer-revision")
-    run.add_argument("--env-url")
-    run.add_argument("--env-token-env")
     _add_execution_arguments(run)
     _add_storage_arguments(run)
 
@@ -114,7 +112,6 @@ def build_parser() -> argparse.ArgumentParser:
             "browsecomp-plus",
             "osworld-v1",
             "osworld-v2",
-            "cua-speed-run",
         ),
         required=True,
     )
@@ -154,10 +151,6 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--enable-proxy", action="store_true")
     evaluate.add_argument("--client-password-env")
     evaluate.add_argument("--include-gitlab", action="store_true")
-    evaluate.add_argument("--benchmark-path", type=Path)
-    evaluate.add_argument("--backend", default="gym-anything-qemu-apptainer")
-    evaluate.add_argument("--qemu-cache", type=Path)
-    evaluate.add_argument("--seed", type=int, default=0)
     _add_execution_arguments(evaluate)
     _add_storage_arguments(evaluate)
 
@@ -200,11 +193,8 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--page-reader", choices=("http", "playwright"), default="http")
     doctor.add_argument("--index", type=Path)
     doctor.add_argument("--anserini-jar", type=Path)
-    doctor.add_argument("--benchmark-path", type=Path)
-    doctor.add_argument("--backend", default="gym-anything-qemu-apptainer")
     doctor.add_argument("--path-to-vm")
     doctor.add_argument("--osworld-apptainer-image", type=Path)
-    doctor.add_argument("--qemu-cache", type=Path)
     doctor.add_argument("--min-durable-free-gib", type=_nonnegative_float, default=1.0)
     doctor.add_argument("--min-scratch-free-gib", type=_nonnegative_float, default=1.0)
     doctor.add_argument("--home", type=Path)
@@ -350,7 +340,7 @@ async def _run(args: argparse.Namespace) -> int:
     elif args.environment == "web":
         answer, metadata = await _run_web(args, context, model_factory, spec)
     else:
-        answer, metadata = await _run_computer(args, context, model_factory, spec)
+        raise ValueError(f"unsupported run environment {args.environment!r}")
     result = redact_artifact(
         {
             "answer": answer,
@@ -496,48 +486,6 @@ async def _run_web(
     }
 
 
-async def _run_computer(
-    args: argparse.Namespace,
-    context: RunContext,
-    model_factory: Callable[[str], Model],
-    spec: AgentSpecV1,
-) -> tuple[str, Mapping[str, Any]]:
-    system_prompt = spec.system_prompt
-    from .environments.cua import CUAEnvironment, CUASpeedRunClient
-
-    if args.multi_agent:
-        raise ValueError(
-            "direct computer multi-agent runs need an isolated machine factory; "
-            "use eval with OSWorld or cua-speed-run"
-        )
-    if not args.env_url:
-        raise ValueError("computer run requires --env-url")
-    token = None
-    if args.env_token_env:
-        token = os.environ.get(args.env_token_env)
-        if not token:
-            raise ValueError(
-                f"CUA gateway token environment variable {args.env_token_env!r} "
-                "is unset or empty"
-            )
-    environment = CUAEnvironment(CUASpeedRunClient(args.env_url, bearer_token=token))
-    result = await _run_single_agent(
-        environment,
-        model_factory=model_factory,
-        system_prompt=system_prompt,
-        max_steps=args.max_steps,
-        context=context,
-        task=args.task,
-        label="direct computer run",
-        agent_spec=spec,
-    )
-    return result.answer, {
-        "mode": "single",
-        "steps": result.steps,
-        "environment": environment.provenance(),
-    }
-
-
 async def _run_single_agent(
     environment: Any,
     *,
@@ -584,6 +532,15 @@ async def _run_single_agent(
     return result
 
 
+@dataclass(frozen=True)
+class _BenchmarkRun:
+    """What a per-benchmark eval helper hands back to ``_evaluate``."""
+
+    tasks: Sequence[BenchmarkTask]
+    worker: Callable[[Any, RunContext, Path], Any]
+    checkout_cwd: Path | None = None
+
+
 async def _evaluate(args: argparse.Namespace) -> int:
     _validate_runtime_credentials(args)
     _validate_topology_arguments(args)
@@ -601,7 +558,6 @@ async def _evaluate(args: argparse.Namespace) -> int:
         domain, multi_agent=args.multi_agent
     )
     agent_spec = _resolved_agent_spec(args, domain, resolved_prompt)
-    checkout_cwd: Path | None = None
     common: dict[str, Any] = {
         "model_factory": model_factory,
         "system_prompt": resolved_prompt,
@@ -614,290 +570,30 @@ async def _evaluate(args: argparse.Namespace) -> int:
     }
 
     if benchmark == "swebench":
-        from .benchmarks.swebench import (
-            load_swebench,
-            prepare_swebench_image_bindings,
-            run_swebench_task,
+        setup = await _evaluate_swebench(
+            args, limit=limit, common=common, work=work, layout=layout
         )
-
-        dataset = _required_path(args.dataset, "--dataset")
-        tasks = load_swebench(dataset, limit=limit)
-        image_bindings = await prepare_swebench_image_bindings(
-            tasks,
-            runtime=args.runtime,
-            container_runtime=tuple(args.container_runtime),
-            apptainer_executable=args.apptainer_executable,
-            apptainer_image_cache=layout.assets / "apptainer-images",
-        )
-        args._swebench_image_bindings = {
-            task_id: dict(binding.manifest_identity())
-            for task_id, binding in sorted(image_bindings.items())
-        }
-
-        async def worker(task: Any, context: RunContext, directory: Path) -> Any:
-            return await run_swebench_task(
-                task,
-                context,
-                directory,
-                runtime=args.runtime,
-                model_name=args.model,
-                scratch_root=work / "swebench",
-                container_runtime=tuple(args.container_runtime),
-                apptainer_executable=args.apptainer_executable,
-                apptainer_image_cache=layout.assets / "apptainer-images",
-                image_binding=image_bindings[task.task_id],
-                overlay_size_mib=args.overlay_size_mib,
-                **common,
-            )
-
     elif benchmark == "programbench":
-        from .benchmarks.programbench import (
-            inspect_programbench_checkout,
-            load_programbench,
-            run_programbench_task,
-        )
-        from .benchmarks.swebench import prepare_swebench_image_bindings
-
-        if args.runtime != "docker":
-            raise ValueError(
-                "ProgramBench evaluation is Docker-only; use --runtime docker"
-            )
-        checkout = _required_path(args.checkout, "--checkout")
-        args._programbench_checkout = dict(inspect_programbench_checkout(checkout))
-        tasks = load_programbench(
-            checkout,
-            limit=limit,
-            task_ids=_programbench_task_ids(args.task_list),
-        )
-        image_bindings = await prepare_swebench_image_bindings(
-            tasks,
-            runtime="docker",
-            container_runtime=tuple(args.container_runtime),
-        )
-        args._programbench_image_bindings = {
-            task_id: dict(binding.manifest_identity())
-            for task_id, binding in sorted(image_bindings.items())
-        }
-
-        async def worker(task: Any, context: RunContext, directory: Path) -> Any:
-            return await run_programbench_task(
-                task,
-                context,
-                directory,
-                container_runtime=tuple(args.container_runtime),
-                image_binding=image_bindings[task.task_id],
-                **common,
-            )
-
-    elif benchmark in {"browsecomp", "browsecomp-plus"}:
-        from .benchmarks.web import (
-            grade_browsecomp,
-            load_browsecomp,
-            load_browsecomp_plus,
-            run_web_task,
-        )
-
-        dataset = _required_path(args.dataset, "--dataset")
-        if benchmark == "browsecomp":
-            tasks = load_browsecomp(dataset, limit=limit, sample_seed=args.sample_seed)
-            if not args.grader_model:
-                raise ValueError("BrowseComp requires --grader-model")
-            grader_factory = _grader_model_factory(args)
-
-            def browser_factory(agent_id: str) -> Any:
-                del agent_id
-                return _live_browser(args)
-
-            async def worker(task: Any, context: RunContext, directory: Path) -> Any:
-                outcome = await run_web_task(
-                    task,
-                    context,
-                    directory,
-                    browser_factory=browser_factory,
-                    model_name=args.model,
-                    **common,
-                )
-                grader = grader_factory(task_agent_prefix(task.task_id) + "/grader")
-                score, raw = await grade_browsecomp(
-                    task=task,
-                    response=outcome.answer,
-                    grader=grader,
-                    context=context,
-                )
-                grader_path = directory / "private" / "grader.json"
-                atomic_json(
-                    grader_path,
-                    {
-                        "contains_hidden_benchmark_data": True,
-                        "grader_model": args.grader_model,
-                        "output": raw,
-                    },
-                )
-                return replace(
-                    outcome,
-                    score=score,
-                    metadata={
-                        **dict(outcome.metadata),
-                        "grader_model": args.grader_model,
-                        "private_grader_artifact": "private/grader.json",
-                        "private_grader_sha256": hashlib.sha256(
-                            grader_path.read_bytes()
-                        ).hexdigest(),
-                    },
-                )
-
-        else:
-            if args.index is None:
-                raise ValueError("BrowseComp-Plus requires --index")
-            if args.anserini_jar is None:
-                raise ValueError("BrowseComp-Plus requires --anserini-jar")
-            if args.top_k != 5 or args.snippet_tokens != 512:
-                raise ValueError(
-                    "BrowseComp-Plus evaluation requires --top-k 5 and "
-                    "--snippet-tokens 512"
-                )
-            if args.snippet_tokenizer != "Qwen/Qwen3-0.6B":
-                raise ValueError(
-                    "BrowseComp-Plus evaluation requires "
-                    "--snippet-tokenizer Qwen/Qwen3-0.6B"
-                )
-            from .environments.web import (
-                directory_sha256,
-                validate_anserini_jar,
-            )
-
-            seen = directory_sha256(args.index.expanduser())
-            if args.index_sha256 is not None and args.index_sha256.casefold() != seen:
-                raise ValueError("--index-sha256 does not match the Lucene index")
-            args.index_sha256 = seen
-            _, args.anserini_jar_sha256 = validate_anserini_jar(args.anserini_jar)
-            tokenizer = _load_tokenizer(args, require_revision=True)
-            tasks = load_browsecomp_plus(dataset, limit=limit)
-
-            def browser_factory(agent_id: str) -> Any:
-                del agent_id
-                return _fixed_browser(args, tokenizer)
-
-            async def worker(task: Any, context: RunContext, directory: Path) -> Any:
-                return await run_web_task(
-                    task,
-                    context,
-                    directory,
-                    browser_factory=browser_factory,
-                    model_name=args.model,
-                    **common,
-                )
-
+        setup = await _evaluate_programbench(args, limit=limit, common=common)
+    elif benchmark == "browsecomp":
+        setup = _evaluate_browsecomp(args, limit=limit, common=common)
+    elif benchmark == "browsecomp-plus":
+        setup = _evaluate_browsecomp_plus(args, limit=limit, common=common)
     elif benchmark in {"osworld-v1", "osworld-v2"}:
-        from .benchmarks.osworld import (
-            UpstreamDesktopFactory,
-            load_osworld,
-            run_osworld_task,
+        setup = _evaluate_osworld(
+            args, benchmark=benchmark, limit=limit, common=common
         )
-
-        version = benchmark.rsplit("-", 1)[1]
-        checkout = _required_path(args.checkout, "--checkout").resolve()
-        if args.provider_name.casefold().strip() == "docker":
-            default_image = checkout / "docker_vm_data" / "Ubuntu.qcow2"
-            selected_image = (
-                Path(args.path_to_vm).expanduser()
-                if args.path_to_vm is not None
-                else default_image
-            )
-            if not selected_image.is_file():
-                raise ValueError(
-                    "OSWorld Docker evaluation requires a pre-provisioned "
-                    f"Ubuntu.qcow2 via --path-to-vm or {default_image}"
-                )
-            args.path_to_vm = str(selected_image.resolve())
-        if args.runtime == "apptainer":
-            if args.provider_name.casefold().strip() != "docker":
-                raise ValueError(
-                    "OSWorld --runtime apptainer requires --provider-name docker"
-                )
-            if args.osworld_apptainer_image is None:
-                raise ValueError(
-                    "OSWorld --runtime apptainer requires --osworld-apptainer-image"
-                )
-        elif args.osworld_apptainer_image is not None:
-            raise ValueError("--osworld-apptainer-image requires --runtime apptainer")
-        checkout_cwd = checkout
-        with _working_directory(checkout):
-            tasks = load_osworld(
-                checkout,
-                version=version,
-                task_list=args.task_list,
-                limit=limit,
-                exclude_gitlab=not args.include_gitlab,
-            )
-        password = (
-            os.environ.get(args.client_password_env, "")
-            if args.client_password_env
-            else ""
-        )
-        desktop_factory = UpstreamDesktopFactory(
-            checkout,
-            version=version,
-            provider_name=args.provider_name,
-            path_to_vm=args.path_to_vm,
-            headless=not args.headed,
-            screen_width=args.screen_width,
-            screen_height=args.screen_height,
-            enable_proxy=args.enable_proxy,
-            client_password=password,
-            apptainer_image=args.osworld_apptainer_image,
-            apptainer_executable=args.apptainer_executable,
-        )
-        args._osworld_factory_provenance = dict(desktop_factory.provenance())
-
-        async def worker(task: Any, context: RunContext, directory: Path) -> Any:
-            return await run_osworld_task(
-                task,
-                context,
-                directory,
-                desktop_factory=desktop_factory,
-                **common,
-            )
-
     else:
-        from .benchmarks.cua_speedrun import (
-            load_cua_speedrun,
-            prepare_cua_speedrun_backend,
-            run_cua_speedrun_task,
-        )
+        raise ValueError(f"unsupported benchmark {benchmark!r}")
 
-        configure_qemu_runtime(args.qemu_cache, work)
-        checkout = _required_path(args.checkout, "--checkout")
-        benchmark_path = _required_path(args.benchmark_path, "--benchmark-path")
-        tasks = load_cua_speedrun(
-            checkout,
-            benchmark_path,
-            seed=args.seed,
-            limit=limit,
-        )
-        args._cua_backend_preflight = dict(
-            prepare_cua_speedrun_backend(
-                checkout,
-                benchmark_path,
-                backend_name=args.backend,
-            )
-        )
-
-        async def worker(task: Any, context: RunContext, directory: Path) -> Any:
-            return await run_cua_speedrun_task(
-                task,
-                context,
-                directory,
-                backend_name=args.backend,
-                **common,
-            )
-
-    selected_worker = _progress_worker(worker, benchmark) if args.progress else worker
+    selected_worker = (
+        _progress_worker(setup.worker, benchmark) if args.progress else setup.worker
+    )
 
     limits = _limits(args)
     runner = EvaluationRunner(
         benchmark=benchmark,
-        tasks=tasks,
+        tasks=setup.tasks,
         output=output,
         config=_evaluation_config(args, layout),
         limits=limits,
@@ -905,10 +601,10 @@ async def _evaluate(args: argparse.Namespace) -> int:
         capture_content=bool(args.capture_content),
         secrets=_secrets(args),
     )
-    if checkout_cwd is None:
+    if setup.checkout_cwd is None:
         summary = await runner.run(selected_worker, resume=args.resume)
     else:
-        with _working_directory(checkout_cwd):
+        with _working_directory(setup.checkout_cwd):
             summary = await runner.run(selected_worker, resume=args.resume)
     if benchmark == "browsecomp-plus":
         assert args.index is not None
@@ -935,6 +631,299 @@ async def _evaluate(args: argparse.Namespace) -> int:
     atomic_json(output / "summary.json", summary)
     print(json.dumps({"output": str(output), **summary}, indent=2, sort_keys=True))
     return 0 if summary["failed"] == 0 and summary["blocked"] == 0 else 1
+
+
+async def _evaluate_swebench(
+    args: argparse.Namespace,
+    *,
+    limit: int | None,
+    common: Mapping[str, Any],
+    work: Path,
+    layout: StorageLayout,
+) -> _BenchmarkRun:
+    from .benchmarks.swebench import (
+        load_swebench,
+        prepare_swebench_image_bindings,
+        run_swebench_task,
+    )
+
+    dataset = _required_path(args.dataset, "--dataset")
+    tasks = load_swebench(dataset, limit=limit)
+    image_bindings = await prepare_swebench_image_bindings(
+        tasks,
+        runtime=args.runtime,
+        container_runtime=tuple(args.container_runtime),
+        apptainer_executable=args.apptainer_executable,
+        apptainer_image_cache=layout.assets / "apptainer-images",
+    )
+    args._swebench_image_bindings = {
+        task_id: dict(binding.manifest_identity())
+        for task_id, binding in sorted(image_bindings.items())
+    }
+
+    async def worker(task: Any, context: RunContext, directory: Path) -> Any:
+        return await run_swebench_task(
+            task,
+            context,
+            directory,
+            runtime=args.runtime,
+            model_name=args.model,
+            scratch_root=work / "swebench",
+            container_runtime=tuple(args.container_runtime),
+            apptainer_executable=args.apptainer_executable,
+            apptainer_image_cache=layout.assets / "apptainer-images",
+            image_binding=image_bindings[task.task_id],
+            overlay_size_mib=args.overlay_size_mib,
+            **common,
+        )
+
+    return _BenchmarkRun(tasks=tasks, worker=worker)
+
+
+async def _evaluate_programbench(
+    args: argparse.Namespace,
+    *,
+    limit: int | None,
+    common: Mapping[str, Any],
+) -> _BenchmarkRun:
+    from .benchmarks.programbench import (
+        inspect_programbench_checkout,
+        load_programbench,
+        run_programbench_task,
+    )
+    from .benchmarks.swebench import prepare_swebench_image_bindings
+
+    if args.runtime != "docker":
+        raise ValueError(
+            "ProgramBench evaluation is Docker-only; use --runtime docker"
+        )
+    checkout = _required_path(args.checkout, "--checkout")
+    args._programbench_checkout = dict(inspect_programbench_checkout(checkout))
+    tasks = load_programbench(
+        checkout,
+        limit=limit,
+        task_ids=_programbench_task_ids(args.task_list),
+    )
+    image_bindings = await prepare_swebench_image_bindings(
+        tasks,
+        runtime="docker",
+        container_runtime=tuple(args.container_runtime),
+    )
+    args._programbench_image_bindings = {
+        task_id: dict(binding.manifest_identity())
+        for task_id, binding in sorted(image_bindings.items())
+    }
+
+    async def worker(task: Any, context: RunContext, directory: Path) -> Any:
+        return await run_programbench_task(
+            task,
+            context,
+            directory,
+            container_runtime=tuple(args.container_runtime),
+            image_binding=image_bindings[task.task_id],
+            **common,
+        )
+
+    return _BenchmarkRun(tasks=tasks, worker=worker)
+
+
+def _evaluate_browsecomp(
+    args: argparse.Namespace,
+    *,
+    limit: int | None,
+    common: Mapping[str, Any],
+) -> _BenchmarkRun:
+    from .benchmarks.web import (
+        grade_browsecomp,
+        load_browsecomp,
+        run_web_task,
+    )
+
+    dataset = _required_path(args.dataset, "--dataset")
+    tasks = load_browsecomp(dataset, limit=limit, sample_seed=args.sample_seed)
+    if not args.grader_model:
+        raise ValueError("BrowseComp requires --grader-model")
+    grader_factory = _grader_model_factory(args)
+
+    def browser_factory(agent_id: str) -> Any:
+        del agent_id
+        return _live_browser(args)
+
+    async def worker(task: Any, context: RunContext, directory: Path) -> Any:
+        outcome = await run_web_task(
+            task,
+            context,
+            directory,
+            browser_factory=browser_factory,
+            model_name=args.model,
+            **common,
+        )
+        grader = grader_factory(task_agent_prefix(task.task_id) + "/grader")
+        score, raw = await grade_browsecomp(
+            task=task,
+            response=outcome.answer,
+            grader=grader,
+            context=context,
+        )
+        grader_path = directory / "private" / "grader.json"
+        atomic_json(
+            grader_path,
+            {
+                "contains_hidden_benchmark_data": True,
+                "grader_model": args.grader_model,
+                "output": raw,
+            },
+        )
+        return replace(
+            outcome,
+            score=score,
+            metadata={
+                **dict(outcome.metadata),
+                "grader_model": args.grader_model,
+                "private_grader_artifact": "private/grader.json",
+                "private_grader_sha256": hashlib.sha256(
+                    grader_path.read_bytes()
+                ).hexdigest(),
+            },
+        )
+
+    return _BenchmarkRun(tasks=tasks, worker=worker)
+
+
+def _evaluate_browsecomp_plus(
+    args: argparse.Namespace,
+    *,
+    limit: int | None,
+    common: Mapping[str, Any],
+) -> _BenchmarkRun:
+    from .benchmarks.web import (
+        load_browsecomp_plus,
+        run_web_task,
+    )
+
+    dataset = _required_path(args.dataset, "--dataset")
+    if args.index is None:
+        raise ValueError("BrowseComp-Plus requires --index")
+    if args.anserini_jar is None:
+        raise ValueError("BrowseComp-Plus requires --anserini-jar")
+    if args.top_k != 5 or args.snippet_tokens != 512:
+        raise ValueError(
+            "BrowseComp-Plus evaluation requires --top-k 5 and "
+            "--snippet-tokens 512"
+        )
+    if args.snippet_tokenizer != "Qwen/Qwen3-0.6B":
+        raise ValueError(
+            "BrowseComp-Plus evaluation requires "
+            "--snippet-tokenizer Qwen/Qwen3-0.6B"
+        )
+    from .environments.web import (
+        directory_sha256,
+        validate_anserini_jar,
+    )
+
+    seen = directory_sha256(args.index.expanduser())
+    if args.index_sha256 is not None and args.index_sha256.casefold() != seen:
+        raise ValueError("--index-sha256 does not match the Lucene index")
+    args.index_sha256 = seen
+    _, args.anserini_jar_sha256 = validate_anserini_jar(args.anserini_jar)
+    tokenizer = _load_tokenizer(args, require_revision=True)
+    tasks = load_browsecomp_plus(dataset, limit=limit)
+
+    def browser_factory(agent_id: str) -> Any:
+        del agent_id
+        return _fixed_browser(args, tokenizer)
+
+    async def worker(task: Any, context: RunContext, directory: Path) -> Any:
+        return await run_web_task(
+            task,
+            context,
+            directory,
+            browser_factory=browser_factory,
+            model_name=args.model,
+            **common,
+        )
+
+    return _BenchmarkRun(tasks=tasks, worker=worker)
+
+
+def _evaluate_osworld(
+    args: argparse.Namespace,
+    *,
+    benchmark: str,
+    limit: int | None,
+    common: Mapping[str, Any],
+) -> _BenchmarkRun:
+    from .benchmarks.osworld import (
+        UpstreamDesktopFactory,
+        load_osworld,
+        run_osworld_task,
+    )
+
+    version = benchmark.rsplit("-", 1)[1]
+    checkout = _required_path(args.checkout, "--checkout").resolve()
+    if args.provider_name.casefold().strip() == "docker":
+        default_image = checkout / "docker_vm_data" / "Ubuntu.qcow2"
+        selected_image = (
+            Path(args.path_to_vm).expanduser()
+            if args.path_to_vm is not None
+            else default_image
+        )
+        if not selected_image.is_file():
+            raise ValueError(
+                "OSWorld Docker evaluation requires a pre-provisioned "
+                f"Ubuntu.qcow2 via --path-to-vm or {default_image}"
+            )
+        args.path_to_vm = str(selected_image.resolve())
+    if args.runtime == "apptainer":
+        if args.provider_name.casefold().strip() != "docker":
+            raise ValueError(
+                "OSWorld --runtime apptainer requires --provider-name docker"
+            )
+        if args.osworld_apptainer_image is None:
+            raise ValueError(
+                "OSWorld --runtime apptainer requires --osworld-apptainer-image"
+            )
+    elif args.osworld_apptainer_image is not None:
+        raise ValueError("--osworld-apptainer-image requires --runtime apptainer")
+    checkout_cwd = checkout
+    with _working_directory(checkout):
+        tasks = load_osworld(
+            checkout,
+            version=version,
+            task_list=args.task_list,
+            limit=limit,
+            exclude_gitlab=not args.include_gitlab,
+        )
+    password = (
+        os.environ.get(args.client_password_env, "")
+        if args.client_password_env
+        else ""
+    )
+    desktop_factory = UpstreamDesktopFactory(
+        checkout,
+        version=version,
+        provider_name=args.provider_name,
+        path_to_vm=args.path_to_vm,
+        headless=not args.headed,
+        screen_width=args.screen_width,
+        screen_height=args.screen_height,
+        enable_proxy=args.enable_proxy,
+        client_password=password,
+        apptainer_image=args.osworld_apptainer_image,
+        apptainer_executable=args.apptainer_executable,
+    )
+    args._osworld_factory_provenance = dict(desktop_factory.provenance())
+
+    async def worker(task: Any, context: RunContext, directory: Path) -> Any:
+        return await run_osworld_task(
+            task,
+            context,
+            directory,
+            desktop_factory=desktop_factory,
+            **common,
+        )
+
+    return _BenchmarkRun(tasks=tasks, worker=worker, checkout_cwd=checkout_cwd)
 
 
 def _browser_environment(args: argparse.Namespace, *, tokenizer: Any = None) -> Any:
@@ -1282,7 +1271,7 @@ def _evaluation_config(
                 "path": str(path),
                 "sha256": _sha256_file(expanded) if path.is_file() else None,
             }
-    for name in ("index", "checkout", "benchmark_path"):
+    for name in ("index", "checkout"):
         value = getattr(args, name, None)
         if value is not None:
             assets[name] = str(value.expanduser().resolve())
@@ -1383,16 +1372,7 @@ def _evaluation_config(
             "environment_factory": getattr(args, "_osworld_factory_provenance", None),
         }
     else:
-        adapter = {
-            "backend": args.backend,
-            "seed": args.seed,
-            "qemu_cache": (
-                str(args.qemu_cache.expanduser().resolve())
-                if args.qemu_cache is not None
-                else os.environ.get("GYM_ANYTHING_QEMU_CACHE")
-            ),
-            "upstream_preflight": getattr(args, "_cua_backend_preflight", None),
-        }
+        raise ValueError(f"unsupported benchmark {args.benchmark!r}")
     return {
         "model": args.model,
         "agent_spec": spec.identity_dict(),

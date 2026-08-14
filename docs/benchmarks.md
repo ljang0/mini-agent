@@ -12,7 +12,6 @@ harness. Pins are enforced at runtime where an upstream checkout is required.
 | BrowseComp-Plus | `texttron/BrowseComp-Plus` commit `046949032b0328319cc9a02663a759ec601d9402` | Fixed Lucene BM25, exactly top five, 512-token snippets, search-only capability, full index-tree hash, tokenizer provenance, official per-query run schema and pinned grader command | One `browser` action renames the upstream provider-specific search function |
 | OSWorld v1 | `xlang-ai/OSWorld` commit `091f5ef1d5544bc74953c77875d5feb5bed30108` | Official task configs, reset/setup, 60-second reset settle plus fresh observation, independent `DesktopEnv`, pyautogui and literal `FAIL` steps, 20-second evaluation settle, hidden `evaluate()` | Batched native-pixel computer tool and baseline prompt are adapted |
 | OSWorld v2 | tag `v2026.06.24`, commit `2b9b7b4eb73243d557bdbf2998fe18d8e18e19c6` | Standard single-phase lifecycle, including the 60-second reset settle and immediate final evaluation; GitLab excluded by default | Gated release data is unavailable on this node; multi-phase and user-simulator tasks fail closed instead of receiving an invalid single-loop score |
-| cua-speed-run | commit `7230223cbc57df68331cad32889adf01f3601651`; gym-anything gitlink `70d9e51d2517049d995cc820a319a355c3c6e979` | Pinned generation, one backend instance per evaluation, preparation off-clock, independent leases, runtime-input revalidation, timeout/grace, hidden checker, 0–100 score | Runs in process against the environment plane, without the official process-isolated gateway watchdogs or two-file submission/executor protocol |
 
 The minimal loop itself records the design reference to
 `SWE-agent/mini-swe-agent` commit
@@ -322,64 +321,6 @@ official entrypoint, guest, controller, task setup, actions, and evaluator are
 unchanged. See [machine images](machine-images.md) for the immutable OCI/archive
 pins. Size guest concurrency to host memory: each guest reserves its configured
 RAM in full.
-
-## cua-speed-run
-
-The checkout must be clean and exact. The parent and gym-anything identities
-are rechecked before every preparation/lease and again after checker and cleanup,
-before a verdict is committed. `--benchmark-path` points to an upstream
-benchmark specification, and `--backend` must resolve in that checkout. Run
-`doctor --target computer` with the same checkout, benchmark, and backend before
-inference.
-
-Direct `--environment computer` accepts the official run-plane URL shape
-`https://host/<run_token>` and parses the upstream `{"ok": true, "info": ...}`
-step envelope. A bearer token remains available for non-upstream compatible
-gateways, but it is not presented as cua-speed-run's native authentication
-contract. URL-path secrets are excluded from environment provenance.
-
-Computer doctor is deliberately non-provisioning: it requires an already
-materialized `manifest.yaml`, checks the pinned source, imports, runtime commands,
-KVM access, and referenced environment/task files, but never invokes the
-upstream provisioning preflight or launches a machine. `source_ready` therefore
-does not mean a VM/base image is present or bootable. Image provisioning and a
-machine-launch canary are separate, explicit operator actions. Evaluation does
-invoke the real upstream provisioning preflight before task execution and fails
-before model calls if that boundary is not ready. Cache filenames observed at
-preflight are explicitly labeled unverified candidates, not selected images.
-After each lease is prepared, but before its first model call, the adapter hashes
-the effective base image and any selected checkpoint exposed by the runner, and
-records whether a container reference is content-addressed. It rechecks the same
-effective inputs when the lease is handed to an agent, which matters when a
-multi-agent prewarm leaves prepared guests waiting in a pool. A single upstream
-backend object owns all leases in one evaluation, preserving cua-speed-run's
-invariant that the selected concrete runner cannot change mid-evaluation.
-
-The exact gym-anything gitlink, submodule HEAD/cleanliness, and imported module
-origin are enforced. For gym-anything tasks, the agent instruction is loaded from
-the exact selected environment task spec using upstream file precedence. The
-environment spec, selected task sources, and every resolved mount tree are
-hash-bound into task data and rechecked at execution. Python bytecode is rejected
-rather than excluded because timestamp- or hash-based caches can shadow verified
-source. Seeded tasks bind a canonical hash of both the instruction and hidden
-expected state while retaining only the hash outside the environment plane.
-
-Environment preparation, including all possible multi-agent leases, occurs
-before the benchmark task clock. The clock covers agent execution. The
-configured grace period is applied before every checker invocation — normal
-completion, timeout, and step-budget exhaustion alike. Step-budget exhaustion
-(`finish_reason: step_budget`) still runs the hidden checker, matching the
-OSWorld semantics, because the machine may already show the requested state.
-An agent process error receives the upstream-equivalent false/zero verdict
-without running a checker. Verifier errors and cleanup failures are
-infrastructure failures, not zero scores.
-
-The official gateway also supervises environment operations at 90 seconds and
-the verifier at five minutes from a separate control plane. The maintained
-in-process adapter cannot safely abandon a blocked Python call and tear down the
-same live adapter underneath it. It therefore does not claim those process-level
-watchdogs. Use the official submission/executor topology when hard preemption of
-a wedged environment or checker is part of the required evidence.
 
 Multi-agent computer runs lease one machine per agent; a 4-agent team therefore
 needs roughly four guests' worth of memory. On constrained allocations run

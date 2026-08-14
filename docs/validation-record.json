@@ -6,15 +6,15 @@
     "scope": "source gates for the v0.5.0 public release (audit/cleanup plus OSS hardening passes), harness plumbing canaries, and machine-input provenance; not benchmark quality"
   },
   "source": {
-    "state": "post-0.5.0 working tree: ProgramBench adapter, the runtimes/ extraction, and the storage/identity relocation, bound by frozen_harness_identity",
+    "state": "post-0.5.0 working tree: cua-speed-run removed as unrunnable, the two longest functions split per benchmark, and machine-image identity memoized; bound by frozen_harness_identity",
     "frozen_harness_identity": {
       "schema": "mini-agent-harness-v1",
-      "source_file_count": 39,
-      "source_sha256": "7b3a2115054b1852ab3a1581e4be6f4f31590ab2775653c5645734d68680260c"
+      "source_file_count": 37,
+      "source_sha256": "7b6d9a4c60d3affa9bb4a017a73a0e6485938afd28da1919181f81334c9c6629"
     },
     "audit_pass": {
       "date": "2026-08-12",
-      "summary": "spec binding enforced on all CLI run/eval agent construction, codec translation losses declared and reported, E501 lint activated, dead code removed, grading/doctor/probe extracted from the CLI, shared checkout/hash/lifecycle helpers deduplicated, cua-speed-run step-budget exhaustion now runs the hidden checker, SWE-bench grader inventory count and byte totals asserted; the OSS pass added provider retry/backoff, bounded screenshot replay, credential preflight, the swe workspace guard, eval progress output, the quickstart/examples/library documentation, and the multi-mini-agent companion distribution; a later pass added the pinned ProgramBench adapter and flattened validation boilerplate onto shared type validators (src/mini_agent 20,902 -> 19,430 lines) with fingerprints, public API, and byte-exact upstream literals verified unchanged; a further pass extracted the benchmark-neutral runtimes/ layer (local, docker, apptainer) with one bash environment over it, replaced the embedded Docker grader probe with in-process verification, and moved the storage and content-identity primitives out of benchmarks/base.py into storage.py and _hash.py \u2014 fixing a latent directory_sha256 regression the suite did not catch, now pinned by tests/test_digest_stability.py",
+      "summary": "spec binding enforced on all CLI run/eval agent construction, codec translation losses declared and reported, E501 lint activated, dead code removed, grading/doctor/probe extracted from the CLI, shared checkout/hash/lifecycle helpers deduplicated, SWE-bench grader inventory count and byte totals asserted; the OSS pass added provider retry/backoff, bounded screenshot replay, credential preflight, the swe workspace guard, eval progress output, the quickstart/examples/library documentation, and the multi-mini-agent companion distribution; a later pass added the pinned ProgramBench adapter and flattened validation boilerplate onto shared type validators (src/mini_agent 20,902 -> 19,430 lines) with fingerprints, public API, and byte-exact upstream literals verified unchanged; a further pass extracted the benchmark-neutral runtimes/ layer (local, docker, apptainer) with one bash environment over it, replaced the embedded Docker grader probe with in-process verification, and moved the storage and content-identity primitives out of benchmarks/base.py into storage.py and _hash.py — fixing a latent directory_sha256 regression the suite did not catch, now pinned by tests/test_digest_stability.py",
       "prior_frozen_identity": {
         "source_file_count": 33,
         "source_sha256": "eedaba050c60082c2993cbb010940592ddc07991cf758ef0fe62458598b32b2f"
@@ -28,7 +28,7 @@
       "interpreters": [
         "CPython 3.12.5"
       ],
-      "tests_per_interpreter": 396,
+      "tests_per_interpreter": 369,
       "status": "passed",
       "note": "run on the only interpreter present on the current node; the four-interpreter 3.10-3.13 matrix remains enforced in CI"
     },
@@ -104,17 +104,6 @@
       "status": "passed",
       "scope": "real Chromium navigation to https://example.com, response/final-URL validation, bounded extraction and cleanup; transport smoke only"
     },
-    "cua_speed_run_single": {
-      "status": "passed",
-      "elapsed_seconds": 24.26,
-      "model_calls": 2,
-      "tool_calls": 1,
-      "score": 0.0,
-      "score_interpretation": "deliberate wait action; plumbing only",
-      "manifest_sha256": "0f919dc5df947dc37bf737a97c993afc6b750199e587caae8c31b2c32e2d9374",
-      "harness_source_sha256": "28c22d6124e6922acc4a60c43280c5d131dafa3d677c6602b452a5162e302512",
-      "scope": "real QEMU/KVM boot, 1600x900 observation, action, hidden checker, artifacts, cleanup"
-    },
     "osworld_v1_single": {
       "status": "passed",
       "elapsed_seconds": 151.15,
@@ -125,21 +114,6 @@
       "manifest_sha256": "eb1240ebfa494685e09bb4b6063bf063ac13bad5b93bc6b0f236680daef1b7a5",
       "harness_source_sha256": "69a9393cc92a014afa4259d1ae5ae1f95df7389be0d8459ba216efc9fe5ae3e0",
       "scope": "official guest reset, setup, 60-second settle, fresh observation, action, 20-second pre-evaluation settle, evaluate, artifacts, and cleanup through Apptainer compatibility client"
-    },
-    "cua_speed_run_two_agent": {
-      "status": "passed",
-      "elapsed_seconds": 25.23,
-      "model_calls": 7,
-      "tool_calls": 5,
-      "trace_event_counts": {
-        "agent_spawned": 2,
-        "agent_completed": 2,
-        "message_sent": 2,
-        "agent_state_adopted": 1
-      },
-      "manifest_sha256": "3d422efa00ae1dead4b234809eda7916a71865a0e01e90ffccf46fcddffbdf17",
-      "harness_source_sha256": "42039442746eebdab9257097a64194eadf0619b4c0587a2465291168a63de3ff",
-      "scope": "two real QEMU/KVM guests, message, wait, live-session adoption, action, hidden checker, cleanup"
     },
     "osworld_v2_boot": {
       "status": "passed",
@@ -186,16 +160,6 @@
         "sha256": "3d632f031459583cf936e0c4c5bb939122df0fec85aecb0d044ef2d3e5863335",
         "qemu_img_check": "passed"
       }
-    },
-    "cua_speed_run": {
-      "checkout_revision": "7230223cbc57df68331cad32889adf01f3601651",
-      "gym_anything_revision": "70d9e51d2517049d995cc820a319a355c3c6e979",
-      "vm_image": {
-        "size_bytes": 6701187072,
-        "virtual_size_bytes": 53687091200,
-        "sha256": "a9d802e021ac883fc4877bf334aaef48505502d23ac51b097e39ed7b3bb8d85f",
-        "identity_scope": "observed node build; upstream builder network inputs are not universally immutable"
-      }
     }
   },
   "historical_operator_evidence": [
@@ -225,7 +189,6 @@
     "no suitable GPU/vLLM Qwen3-32B judge; official BrowseComp-Plus scoring not run",
     "OSWorld v2 task data is gated and returned HTTP 401; boot-only evidence",
     "OSWorld v2 multi-phase and ASK_USER/user-simulator task lifecycles are unsupported and fail closed",
-    "the in-process cua-speed-run adapter does not reproduce the official executor's separate-process 90-second environment and 300-second verifier watchdogs",
     "the default Gym-Anything QEMU runtime OCI reference is mutable; comparable runs should pin a SIF or digest-qualified image",
     "no full benchmark suite or statistically meaningful model comparison",
     "CPython 3.11 and 3.13 were absent from the audit node; this record covers a local 3.10/3.12 pass while CI enforces the full matrix",
@@ -237,5 +200,71 @@
     "private_provider_endpoints_recorded": false,
     "private_deployment_model_names_recorded": false,
     "session_header_values_recorded": false
+  },
+  "post_slim_reverification": {
+    "date": "2026-08-14",
+    "purpose": "Every benchmark the harness still ships was re-run against the post-slim source on real upstream assets, with deterministic scripted models and no API key. Generation only: no score is claimed, and the official graders were not exercised because they require Docker, which is absent on this node.",
+    "harness_source_sha256": "7b6d9a4c60d3affa9bb4a017a73a0e6485938afd28da1919181f81334c9c6629",
+    "swebench_apptainer_generation": {
+      "status": "passed",
+      "instance_id": "astropy__astropy-12907",
+      "runtime": "apptainer",
+      "image": {
+        "size_bytes": 1091235840,
+        "sha256": "2871794579463274e11e42e627b03b1c45336685b0cbb018d6ccaf8494fc89b9"
+      },
+      "patch_bytes": 506,
+      "patch_contains_agent_edit": true,
+      "model_calls": 4,
+      "tool_calls": 3,
+      "note": "the upstream :latest tag now resolves to different bytes than the 1047486464-byte image in reference_pass_canaries, which is what image-identity binding exists to catch"
+    },
+    "programbench_apptainer_generation": {
+      "status": "passed",
+      "image_tag": "task_cleanroom_v6",
+      "image": {
+        "size_bytes": 779235328,
+        "sha256": "8537a5d2b654c1e73cf72ef1b47bbec03ce74600f110d9416df285f13528be03"
+      },
+      "submission_bytes": 374426,
+      "submission_member_count": 64,
+      "submission_contains_agent_file": true,
+      "network_blocked_inside_container": true,
+      "model_calls": 4
+    },
+    "browsecomp_plus_fixed_retrieval": {
+      "status": "passed",
+      "index_sha256": "047cc4803b8f55faf9e36b280704b1288cecc7e619888bf521af4fa0a90ab1d4",
+      "anserini_jar_sha256": "69270ba4d160826953347411ce5d7e205ce363766a9cc72ac9da3b945341af83",
+      "anserini_jar_matches_pin": true,
+      "snippet_tokenizer_revision": "c1899de289a04d12100db370d81485cdf75e47ca",
+      "tokenizer_json_sha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+      "retrieved_documents": 5,
+      "snippet_tokens": 512,
+      "session_reference_withheld": true
+    },
+    "osworld_v1_apptainer_boot": {
+      "status": "passed",
+      "checkout_revision": "091f5ef1d5544bc74953c77875d5feb5bed30108",
+      "vm_image": {
+        "size_bytes": 24460197888,
+        "sha256": "6bf667a852b3c307f61d9f09c42559351f45e0607e428b4997becf534cf4d313"
+      },
+      "apptainer_image": {
+        "size_bytes": 80822272,
+        "sha256": "0d0082a2d14335a79500c1607c064703636e69279099f9fde95f3f00b5d12ee6"
+      },
+      "screenshot_bytes": 1668417,
+      "screenshot_is_png": true,
+      "post_action_screenshot_bytes": 1669505,
+      "note": "booted through runtimes/osworld_apptainer.py with no Docker daemon; QEMU 9.1.0 with KVM and the upstream port-forward contract intact. Reset without a task_config, so this proves the machine and observation path, not a task's setup steps."
+    },
+    "machine_image_identity_cache": {
+      "first_call_seconds": 23.0,
+      "first_call_read_gib": 22.37,
+      "second_call_seconds": 0.0,
+      "second_call_read_gib": 0.0,
+      "note": "the launch path previously hashed the 24 GB VM image twice per desktop; the second hash is now a stat comparison"
+    }
   }
 }

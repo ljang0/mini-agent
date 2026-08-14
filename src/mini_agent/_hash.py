@@ -168,13 +168,55 @@ def immutable_tree_identity(
     }
 
 
+_MachineImageCacheKey = tuple[str, ImageStatKey, ImageStatKey | None]
+_MACHINE_IMAGE_IDENTITIES: dict[_MachineImageCacheKey, Mapping[str, Any]] = {}
+
+
+def _machine_image_stat_keys(path: Path) -> tuple[ImageStatKey, ImageStatKey | None]:
+    """Stat the image and its optional provenance sidecar together."""
+
+    sidecar = Path(str(path) + ".provenance.json")
+    try:
+        sidecar_key = image_stat_key(sidecar.stat(follow_symlinks=False))
+    except OSError:
+        sidecar_key = None
+    return image_stat_key(path.stat()), sidecar_key
+
+
 def machine_image_identity(path: Path, *, label: str) -> Mapping[str, Any]:
-    """Hash a machine image and validate its optional adjacent provenance."""
+    """Hash a machine image and validate its optional adjacent provenance.
+
+    Machine images are tens of gigabytes and every desktop launch asks for the
+    identity of the same file, so the result is memoized on the strict stat key
+    from :func:`image_stat_key`.  Replacing, rewriting, truncating, or
+    re-permissioning the image changes that key and forces a full re-hash, so a
+    cache hit still means the exact bytes that were hashed are the bytes on
+    disk now -- it only removes the repeated read of an unchanged file.
+    """
+
+    cache_key: _MachineImageCacheKey | None = None
+    expanded = path.expanduser() if isinstance(path, Path) else None
+    if expanded is not None and not expanded.is_symlink() and expanded.is_file():
+        # Key on the image and its sidecar together: the returned identity
+        # depends on both, and a sidecar that is rewritten, removed, or
+        # replaced by a symlink must not be answered from the cache.  Both
+        # stats are taken before hashing, and immutable_file_identity re-stats
+        # and rejects anything that moved, so a key cannot outlive its bytes.
+        image_key, sidecar_key = _machine_image_stat_keys(expanded)
+        cache_key = (str(expanded.resolve()), image_key, sidecar_key)
+        cached = _MACHINE_IMAGE_IDENTITIES.get(cache_key)
+        if cached is not None:
+            return cached
+
+    def remember(value: Mapping[str, Any]) -> Mapping[str, Any]:
+        if cache_key is not None:
+            _MACHINE_IMAGE_IDENTITIES[cache_key] = value
+        return value
 
     identity = dict(immutable_file_identity(path, label=label))
     sidecar = Path(identity["path"] + ".provenance.json")
     if not sidecar.exists() and not sidecar.is_symlink():
-        return identity
+        return remember(identity)
     sidecar_identity = dict(
         immutable_file_identity(sidecar, label=f"{label} provenance")
     )
@@ -190,7 +232,7 @@ def machine_image_identity(path: Path, *, label: str) -> Mapping[str, Any]:
         raise ValueError(f"{label} provenance does not match the image: {sidecar}")
     identity["provenance"] = sidecar_identity
     identity["provenance_schema"] = provenance.get("schema")
-    return identity
+    return remember(identity)
 
 
 def identity_entry(identity: Mapping[str, Any], relative: str) -> Mapping[str, Any]:

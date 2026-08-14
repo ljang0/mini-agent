@@ -1507,9 +1507,7 @@ class CLITests(unittest.TestCase):
                     [
                         "run",
                         "--environment",
-                        "computer",
-                        "--env-url",
-                        "http://example.test",
+                        "web",
                         "--task",
                         "task",
                         "--model",
@@ -1530,7 +1528,6 @@ class CLITests(unittest.TestCase):
             for option, value in (
                 ("--base-url", "https://user:do-not-persist@example.test/v1"),
                 ("--api-key-env", "actual-secret-not-an-env-name"),
-                ("--env-token-env", "Bearer actual-secret"),
             ):
                 output = root / option.removeprefix("--")
                 stderr = io.StringIO()
@@ -1539,9 +1536,7 @@ class CLITests(unittest.TestCase):
                         [
                             "run",
                             "--environment",
-                            "computer",
-                            "--env-url",
-                            "http://127.0.0.1:8000",
+                            "web",
                             "--task",
                             "task",
                             "--model",
@@ -1557,35 +1552,6 @@ class CLITests(unittest.TestCase):
                 self.assertNotIn("do-not-persist", stderr.getvalue())
                 self.assertNotIn("actual-secret", stderr.getvalue())
 
-    def test_direct_multi_computer_requires_a_machine_factory(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            stderr = io.StringIO()
-            with (
-                patch(
-                    "mini_agent.cli.build_model",
-                    return_value=ScriptedModel([ModelResponse("unused")]),
-                ),
-                contextlib.redirect_stderr(stderr),
-            ):
-                code = main(
-                    [
-                        "run",
-                        "--environment",
-                        "computer",
-                        "--env-url",
-                        "http://example.test",
-                        "--task",
-                        "task",
-                        "--model",
-                        "openai/test",
-                        "--multi-agent",
-                        "--output",
-                        str(Path(temporary) / "run"),
-                    ]
-                )
-            self.assertEqual(code, 1)
-            self.assertIn("isolated machine factory", stderr.getvalue())
-
     def test_single_agent_rejects_an_ignored_per_agent_limit(self) -> None:
         stderr = io.StringIO()
         with contextlib.redirect_stderr(stderr):
@@ -1593,9 +1559,7 @@ class CLITests(unittest.TestCase):
                 [
                     "run",
                     "--environment",
-                    "computer",
-                    "--env-url",
-                    "http://example.test",
+                    "web",
                     "--task",
                     "task",
                     "--model",
@@ -2869,115 +2833,6 @@ class CLIEvalEndToEndTests(unittest.TestCase):
             result = self._assert_completed(output, "task")
             self.assertEqual(result["score"], 1.0)
             self.assertTrue(desktop.closed)
-
-    def test_cua_speedrun_eval_completes_end_to_end(self) -> None:
-        from test_benchmarks import FakeAdapter
-
-        from mini_agent.benchmarks.base import BenchmarkTask
-        from mini_agent.environments.cua import (
-            CUAEnvironment,
-            CUASpeedRunAdapterClient,
-        )
-
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            checkout = root / "cua-speed-run"
-            checkout.mkdir()
-            benchmark_path = root / "benchmark.yaml"
-            benchmark_path.write_text("fixture: true\n")
-            task = BenchmarkTask(
-                "cua-1",
-                "open the settings panel",
-                {
-                    "checkout": str(checkout),
-                    "revision": "pinned",
-                    "benchmark_name": "fixture",
-                    "benchmark_version": "1",
-                    "timeout_seconds": 5.0,
-                    "grace_seconds": 0.0,
-                },
-            )
-            environment = CUAEnvironment(
-                CUASpeedRunAdapterClient(FakeAdapter(1), owns_adapter=False),
-                benchmark="cua-speed-run",
-            )
-
-            class FakePool:
-                evidence: list[Mapping[str, Any]] = []
-
-                def __init__(self, *args: Any, **kwargs: Any) -> None:
-                    pass
-
-                async def environment(self, agent_id: str) -> CUAEnvironment:
-                    del agent_id
-                    return environment
-
-                async def evaluate(self, selected: CUAEnvironment) -> Any:
-                    return SimpleNamespace(passed=True, score=100.0, detail="ok")
-
-                async def close(self) -> None:
-                    return None
-
-            step = ModelResponse(
-                "",
-                tool_calls=(
-                    ToolCall(
-                        "c1",
-                        "computer",
-                        {"actions": [{"type": "screenshot"}]},
-                    ),
-                ),
-            )
-            stdout = io.StringIO()
-            with (
-                patch(
-                    "mini_agent.benchmarks.cua_speedrun.load_cua_speedrun",
-                    return_value=(task,),
-                ),
-                patch(
-                    "mini_agent.benchmarks.cua_speedrun."
-                    "prepare_cua_speedrun_backend",
-                    return_value={"status": "backend_ready"},
-                ),
-                patch(
-                    "mini_agent.benchmarks.cua_speedrun."
-                    "inspect_cua_speedrun_checkout",
-                    return_value=SimpleNamespace(
-                        path=checkout, revision="pinned", dirty=False
-                    ),
-                ),
-                patch("mini_agent.benchmarks.cua_speedrun._activate"),
-                patch("mini_agent.benchmarks.cua_speedrun._AdapterPool", FakePool),
-                patch(
-                    "mini_agent.cli.build_model",
-                    side_effect=lambda *a, **k: ScriptedModel(
-                        [step, ModelResponse("done")]
-                    ),
-                ),
-                contextlib.redirect_stdout(stdout),
-            ):
-                code = main(
-                    [
-                        "eval",
-                        "--benchmark",
-                        "cua-speed-run",
-                        "--model",
-                        "openai/test",
-                        "--checkout",
-                        str(checkout),
-                        "--benchmark-path",
-                        str(benchmark_path),
-                        *self._storage_args(root),
-                    ]
-                )
-            self.assertEqual(code, 0, stdout.getvalue())
-            output = root / "output"
-            result = self._assert_completed(output, "cua-1")
-            self.assertEqual(result["score"], 100.0)
-            verdict = json.loads(
-                (self._instance(output, "cua-1") / "verdict.json").read_text()
-            )
-            self.assertTrue(verdict["passed"])
 
 
 if __name__ == "__main__":
