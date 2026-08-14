@@ -122,6 +122,8 @@ def build_parser() -> argparse.ArgumentParser:
     selection = evaluate.add_mutually_exclusive_group()
     selection.add_argument("--limit", type=_positive_int, default=1)
     selection.add_argument("--all", action="store_true")
+    evaluate.add_argument("--filter")
+    evaluate.add_argument("--slice")
     evaluate.add_argument("--sample-seed", type=int, default=0)
     evaluate.add_argument("--max-workers", type=_positive_int, default=1)
     evaluate.add_argument("--resume", action="store_true")
@@ -551,6 +553,33 @@ class _BenchmarkRun:
     checkout_cwd: Path | None = None
 
 
+def _selected_tasks(
+    tasks: Sequence[BenchmarkTask], args: argparse.Namespace
+) -> Sequence[BenchmarkTask]:
+    """Narrow a loaded task list by id pattern and position.
+
+    One selection rule for every benchmark, so subsetting a run never depends
+    on which benchmark it is. Both are applied after loading, so what they
+    select is exactly what the adapter would otherwise have run.
+    """
+
+    pattern = getattr(args, "filter", None)
+    if pattern:
+        expression = re.compile(pattern)
+        tasks = [task for task in tasks if expression.search(task.task_id)]
+        if not tasks:
+            raise ValueError(f"--filter {pattern!r} matched no task")
+    window = getattr(args, "slice", None)
+    if window:
+        bounds = [int(part) if part else None for part in window.split(":")]
+        if len(bounds) > 3:
+            raise ValueError("--slice takes start:stop[:step]")
+        tasks = list(tasks)[slice(*bounds)]
+        if not tasks:
+            raise ValueError(f"--slice {window!r} selected no task")
+    return tuple(tasks)
+
+
 async def _evaluate(args: argparse.Namespace) -> int:
     _validate_runtime_credentials(args)
     _validate_topology_arguments(args)
@@ -592,6 +621,7 @@ async def _evaluate(args: argparse.Namespace) -> int:
         work=work,
         layout=layout,
     )
+    setup = replace(setup, tasks=_selected_tasks(setup.tasks, args))
 
     selected_worker = (
         _progress_worker(setup.worker, benchmark) if args.progress else setup.worker

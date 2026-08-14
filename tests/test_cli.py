@@ -3013,3 +3013,55 @@ class HarnessSelectionTests(unittest.TestCase):
             _validate_topology_arguments(
                 self._args(multi_agent=True, harness="fixed-team")
             )
+
+
+class TaskSelectionTests(unittest.TestCase):
+    """One selection rule for every benchmark, applied after loading."""
+
+    def _args(self, **overrides: Any) -> argparse.Namespace:
+        values: dict[str, Any] = {"filter": None, "slice": None}
+        values.update(overrides)
+        return argparse.Namespace(**values)
+
+    def _tasks(self) -> tuple[Any, ...]:
+        from mini_agent.benchmarks.base import BenchmarkTask
+
+        return tuple(
+            BenchmarkTask(f"repo__issue-{n}", "fix it") for n in range(1, 6)
+        )
+
+    def test_filter_matches_by_task_id(self) -> None:
+        from mini_agent.cli import _selected_tasks
+
+        picked = _selected_tasks(self._tasks(), self._args(filter="issue-[24]$"))
+        self.assertEqual(
+            [task.task_id for task in picked], ["repo__issue-2", "repo__issue-4"]
+        )
+
+    def test_slice_selects_a_window(self) -> None:
+        from mini_agent.cli import _selected_tasks
+
+        picked = _selected_tasks(self._tasks(), self._args(slice="1:3"))
+        self.assertEqual(
+            [task.task_id for task in picked], ["repo__issue-2", "repo__issue-3"]
+        )
+
+    def test_filter_and_slice_compose(self) -> None:
+        from mini_agent.cli import _selected_tasks
+
+        picked = _selected_tasks(
+            self._tasks(), self._args(filter="issue-[135]$", slice=":2")
+        )
+        self.assertEqual(
+            [task.task_id for task in picked], ["repo__issue-1", "repo__issue-3"]
+        )
+
+    def test_selecting_nothing_is_an_error_not_an_empty_run(self) -> None:
+        """An empty run would look like a pass; say so instead."""
+
+        from mini_agent.cli import _selected_tasks
+
+        with self.assertRaisesRegex(ValueError, "matched no task"):
+            _selected_tasks(self._tasks(), self._args(filter="nope"))
+        with self.assertRaisesRegex(ValueError, "selected no task"):
+            _selected_tasks(self._tasks(), self._args(slice="90:99"))

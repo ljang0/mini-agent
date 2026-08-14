@@ -8,6 +8,13 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `--filter` (regex over task ids) and `--slice` (`start:stop[:step]`) select a
+  subset of any benchmark's tasks, applied uniformly after loading. Adopted
+  from mini-swe-agent's `filter_instances`, which is simpler and more
+  consistent than the three mechanisms this had grown: `--limit`/`--all`
+  everywhere, `--sample-seed` for BrowseComp only, and `--task-list` doing
+  double duty as both a selection list and a benchmark-data pointer. Selecting
+  nothing is an error rather than a run that vacuously passes.
 - Selectable multi-agent harnesses. `--harness` chooses a named topology and
   `--team-size` sizes the ones that take a size: `single`, `fixed-team`
   (3/5/10 peers with a designated lead), `orchestrator` (a coordinator with no
