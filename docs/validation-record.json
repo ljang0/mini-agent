@@ -266,5 +266,59 @@
       "second_call_read_gib": 0.0,
       "note": "the launch path previously hashed the 24 GB VM image twice per desktop; the second hash is now a stat comparison"
     }
+  },
+  "harness_pass": {
+    "date": "2026-08-14",
+    "purpose": "Selectable multi-agent harnesses were added, so every benchmark was re-acquired from upstream and re-run against the new source, and the harnesses themselves were exercised on real containers rather than fakes. Generation only: scripted models, no API key, no score.",
+    "note_on_image_hashes": "`apptainer build` is not bit-reproducible, so a SIF sha256 identifies the local artifact, not the upstream image; sizes match the earlier pass byte for byte while the SIF digests differ.",
+    "swebench_single": {
+      "status": "passed",
+      "instance_id": "astropy__astropy-12907",
+      "image": {
+        "size_bytes": 1091235840,
+        "sha256": "3dac5c29aa9c592fae934d122f11bf1da48ffed1c92fc01d4b839c2e0d14eeae"
+      },
+      "patch_bytes": 506,
+      "patch_contains_agent_edit": true,
+      "harness": "single"
+    },
+    "swebench_fixed_team": {
+      "status": "passed",
+      "harness": "fixed-team",
+      "team_size": 3,
+      "containers": 3,
+      "patch_bytes": 504,
+      "patch_written_by": "lead",
+      "note": "three separate Apptainer overlays over one image; peers messaged the lead, which then made the edit that became the patch"
+    },
+    "programbench_single": {
+      "status": "passed",
+      "image": {
+        "size_bytes": 779235328,
+        "sha256": "337e52a6d885ffbf25e097f0a3b3304ce170900655a325bd8e4044f1ba6e21e4"
+      },
+      "submission_members": 66,
+      "network_probe": "BLOCKED",
+      "git_in_image": "git version 2.34.1",
+      "note": "the network and git probes are read out of the submission archive, not the trace: traces are content-redacted, so an earlier canary that searched the trace for them was measuring nothing"
+    },
+    "programbench_git_share": {
+      "status": "passed",
+      "harness": "fixed-team",
+      "containers": 3,
+      "shared_mount": "/srv/team.git",
+      "lead_received_peer_file": true,
+      "network_probe": "BLOCKED",
+      "note": "one agent pushed to the shared bare repository and the lead fetched from it with no network in either container"
+    },
+    "browsecomp_plus_fixed_retrieval": {
+      "status": "passed",
+      "index_sha256": "047cc4803b8f55faf9e36b280704b1288cecc7e619888bf521af4fa0a90ab1d4",
+      "anserini_jar_matches_pin": true,
+      "snippet_tokenizer_revision": "c1899de289a04d12100db370d81485cdf75e47ca",
+      "retrieved_documents": 5,
+      "snippet_tokens": 512,
+      "note": "same index digest and first result as the pre-harness pass"
+    }
   }
 }
