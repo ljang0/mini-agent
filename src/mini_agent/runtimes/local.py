@@ -256,19 +256,26 @@ class LocalRuntime:
     @classmethod
     async def isolated(
         cls,
-        source: Path,
+        source: Path | None = None,
         *,
         scratch_root: Path | None = None,
         runner: ProcessRunner | None = None,
     ) -> "LocalRuntime":
-        """Copy ``source`` into a private root with a private ``HOME``."""
+        """Copy ``source`` into a private root with a private ``HOME``.
 
-        source = source.expanduser().resolve()
-        if not source.is_dir():
-            raise ValueError(f"SWE workspace is not a directory: {source}")
+        ``source=None`` provisions the same private root with an empty
+        workspace. What isolates agents from each other is the fresh root, not
+        the copy, so a caller that only needs scratch space should not have to
+        invent a directory to copy.
+        """
+
+        if source is not None:
+            source = source.expanduser().resolve()
+            if not source.is_dir():
+                raise ValueError(f"SWE workspace is not a directory: {source}")
+            await asyncio.to_thread(validate_workspace_symlinks, source)
         if runner is not None:
             require_runner(runner)
-        await asyncio.to_thread(validate_workspace_symlinks, source)
         root_parent = (
             None if scratch_root is None else scratch_root.expanduser().resolve()
         )
@@ -279,6 +286,10 @@ class LocalRuntime:
         home = root / "home"
 
         def copy_workspace() -> None:
+            if source is None:
+                workspace.mkdir()
+                return
+
             def ignore_git(_directory: str, names: list[str]) -> list[str]:
                 return [".git"] if ".git" in names else []
 

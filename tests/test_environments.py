@@ -770,6 +770,36 @@ class SWEEnvironmentTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 await environment.close()
 
+    async def test_a_scratch_workspace_needs_no_source_and_no_git(self) -> None:
+        # Scratch space is not a submission: the Git baseline exists only to
+        # diff against, so an environment nobody exports from should not pay
+        # for one, and should not need a directory invented to copy.
+        with tempfile.TemporaryDirectory() as temporary:
+            scratch = Path(temporary) / "scratch"
+            first = await BashEnvironment.isolated(
+                scratch_root=scratch, git_baseline=False
+            )
+            second = await BashEnvironment.isolated(
+                scratch_root=scratch, git_baseline=False
+            )
+            try:
+                self.assertNotEqual(
+                    first.runtime.workspace, second.runtime.workspace
+                )
+                self.assertFalse((first.runtime.workspace / ".git").exists())
+                await first.execute(
+                    ToolCall("note", "bash", {"command": "printf 'mine\\n' > a.txt"})
+                )
+                # A fresh private root per call is what isolates teammates.
+                self.assertFalse((second.runtime.workspace / "a.txt").exists())
+                # Nothing to export, and adoption still fails closed.
+                self.assertIsNone(await first.export_state())
+                with self.assertRaises(ProtocolError):
+                    await second.adopt_state(object())
+            finally:
+                await first.close()
+                await second.close()
+
     async def test_isolated_patch_export_and_transactional_adoption(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary) / "source"

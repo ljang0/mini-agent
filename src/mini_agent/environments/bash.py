@@ -156,29 +156,43 @@ class BashEnvironment(BaseEnvironment):
     @classmethod
     async def isolated(
         cls,
-        source: Path,
+        source: Path | None = None,
         *,
         scratch_root: Path | None = None,
         timeout_seconds: float = 60.0,
         max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES,
         max_patch_bytes: int = DEFAULT_MAX_PATCH_BYTES,
         runner: ProcessRunner | None = None,
+        git_baseline: bool = True,
     ) -> "BashEnvironment":
-        """Copy ``source`` into a private root and commit a Git baseline."""
+        """Copy ``source`` into a private root and commit a Git baseline.
+
+        ``git_baseline=False`` skips the baseline commit, for a workspace that
+        is scratch space rather than a submission: the baseline exists only to
+        diff against, so an environment nobody exports from pays two Git
+        subprocesses per agent for a patch nobody reads. Such an environment
+        exports no state and cannot adopt any.
+        """
 
         runtime = await LocalRuntime.isolated(
             source, scratch_root=scratch_root, runner=runner
         )
         try:
-            base_commit = await create_git_baseline(
-                runtime,
-                timeout_seconds=timeout_seconds,
-                max_output_bytes=max_output_bytes,
+            base_commit = (
+                await create_git_baseline(
+                    runtime,
+                    timeout_seconds=timeout_seconds,
+                    max_output_bytes=max_output_bytes,
+                )
+                if git_baseline
+                else None
             )
             return cls(
                 runtime,
                 base_commit=base_commit,
-                base_identity="git-commit:" + base_commit,
+                base_identity=(
+                    None if base_commit is None else "git-commit:" + base_commit
+                ),
                 timeout_seconds=timeout_seconds,
                 max_output_bytes=max_output_bytes,
                 max_patch_bytes=max_patch_bytes,
@@ -317,9 +331,12 @@ class BashEnvironment(BaseEnvironment):
             )
         return content
 
-    async def export_state(self) -> SWEPatchState | SWEArchiveState:
+    async def export_state(self) -> SWEPatchState | SWEArchiveState | None:
+        # No baseline means nothing to diff against, which is the same answer
+        # the scheduler already accepts from an environment that exports no
+        # state at all. Adoption still fails closed, in `adopt_state`.
         if self.base_identity is None:
-            raise RuntimeError("SWE workspace has no adoption baseline")
+            return None
         if self.base_commit is None:
             return SWEArchiveState(self.base_identity, await self.export_archive())
         return SWEPatchState(self.base_identity, await self.export_patch())
