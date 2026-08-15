@@ -12,8 +12,10 @@ The public surface is intentionally small:
 mini-agent profile
 mini-agent run --environment swe|web
 mini-agent eval --benchmark swebench|programbench|browsecomp|browsecomp-plus|osworld-v1|osworld-v2
+mini-agent eval --benchmark aime|math500|olympiadbench|minervamath
 mini-agent grade --benchmark swebench|programbench|browsecomp-plus
 mini-agent doctor
+mini-agent report --runs DIR [DIR ...] [--best-of]
 ```
 
 Resolve the maintained baseline without making a model call:
@@ -79,9 +81,12 @@ mini-agent eval --benchmark programbench --harness fixed-team --team-size 3 \
 The choices are `single`, `fixed-team` (peers with a designated lead),
 `orchestrator` (a coordinator with no task tools, delegating to blocking
 subagents), `async-subagents` (long-lived subagents that idle between
-instructions), and `recursive` — the free-form mesh `--multi-agent` selects.
-Every result records what each agent spent and how much of it went into
-coordination. See [docs/harnesses.md](harnesses.md).
+instructions), `message-board` (peers sharing one append-only log instead of
+mailboxes), and `recursive` — the free-form mesh `--multi-agent` selects.
+`--role-model ROLE=MODEL` runs one role on a different model, and
+`--per-agent-input-tokens` bounds each agent in its own right rather than
+dividing one pool. Every result records what each agent spent and how much of it
+went into coordination. See [docs/harnesses.md](harnesses.md).
 
 Run live web research with SerpAPI, or use JSONL BM25 for a small deterministic
 fixture:
@@ -129,6 +134,22 @@ mini-agent eval \
   --runtime docker \
   --model openai/MODEL \
   --output /path/to/durable/mini-agent/runs/programbench-canary
+
+# Competition mathematics. No container, no index, no VM, and the score is
+# produced locally -- the one family that needs nothing but a model.
+mini-agent eval \
+  --benchmark aime \
+  --dataset /data/reasoning/aime-2024.jsonl \
+  --model openai/MODEL \
+  --output /path/to/durable/mini-agent/runs/aime-canary
+
+# `--grader-model` adds an equivalence judge for the answers normalization
+# cannot decide. Without it those answers are scored zero, not dropped.
+mini-agent eval \
+  --benchmark math500 \
+  --dataset /data/reasoning/math500.jsonl \
+  --model openai/MODEL \
+  --grader-model openai/GRADER_MODEL
 
 # Live BrowseComp plus an independently configured private-answer grader.
 mini-agent eval \
@@ -251,6 +272,44 @@ claim that inference, a VM launch, or official grading passed.
 See [machine images](machine-images.md) for exact upstream pins,
 acquisition commands, hashes from the validated node, and the optional adjacent
 provenance sidecar contract.
+
+## Comparing runs
+
+Every artifact is per-run, but the question the runs answer is comparative.
+`report` joins finished runs into one table:
+
+```bash
+mini-agent report --runs runs/aime-single runs/aime-fixed-team-3 --format table
+```
+
+It recomputes nothing. Each row is a projection of what a run already
+committed, and only committed instances count — resume refuses to trust an
+uncommitted one, so a table that averaged it in would report a score resume
+would not. Two things are called out rather than smoothed over: a summary whose
+`mean_score` disagrees with its own committed results, and a run whose
+`max_concurrency` was below its team size, where the team serialized on one
+semaphore and the latency columns are not comparable. Runs recorded before the
+coordination block carried idle time and duplicate work show `-` in those
+columns rather than `0`, because not measured is not the same finding as
+measured as none.
+
+`--best-of` treats the given runs as repeated samples of one configuration and
+asks what the extra agents actually bought:
+
+```bash
+mini-agent report --runs runs/aime-single-{1,2,3} --best-of
+```
+
+**Observed best@k** is the fraction of tasks some run solved. **Independent
+expectation** is what k statistically independent runs would have scored,
+`1 - (1 - p)^k` at the per-run mean `p`. Agents that think alike solve and fail
+the same tasks, so observed falls below expected; inverting the same formula
+turns the gap into an **effective team size** — the number of genuinely
+independent runs that would have produced what these k produced. A team of ten
+worth 2.3 independent runs is the finding this exists to surface, and a mean
+score cannot show it. Where the question has no answer — a per-run mean of 0 or
+1, or a union that solved everything — it reports nothing rather than a
+misleading number.
 
 ### Environment variables
 

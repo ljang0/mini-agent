@@ -215,7 +215,19 @@ that was working exactly as designed.
 
 All workers share global accounting, and each task's result records a
 per-agent coordination block: model calls, tool calls, bytes, tokens, messages
-sent and received, active seconds, and final status. Limits cap simultaneously
+sent and received, active and tool seconds, lifespan and idle seconds,
+duplicated tool calls, and final status. Idle time is an agent's lifespan minus
+the time it spent inside a model call *and* inside a tool call, which is what
+makes a parked subagent's cost visible at all — it bills nothing and still
+holds a slot. Tool execution is deliberately not idleness: counting it as such
+would report a sixty-second `bash` command as an agent doing nothing, and would
+overstate idle time worst on the topologies that use tools most. A duplicated
+tool call is one
+whose arguments hash was issued by more than one agent in the same task; it is
+counted once per call, so the total reads as "this much work was done twice"
+rather than double-counting the agents that did it. One agent repeating itself
+is not duplicate work. Everything in the block is recomputable from
+`trace.jsonl` alone. Limits cap simultaneously
 active agents, total agents ever created, message size, inbox size, model
 concurrency, calls, tool use, bytes, time, and optionally tokens/cost. Resource
 identities must be unique, start/cleanup failures are terminal evidence, and

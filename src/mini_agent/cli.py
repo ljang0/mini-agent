@@ -31,16 +31,26 @@ from .benchmarks.base import (
     spec_bound_agent,
     task_agent_builder,
     TeamOptions,
-    task_agent_prefix,
+    task_grader_agent,
+)
+from .benchmarks.reasoning import (
+    dataset_identity,
+    dataset_names as reasoning_benchmarks,
+    grade_reasoning,
+    judge_reasoning,
+    load_reasoning,
+    run_reasoning_task,
+    unjudged_score,
 )
 from .doctor import _doctor
 from .grading import _grade, _required_path
-from .models import BackendModel, Model, build_model
+from .models import BackendModel, Model, build_model, parse_model_spec
 from .orchestrator import AgentBuilder
 from .harnesses import harness_names, load_harness
 from .team import run_team, selected_harness
-from .profiles import load_profile, prompt_for
+from .profiles import domain_names, load_profile, prompt_for
 from .providers import TokenPricing, _validate_endpoint
+from .report import _report
 from .execution import RunContext, TraceRecorder, redact_artifact
 from .specs import AgentSpecV1
 from .storage import StorageLayout
@@ -58,7 +68,7 @@ _Number = TypeVar("_Number", int, float)
 def build_parser() -> argparse.ArgumentParser:
     """Declare every command and flag the CLI accepts.
     
-        One parser for all five commands, so a flag means the same thing wherever
+        One parser for every command, so a flag means the same thing wherever
         it appears and the manifest can record the whole invocation.
         """
     parser = argparse.ArgumentParser(
@@ -77,7 +87,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--application",
         "--environment",
         dest="application",
-        choices=("swe", "web", "computer", "cua"),
+        choices=domain_names(),
         required=True,
     )
     profile.add_argument("--profile", default="default")
@@ -113,14 +123,9 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate = commands.add_parser("eval", help="Run a pinned benchmark adapter.")
     evaluate.add_argument(
         "--benchmark",
-        choices=(
-            "swebench",
-            "programbench",
-            "browsecomp",
-            "browsecomp-plus",
-            "osworld-v1",
-            "osworld-v2",
-        ),
+        # The evaluator registry is the list; a second copy here could only
+        # ever disagree with it.
+        choices=tuple(_EVALUATORS),
         required=True,
     )
     evaluate.add_argument("--dataset", type=Path)
@@ -210,6 +215,17 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--min-scratch-free-gib", type=_nonnegative_float, default=1.0)
     doctor.add_argument("--home", type=Path)
     doctor.add_argument("--scratch", type=Path)
+
+    report = commands.add_parser(
+        "report", help="Compare finished runs in one table. Recomputes nothing."
+    )
+    report.add_argument("--runs", nargs="+", required=True, type=Path)
+    report.add_argument("--format", choices=("table", "json"), default="table")
+    report.add_argument(
+        "--best-of",
+        action="store_true",
+        help="Treat the runs as repeated samples: best@k against independent k.",
+    )
     return parser
 
 
@@ -258,10 +274,20 @@ def _add_execution_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--multi-agent", action="store_true")
     parser.add_argument("--harness", choices=harness_names(), default="single")
+    parser.add_argument(
+        "--role-model",
+        action="append",
+        metavar="ROLE=MODEL",
+        help="Run one harness role on a different model, e.g. lead=openai/big.",
+    )
     parser.add_argument("--team-size", type=_positive_int)
     parser.add_argument("--max-active-agents", type=_positive_int, default=4)
     parser.add_argument("--max-total-agents", type=_positive_int, default=8)
     parser.add_argument("--per-agent-model-calls", type=_positive_int)
+    # Per agent, not a share of a pool: ten agents on --per-agent-input-tokens
+    # 1000000 each get a million.
+    parser.add_argument("--per-agent-input-tokens", type=_nonnegative_int)
+    parser.add_argument("--per-agent-output-tokens", type=_nonnegative_int)
     parser.add_argument("--capture-content", action="store_true")
 
 
@@ -297,6 +323,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _grade(args)
         if args.command == "doctor":
             return asyncio.run(_doctor(args))
+        if args.command == "report":
+            return _report(args)
         parser.error(f"unknown command {args.command!r}")
     except KeyboardInterrupt:
         print("interrupted", file=sys.stderr)
@@ -766,6 +794,79 @@ async def _evaluate_programbench(
     return _BenchmarkRun(tasks=tasks, worker=worker)
 
 
+def _record_grader_artifact(
+    directory: Path, grader_model: str, output: str
+) -> dict[str, Any]:
+    """Write one task's hidden grader evidence and bind it by hash.
+
+    The artifact is benchmark-private: it holds the reference answer and the
+    grader's raw reply, so it lives under the instance's `private/` directory
+    and only its digest reaches the result.
+    """
+
+    path = directory / "private" / "grader.json"
+    atomic_json(
+        path,
+        {
+            "contains_hidden_benchmark_data": True,
+            "grader_model": grader_model,
+            "output": output,
+        },
+    )
+    return {
+        "grader_model": grader_model,
+        "private_grader_artifact": "private/grader.json",
+        "private_grader_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+    }
+
+
+async def _evaluate_reasoning(
+    args: argparse.Namespace,
+    *,
+    benchmark: str,
+    limit: int | None,
+    common: TeamOptions,
+    work: Path,
+    layout: StorageLayout,
+) -> _BenchmarkRun:
+    dataset = _required_path(args.dataset, "--dataset")
+    tasks = load_reasoning(dataset, benchmark=benchmark, limit=limit)
+    args._reasoning_dataset = dict(dataset_identity(dataset, benchmark=benchmark))
+    grader_factory = _grader_model_factory(args) if args.grader_model else None
+
+    async def worker(task: Any, context: RunContext, directory: Path) -> Any:
+        outcome = await run_reasoning_task(
+            task,
+            context,
+            directory,
+            scratch_root=work / "reasoning",
+            options=common,
+        )
+        score, reason = grade_reasoning(task, outcome.answer)
+        if score is not None or grader_factory is None:
+            score, grading = unjudged_score(score, reason)
+        else:
+            agent_id = task_grader_agent(task.task_id)
+            score, raw = await judge_reasoning(
+                task=task,
+                response=outcome.answer,
+                grader=grader_factory(agent_id),
+                context=context,
+                agent_id=agent_id,
+            )
+            grading = {
+                "grader": "model-equivalence",
+                **_record_grader_artifact(directory, args.grader_model, raw),
+            }
+        return replace(
+            outcome,
+            score=score,
+            metadata={**dict(outcome.metadata), **grading},
+        )
+
+    return _BenchmarkRun(tasks=tasks, worker=worker)
+
+
 async def _evaluate_browsecomp(
     args: argparse.Namespace,
     *,
@@ -800,32 +901,19 @@ async def _evaluate_browsecomp(
             model_name=args.model,
             options=common,
         )
-        grader = grader_factory(task_agent_prefix(task.task_id) + "/grader")
+        grader = grader_factory(task_grader_agent(task.task_id))
         score, raw = await grade_browsecomp(
             task=task,
             response=outcome.answer,
             grader=grader,
             context=context,
         )
-        grader_path = directory / "private" / "grader.json"
-        atomic_json(
-            grader_path,
-            {
-                "contains_hidden_benchmark_data": True,
-                "grader_model": args.grader_model,
-                "output": raw,
-            },
-        )
         return replace(
             outcome,
             score=score,
             metadata={
                 **dict(outcome.metadata),
-                "grader_model": args.grader_model,
-                "private_grader_artifact": "private/grader.json",
-                "private_grader_sha256": hashlib.sha256(
-                    grader_path.read_bytes()
-                ).hexdigest(),
+                **_record_grader_artifact(directory, args.grader_model, raw),
             },
         )
 
@@ -1095,12 +1183,19 @@ def _model_factory(
     if history is not None:
         transport["max_history_images"] = None if history == "unlimited" else history
 
+    # Which model each role uses. Transport, pricing, and protocol are shared:
+    # this varies the model within one deployment, which is what a
+    # manager-size-against-worker-size comparison needs.
+    roles = _role_models(args) if not prefix else {}
+    harness = load_harness(_harness_name(args)) if roles else None
+
     def create(agent_id: str) -> BackendModel:
-        # ``agent_id`` is the model-factory contract's argument; provider
-        # requests are agent-neutral, so it is not threaded into the backend.
-        del agent_id
+        selected = model
+        if harness is not None:
+            role = harness.role_name_of(agent_id, root_id=_root_of(agent_id))
+            selected = roles.get(role, model)
         return build_model(
-            model,
+            selected,
             base_url=_provider_option(args, prefix, "base_url"),
             api_key_env=_provider_option(args, prefix, "api_key_env"),
             max_output_tokens=_provider_option(args, prefix, "max_output_tokens"),
@@ -1119,6 +1214,49 @@ def _model_factory(
 
 def _grader_model_factory(args: argparse.Namespace) -> Callable[[str], BackendModel]:
     return _model_factory(args, prefix="grader_")
+
+
+def _root_of(agent_id: str) -> str:
+    """The team root an agent belongs to, read off its id.
+
+    Ancestry is already encoded in the id (`/eval/<digest>/root/peer-2`), so
+    the model factory can resolve a role without being told which task it is
+    serving.
+    """
+
+    marker = "/root"
+    index = agent_id.find(marker)
+    return agent_id if index < 0 else agent_id[: index + len(marker)]
+
+
+def _role_models(args: argparse.Namespace) -> dict[str, str]:
+    """Resolve `--role-model ROLE=MODEL`, checked against the selected harness."""
+
+    entries = getattr(args, "role_model", None) or ()
+    if not entries:
+        return {}
+    harness = load_harness(_harness_name(args))
+    if harness.legacy and len(harness.roles) == 1:
+        raise ValueError(
+            f"--role-model needs a harness with more than one role; "
+            f"--harness {harness.name} has only "
+            f"{next(iter(harness.roles))!r}"
+        )
+    resolved: dict[str, str] = {}
+    for entry in entries:
+        role, separator, model = entry.partition("=")
+        if not separator or not role or not model:
+            raise ValueError("--role-model entries must look like ROLE=MODEL")
+        if role not in harness.roles:
+            raise ValueError(
+                f"--harness {harness.name} has no role {role!r}; choose from "
+                f"{', '.join(sorted(harness.roles))}"
+            )
+        if role in resolved:
+            raise ValueError(f"--role-model repeats {role!r}")
+        parse_model_spec(model)
+        resolved[role] = model
+    return resolved
 
 
 def _pricing(args: argparse.Namespace, *, prefix: str = "") -> TokenPricing | None:
@@ -1165,8 +1303,11 @@ def _harness_name(args: argparse.Namespace) -> str:
 
 def _validate_topology_arguments(args: argparse.Namespace) -> None:
     name = _harness_name(args)
-    if args.per_agent_model_calls is not None and name == "single":
-        raise ValueError("--per-agent-model-calls requires a multi-agent harness")
+    for flag in ("model_calls", "input_tokens", "output_tokens"):
+        if getattr(args, f"per_agent_{flag}", None) is not None and name == "single":
+            raise ValueError(
+                f"--per-agent-{flag.replace('_', '-')} requires a multi-agent harness"
+            )
     if args.multi_agent and getattr(args, "harness", "single") not in {
         "single",
         "recursive",
@@ -1197,13 +1338,36 @@ def _validate_topology_arguments(args: argparse.Namespace) -> None:
 
 
 def _per_agent_limits(args: argparse.Namespace) -> BudgetLimits | None:
-    if args.per_agent_model_calls is None:
+    """The budget each agent gets in its own right, if any was configured.
+
+    Token caps here are per agent rather than shares of a pool: a team of ten
+    on a one-million-token budget means ten agents each allowed a million, not
+    a hundred thousand apiece. That is the shape the topologies being compared
+    are described with, and it is why these are separate flags from the
+    run-wide `--max-input-tokens-budget`.
+    """
+
+    per_agent_tokens = getattr(args, "per_agent_input_tokens", None)
+    per_agent_output = getattr(args, "per_agent_output_tokens", None)
+    if (
+        args.per_agent_model_calls is None
+        and per_agent_tokens is None
+        and per_agent_output is None
+    ):
         return None
     return BudgetLimits(
-        max_model_calls=args.per_agent_model_calls,
+        max_model_calls=args.per_agent_model_calls or args.max_model_calls,
         max_concurrency=1,
-        max_input_tokens=args.max_input_tokens_budget,
-        max_output_tokens=args.max_output_tokens_budget,
+        max_input_tokens=(
+            per_agent_tokens
+            if per_agent_tokens is not None
+            else args.max_input_tokens_budget
+        ),
+        max_output_tokens=(
+            per_agent_output
+            if per_agent_output is not None
+            else args.max_output_tokens_budget
+        ),
         max_cost_usd=args.max_cost_usd,
         wall_time_seconds=args.wall_time,
         max_tool_calls=args.max_tool_calls,
@@ -1314,6 +1478,8 @@ def _programbench_task_ids(task_list: Path | None) -> tuple[str, ...] | None:
 def _benchmark_domain(benchmark: str) -> str:
     if benchmark in {"swebench", "programbench"}:
         return "swe"
+    if benchmark in reasoning_benchmarks():
+        return "reasoning"
     return "web" if benchmark in {"browsecomp", "browsecomp-plus"} else "computer"
 
 
@@ -1386,6 +1552,19 @@ def _evaluation_config(
         prepared_images = getattr(args, "_programbench_image_bindings", None)
         if prepared_images is not None:
             adapter = {**adapter, "image_bindings": prepared_images}
+    elif args.benchmark in reasoning_benchmarks():
+        adapter = {
+            "dataset": getattr(args, "_reasoning_dataset", None),
+            "scratchpad": "private bash workspace, not graded",
+            # Which grader decided each task is recorded per task; this names
+            # the policy the run was configured with.
+            "scoring": (
+                "normalized-exact-match-with-model-equivalence-fallback"
+                if args.grader_model
+                else "normalized-exact-match"
+            ),
+            "grader": _grader_execution_config(args) if args.grader_model else None,
+        }
     elif args.benchmark == "browsecomp":
         adapter = {
             "search": "serpapi",
@@ -1472,9 +1651,13 @@ def _resolved_agent_spec(
     profile = load_profile(domain, model=args.model)
     harness = load_harness(_harness_name(args))
     if not harness.legacy:
+        # A role that runs a different model records that model, so the
+        # fingerprint in the manifest describes the agent actually run.
+        roles = _role_models(args)
         return {
             name: replace(
                 profile.to_agent_spec(role=role),
+                model=roles.get(name, args.model),
                 system_prompt=system_prompt + role.prompt,
                 max_steps=args.max_steps,
                 budget=_limits(args),
@@ -1576,6 +1759,8 @@ def _execution_config(args: argparse.Namespace) -> Mapping[str, Any]:
         **_provider_config(args),
         "max_steps": args.max_steps,
         "per_agent_model_calls": args.per_agent_model_calls,
+        "per_agent_input_tokens": args.per_agent_input_tokens,
+        "per_agent_output_tokens": args.per_agent_output_tokens,
     }
 
 
@@ -1835,6 +2020,7 @@ _EVALUATORS: Mapping[str, Any] = {
     "browsecomp-plus": _evaluate_browsecomp_plus,
     "osworld-v1": _evaluate_osworld,
     "osworld-v2": _evaluate_osworld,
+    **{name: _evaluate_reasoning for name in reasoning_benchmarks()},
 }
 
 _COLLECTORS: Mapping[str, tuple[str, str, Any]] = {

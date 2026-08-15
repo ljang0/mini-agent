@@ -10,7 +10,15 @@ import math
 import shutil
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping, Sequence
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Awaitable,
+    Callable,
+    Iterator,
+    Mapping,
+    Sequence,
+)
 
 from .._hash import canonical_bytes, harness_identity
 from ..environments.base import complete_in_thread
@@ -254,12 +262,6 @@ class EvaluationRunner:
             await asyncio.gather(*workers, return_exceptions=True)
             raise
         outcomes = [self._read_result(task.task_id) for task in self.tasks]
-        scores = [
-            float(outcome["score"])
-            for outcome in outcomes
-            if isinstance(outcome.get("score"), (int, float))
-            and not isinstance(outcome.get("score"), bool)
-        ]
         await trace.emit(
             "benchmark_run_finished",
             agent_id="/eval",
@@ -273,7 +275,7 @@ class EvaluationRunner:
             "completed": sum(item.get("status") == "completed" for item in outcomes),
             "failed": sum(item.get("status") == "failed" for item in outcomes),
             "blocked": sum(item.get("status") == "blocked" for item in outcomes),
-            "mean_score": sum(scores) / len(scores) if scores else None,
+            "mean_score": mean_score(outcomes),
             "model_calls": ledger.calls,
             "tool_calls": ledger.tool_calls,
             "tool_output_bytes": ledger.tool_output_bytes,
@@ -552,6 +554,64 @@ def task_agent_prefix(task_id: str) -> str:
 
 def task_agent_root(task_id: str) -> str:
     return task_agent_prefix(task_id) + "/root"
+
+
+def task_grader_agent(task_id: str) -> str:
+    """The id a grader's model calls are charged to.
+
+    One spelling, because this id is what ties grader spend to its task in the
+    ledger and the trace; two constructions can drift and split the tally.
+    """
+
+    return task_agent_prefix(task_id) + "/grader"
+
+
+def numbered_json_rows(path: Path, *, label: str) -> Iterator[tuple[int, Any]]:
+    """Stream a JSONL file as ``(1-based line number, decoded value)``.
+
+    Blank lines are skipped and a decode failure names the line, so every
+    adapter reports a malformed export the same way instead of each inventing
+    its own message.
+    """
+
+    with path.open(encoding="utf-8") as stream:
+        for number, line in enumerate(stream, 1):
+            if not line.strip():
+                continue
+            try:
+                yield number, strict_json_loads(line)
+            except (json.JSONDecodeError, ValueError) as exc:
+                raise ValueError(f"{label} line {number} is invalid JSON") from exc
+
+
+def write_prediction(directory: Path, value: Mapping[str, Any]) -> str:
+    """Write one task's ``prediction.json`` and return its content digest.
+
+    Collectors verify the digest recorded in a committed result against the
+    artifact, so the write and the hash belong together rather than being
+    spelled out again by every adapter.
+    """
+
+    path = directory / "prediction.json"
+    atomic_json(path, value)
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def mean_score(results: Sequence[Mapping[str, Any]]) -> float | None:
+    """The mean of every numeric score, or ``None`` when nothing was scored.
+
+    Shared with the cross-run report so its "summary disagrees with committed
+    results" check compares two applications of one rule; two rules that drift
+    would make every healthy run look inconsistent.
+    """
+
+    scores = [
+        float(result["score"])
+        for result in results
+        if isinstance(result.get("score"), (int, float))
+        and not isinstance(result.get("score"), bool)
+    ]
+    return sum(scores) / len(scores) if scores else None
 
 
 def owned_instance_artifacts(

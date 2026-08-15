@@ -2607,6 +2607,213 @@ class CLIEvalEndToEndTests(unittest.TestCase):
             )
             self.assertTrue(grader["contains_hidden_benchmark_data"])
 
+    def _run_reasoning(
+        self, root, benchmark: str, row: dict, responses: dict, *extra: str
+    ) -> Path:
+        """One reasoning eval end to end, with each model spec scripted."""
+
+        dataset = root / f"{benchmark}.jsonl"
+        dataset.write_text(json.dumps(row) + "\n", encoding="utf-8")
+        stdout = io.StringIO()
+        with (
+            patch(
+                "mini_agent.cli.build_model",
+                side_effect=lambda spec, **k: ScriptedModel(
+                    [ModelResponse(responses[spec])]
+                ),
+            ),
+            contextlib.redirect_stdout(stdout),
+        ):
+            code = main(
+                [
+                    "eval",
+                    "--benchmark",
+                    benchmark,
+                    "--model",
+                    "openai/test",
+                    "--dataset",
+                    str(dataset),
+                    *extra,
+                    *self._storage_args(root),
+                ]
+            )
+        self.assertEqual(code, 0, stdout.getvalue())
+        return root / "output"
+
+    def test_reasoning_eval_completes_end_to_end(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = self._run_reasoning(
+                root,
+                "aime",
+                {"id": "aime-1", "problem": "1+1?", "answer": "2"},
+                {"openai/test": "Two.\nAnswer: 2"},
+            )
+            result = self._assert_completed(output, "aime-1")
+            self.assertEqual(result["score"], 1.0)
+            self.assertEqual(result["metadata"]["extracted_answer"], "2")
+            self.assertEqual(result["metadata"]["grader"], "integer-exact")
+            summary = json.loads((output / "summary.json").read_text())
+            self.assertEqual(summary["mean_score"], 1.0)
+            adapter = json.loads(
+                (output / "manifest.json").read_text()
+            )["config"]["adapter"]
+            self.assertEqual(adapter["scoring"], "normalized-exact-match")
+            self.assertEqual(adapter["dataset"]["benchmark"], "aime")
+            # The task file is bound by content, so a changed dataset cannot
+            # resume into a manifest recorded against the old one.
+            self.assertEqual(
+                adapter["dataset"]["export"]["size_bytes"],
+                (root / "aime.jsonl").stat().st_size,
+            )
+
+    def test_role_models_reach_the_provider_and_the_manifest(self) -> None:
+        # The pareto question the harnesses exist for is manager size against
+        # worker size, which needs the roles to differ in model, and the
+        # recorded fingerprint to say so.
+        built: list[str] = []
+
+        def scripted(spec: str, **kwargs: Any) -> ScriptedModel:
+            del kwargs
+            built.append(spec)
+            return ScriptedModel([ModelResponse("Answer: 2")])
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            dataset = root / "aime.jsonl"
+            dataset.write_text(
+                json.dumps({"id": "aime-1", "problem": "1+1?", "answer": "2"}) + "\n",
+                encoding="utf-8",
+            )
+            stdout = io.StringIO()
+            with (
+                patch("mini_agent.cli.build_model", side_effect=scripted),
+                contextlib.redirect_stdout(stdout),
+            ):
+                code = main(
+                    [
+                        "eval",
+                        "--benchmark",
+                        "aime",
+                        "--model",
+                        "openai/worker",
+                        "--harness",
+                        "fixed-team",
+                        "--team-size",
+                        "3",
+                        "--role-model",
+                        "lead=openai/manager",
+                        "--model-concurrency",
+                        "3",
+                        "--dataset",
+                        str(dataset),
+                        *self._storage_args(root),
+                    ]
+                )
+            self.assertEqual(code, 0, stdout.getvalue())
+            # One lead on the manager model, two peers on the worker model.
+            self.assertEqual(sorted(built), ["openai/manager"] + ["openai/worker"] * 2)
+            specs = json.loads((root / "output" / "manifest.json").read_text())[
+                "config"
+            ]["agent_spec"]
+            self.assertEqual(specs["lead"]["model"], "openai/manager")
+            self.assertEqual(specs["peer"]["model"], "openai/worker")
+            self.assertNotEqual(
+                specs["lead"]["fingerprint"], specs["peer"]["fingerprint"]
+            )
+
+    def test_a_per_agent_token_budget_is_per_agent_not_a_share(self) -> None:
+        # A team of three on a per-agent budget of N is allowed 3N in total.
+        # Recording it as a share of one pool would describe a different
+        # experiment from the one the topologies are specified with.
+        from mini_agent.cli import _per_agent_limits, build_parser
+
+        args = build_parser().parse_args(
+            [
+                "eval",
+                "--benchmark",
+                "aime",
+                "--model",
+                "openai/test",
+                "--harness",
+                "fixed-team",
+                "--team-size",
+                "3",
+                "--per-agent-input-tokens",
+                "1000000",
+                "--max-input-tokens-budget",
+                "50",
+            ]
+        )
+        limits = _per_agent_limits(args)
+        assert limits is not None
+        self.assertEqual(limits.max_input_tokens, 1_000_000)
+        # And it does not silently become the run-wide cap.
+        self.assertNotEqual(limits.max_input_tokens, args.max_input_tokens_budget)
+
+    def test_an_unknown_role_model_names_the_roles_that_exist(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            dataset = root / "aime.jsonl"
+            dataset.write_text(
+                json.dumps({"id": "a", "problem": "p", "answer": "2"}) + "\n",
+                encoding="utf-8",
+            )
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                code = main(
+                    [
+                        "eval",
+                        "--benchmark",
+                        "aime",
+                        "--model",
+                        "openai/test",
+                        "--harness",
+                        "fixed-team",
+                        "--role-model",
+                        "captain=openai/big",
+                        "--dataset",
+                        str(dataset),
+                        *self._storage_args(root),
+                    ]
+                )
+            self.assertEqual(code, 1)
+            self.assertIn("no role 'captain'", stderr.getvalue())
+
+    def test_reasoning_eval_uses_the_judge_only_when_undecided(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = self._run_reasoning(
+                root,
+                "math500",
+                {"unique_id": "m-1", "problem": "half?", "answer": "\\frac{1}{2}"},
+                {"openai/test": "Answer: 0.5", "openai/judge": "equivalent: yes"},
+                "--grader-model",
+                "openai/judge",
+            )
+            result = self._assert_completed(output, "m-1")
+            self.assertEqual(result["score"], 1.0)
+            self.assertEqual(result["metadata"]["grader"], "model-equivalence")
+            grader = json.loads(
+                (self._instance(output, "m-1") / "private" / "grader.json").read_text()
+            )
+            self.assertTrue(grader["contains_hidden_benchmark_data"])
+
+    def test_reasoning_eval_scores_undecided_zero_without_a_judge(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = self._run_reasoning(
+                root,
+                "math500",
+                {"unique_id": "m-1", "problem": "half?", "answer": "\\frac{1}{2}"},
+                {"openai/test": "Answer: 0.5"},
+            )
+            result = self._assert_completed(output, "m-1")
+            # Undecided without a judge is scored zero and says so, so the
+            # deterministic grader's undercount stays measurable.
+            self.assertEqual(result["score"], 0.0)
+            self.assertTrue(result["metadata"]["undecided_scored_zero"])
+
     def test_browsecomp_plus_eval_completes_end_to_end(self) -> None:
         from support import WordTokenizer
 

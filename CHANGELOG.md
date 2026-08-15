@@ -8,6 +8,64 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Reasoning benchmarks: `mini-agent eval --benchmark {aime,math500,
+  olympiadbench,minervamath}`. They need no container, no retrieval index, and
+  no virtual machine, which makes them the only family that produces a score on
+  a host without Docker. Tasks load from a local JSONL export whose exact bytes
+  are hashed into the manifest. Agents get one `bash` tool over a private,
+  ungraded scratch directory — deliberately, because with no tool at all every
+  topology collapses to "each agent thinks alone" and a harness comparison
+  measures nothing.
+- Grading for those benchmarks is deterministic normalized comparison, with
+  `--grader-model` as an equivalence judge for the answers normalization cannot
+  decide. Which grader decided each task is recorded. Without a judge, undecided
+  answers are scored zero and flagged `undecided_scored_zero`, so the
+  deterministic grader's undercount stays measurable; an unparseable judge reply
+  leaves the task ungraded rather than charging grader flakiness to the model.
+  No upstream evaluation code runs, so these scores are comparable across
+  `mini-agent` runs and are not reproductions of published leaderboard figures.
+- A `reasoning` domain profile. It shares the `bash` tool with `swe` but has its
+  own prompt, because a mathematics agent is not told to reproduce an issue.
+- `--harness message-board`: N peers with no mailboxes, coordinating through one
+  shared append-only log. Two new actions, `post` (addressed to nobody) and
+  `board` (returns what you have not read, `wait=true` blocks for one). Reading
+  does not consume, so two peers see the same post and an agent that looks late
+  still sees everything said before it. Board traffic counts toward the same
+  coordination tallies as `send`/`inbox`, or a team that talks only through the
+  board would report as having said nothing. `--max-board-bytes` bounds the log.
+- `--role-model ROLE=PROVIDER/MODEL`, repeatable, runs one harness role on a
+  different model — the manager-size-against-worker-size comparison. Each role
+  records its own model in its own `AgentSpecV1`, so recorded fingerprints
+  describe the agents that actually ran.
+- `--per-agent-input-tokens` and `--per-agent-output-tokens` bound each agent in
+  its own right rather than dividing one pool, so a team of ten at a million
+  tokens each is allowed ten million. Both require a multi-agent harness.
+- Idle time and duplicate work in the coordination block, schema
+  `mini-agent-coordination-v2`. Each agent reports `lifespan_seconds`,
+  `tool_seconds`, `idle_seconds` (lifespan minus time inside a model call and
+  inside a tool call, clamped at zero), and `tool_calls_duplicated`; the totals
+  add `idle_seconds`, `active_seconds`, `tool_seconds`, and
+  `duplicate_tool_calls`. Tool execution is work, not waiting — counting it as
+  idle would report a sixty-second `bash` command as an agent doing nothing.
+  Both come from events the trace already recorded —
+  `agent_spawned`/terminal pairs and `tool_call_started.arguments_sha256` — so
+  old traces can be resummarized. An agent whose terminal event is outside the
+  slice reports no lifespan rather than an invented one, and one agent repeating
+  its own call is not duplicate work.
+- `mini-agent report --runs DIR [DIR ...]` joins finished runs into one
+  comparison table (`--format table|json`). It recomputes nothing: a row is a
+  projection of committed evidence, uncommitted instances are excluded because
+  resume will not trust them either, and two conditions are flagged rather than
+  smoothed over — a summary whose `mean_score` disagrees with its own results,
+  and a run whose `max_concurrency` was below its team size, where the team
+  serialized and the latency columns are not comparable.
+- `mini-agent report --best-of` compares observed best@k across repeated runs
+  against the independent-agent expectation `1 - (1 - p)^k`, and inverts the
+  gap into an effective team size — how many genuinely independent runs the k
+  actual ones were worth. Correlated agents solve and fail the same tasks, which
+  a mean score cannot show. Degenerate cases (a per-run mean of 0 or 1, a union
+  that solved everything) report no team size rather than a misleading one.
+
 - `--filter` (regex over task ids) and `--slice` (`start:stop[:step]`) select a
   subset of any benchmark's tasks, applied uniformly after loading. Adopted
   from mini-swe-agent's `filter_instances`, which is simpler and more
@@ -45,6 +103,14 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- `BashEnvironment.isolated` takes `git_baseline=False` for a workspace that is
+  scratch space rather than a submission, and `source=None` for one that starts
+  empty. A fresh private root is what isolates agents from each other; the Git
+  baseline exists only to diff against, so an environment nobody exports from
+  no longer pays two Git subprocesses per agent for a patch nobody reads. Such
+  an environment exports no state — `export_state` returns `None` rather than
+  raising, matching what the scheduler already accepts from an environment with
+  no state at all — and adoption still fails closed.
 - Container runtimes are now benchmark-neutral infrastructure under
   `src/mini_agent/runtimes/`: `base.py` (the `SandboxRuntime` protocol plus the
   shared `ProcessResult` and argument validators), `local.py`, `docker.py`, and

@@ -28,9 +28,23 @@ _PROMPTS = {
         "coordinates from the latest screenshot. Prefer short, verifiable action "
         "batches. Finish only after the requested visible state is present."
     ),
+    "reasoning": (
+        "You are a mathematics agent. Reason carefully and check your work. The "
+        "bash tool is a private scratchpad -- use it for arithmetic, enumeration, "
+        "or verification -- but nothing you write there is graded. Only your final "
+        "message is read, so state the answer there in the requested form."
+    ),
 }
 
-_TOOLS = {"swe": "bash", "web": "browser", "computer": "computer"}
+_TOOLS = {
+    "swe": "bash",
+    "web": "browser",
+    "computer": "computer",
+    # Reasoning shares the bash tool because a scratchpad is what these tasks
+    # need; it is a separate domain because its prompt and grading are not
+    # software engineering's.
+    "reasoning": "bash",
+}
 
 # The pre-harness capability set and prompt suffix, taken from the harness that
 # reproduces it. Deriving rather than repeating them means the two cannot drift
@@ -135,6 +149,19 @@ class Profile:
         )
 
 
+_ALIASES = {"cua": "computer", "computer-use": "computer", "browser": "web"}
+
+
+def domain_names() -> tuple[str, ...]:
+    """Every domain `load_profile` accepts, aliases included.
+
+    Exported so the CLI's choices cannot fall behind the domains that exist,
+    the way `harness_names()` serves the harness registry.
+    """
+
+    return tuple(sorted({*_PROMPTS, *_ALIASES}))
+
+
 def load_profile(
     application: str,
     profile: str = "default",
@@ -144,11 +171,7 @@ def load_profile(
     for value, label in ((application, "application"), (profile, "profile")):
         _require_str(value, label, stripped=True)
     _require_str(model, "model", stripped=True)
-    environment = {
-        "cua": "computer",
-        "computer-use": "computer",
-        "browser": "web",
-    }.get(application, application)
+    environment = _ALIASES.get(application, application)
     if environment not in _PROMPTS:
         raise ValueError(f"unknown environment {application!r}")
     if profile != "default":
@@ -180,4 +203,4 @@ def prompt_for(environment: str, *, multi_agent: bool = False) -> str:
     return _resolved_prompt(profile.system_prompt, multi_agent=multi_agent)
 
 
-__all__ = ["Profile", "load_profile", "prompt_for"]
+__all__ = ["Profile", "domain_names", "load_profile", "prompt_for"]

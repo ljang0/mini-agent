@@ -72,16 +72,27 @@ mini-agent eval --benchmark programbench --harness fixed-team --team-size 3 ...
 | `fixed-team` | 3, 5, or 10 peers sharing the task, one designated lead |
 | `orchestrator` | a coordinator with no task tools, delegating to blocking subagents |
 | `async-subagents` | long-lived subagents that idle between instructions |
+| `message-board` | peers sharing one append-only log instead of mailboxes |
 | `recursive` | the free-form mesh `--multi-agent` selects |
 
 Every result records what each agent spent and how much of it went into
-coordination. See [docs/harnesses.md](docs/harnesses.md).
+coordination — messages, idle time, and work two agents did twice. See
+[docs/harnesses.md](docs/harnesses.md).
+
+`mini-agent report --runs A B C` puts those runs side by side in one table, so
+the comparison the harnesses exist for is a command rather than a spreadsheet.
 
 ## Benchmarks
 
 SWE-bench, ProgramBench, BrowseComp, BrowseComp-Plus, and OSWorld v1/v2, each
 pinned to an exact upstream revision and image digest. Generation happens here;
 scoring is always the official grader's job.
+
+Four competition-mathematics sets — AIME, MATH-500, OlympiadBench, MinervaMath —
+are the exception in both directions: they need no container, index, or VM, and
+their score is computed locally because these datasets publish problems and
+answers rather than an evaluation harness. That makes them comparable across
+`mini-agent` runs, not against a published leaderboard.
 
 The exact invocation for each is in [docs/cli.md](docs/cli.md); what is pinned
 and where this deviates from upstream is in

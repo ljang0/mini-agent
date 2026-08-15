@@ -8,6 +8,7 @@ harness. Pins are enforced at runtime where an upstream checkout is required.
 |---|---|---|---|
 | SWE-bench | tag `v4.1.0`, commit `726c5461e2ef52d83cf1ea2107870a8bb3328d57` | Official task fields, independent persistent Docker or Apptainer workspaces, binary patch artifact, exact prediction JSONL, official grader command | Generic one-`bash` loop and baseline prompt are not an official leaderboard model harness; upstream scoring remains Docker-only |
 | ProgramBench | commit `963063c9271cc40fa179977356782ea4582e0b0c`, package version `1.2.4` | Pinned `task.yaml` task loading, per-task `task_cleanroom_v6` cleanroom image, `--network none` agent container, `<run>/<instance_id>/submission.tar.gz` layout, official `programbench eval` command | Generic one-`bash` loop and baseline prompt are not the upstream mini-swe-agent baseline; `tests.json` is never loaded into task data, only hashed |
+| AIME, MATH-500, OlympiadBench, MinervaMath | the exact task-file bytes, hashed into the manifest, plus the named upstream export they came from | Hidden answer never enters the prompt or the trace; one final answer per task; deterministic normalized grading with an optional equivalence judge | No upstream code is executed: the prompt, the answer-extraction rule, and the normalization are this project's, and the score is computed locally rather than by a published harness |
 | BrowseComp | `openai/simple-evals` commit `652c89d0ca9df547706735883097e9537d40dc47` | Official encrypted CSV decoding, live SerpAPI search/open, required independent private-answer grader | Search provider/tool protocol is a maintained baseline, not simple-evals' hosted model harness |
 | BrowseComp-Plus | `texttron/BrowseComp-Plus` commit `046949032b0328319cc9a02663a759ec601d9402` | Fixed Lucene BM25, exactly top five, 512-token snippets, search-only capability, full index-tree hash, tokenizer provenance, official per-query run schema and pinned grader command | One `browser` action renames the upstream provider-specific search function |
 | OSWorld v1 | `xlang-ai/OSWorld` commit `091f5ef1d5544bc74953c77875d5feb5bed30108` | Official task configs, reset/setup, 60-second reset settle plus fresh observation, independent `DesktopEnv`, pyautogui and literal `FAIL` steps, 20-second evaluation settle, hidden `evaluate()` | Batched native-pixel computer tool and baseline prompt are adapted |
@@ -142,6 +143,59 @@ Primary references are the pinned
 [usage guide](https://github.com/facebookresearch/programbench/blob/963063c9271cc40fa179977356782ea4582e0b0c/docs/README.md),
 [image naming](https://github.com/facebookresearch/programbench/blob/963063c9271cc40fa179977356782ea4582e0b0c/src/programbench/constants.py),
 and [evaluator](https://github.com/facebookresearch/programbench/blob/963063c9271cc40fa179977356782ea4582e0b0c/src/programbench/eval/eval.py).
+
+## Reasoning: AIME, MATH-500, OlympiadBench, MinervaMath
+
+These four are the only benchmarks here that need no container, no retrieval
+index, and no virtual machine, so they are also the only ones whose score can be
+produced on a host without Docker.
+
+Be precise about what that score is. Unlike every other adapter on this page,
+**no upstream code runs**. These datasets publish problems and answers, not an
+evaluation harness, so the prompt, the answer-extraction rule, and the
+normalization are this project's own and are versioned with it. A number
+produced here is comparable across `mini-agent` runs; it is not a
+reproduction of any published leaderboard figure, and it should not be compared
+against one.
+
+Input is a local JSONL export with one problem and one answer per row. The exact
+bytes are hashed into the evaluation manifest and the upstream export is named
+beside them, for the same reason every other adapter pins its input: a task set
+that can change underneath a manifest cannot be resumed or compared. The known
+field spellings of each published export are accepted (`problem`/`Problem`/
+`question`, `answer`/`Answer`/`final_answer`); anything else fails closed rather
+than loading as an empty answer. OlympiadBench's single-element answer list is
+read as that element. An AIME row whose answer is not an integer is rejected at
+load, because grading a non-integer dataset under the integer contract would
+silently score every task zero.
+
+Agents get one `bash` tool over a private scratch directory. This is a
+deliberate addition, not an upstream contract: with no tool at all every
+topology collapses to "each agent thinks alone", and the harness comparison this
+project exists to make would measure nothing. Each agent gets a fresh private
+root, so a team's members cannot share working state through the filesystem —
+what they share has to travel through the harness's own messages. The workspace
+carries no Git baseline, because nothing written there is read, graded, or
+exported.
+
+Grading has two stages and records which one decided each task:
+
+- **AIME** answers are integers, so comparison is exact after normalization and
+  a judge could only introduce error. A non-integer response is wrong, not
+  undecided.
+- **The other three** are compared after normalization that drops
+  presentation-only LaTeX and unifies fraction, radical, and unit spellings.
+  When normalization cannot decide, it says so rather than guessing.
+
+An undecided answer is settled by `--grader-model` when one is configured, with
+the hidden reference and raw judge output written to the task's `private/`
+directory. Without a judge, undecided is scored **zero** and the result records
+`undecided_scored_zero`. That is the honest default — a deterministic grader can
+only undercount — but it means a run without a judge understates any model whose
+answers are correct in an unusual form, and the flag is what makes that
+undercount measurable. A judge whose reply cannot be parsed leaves the task
+ungraded instead of scoring it zero, so grader flakiness is not charged to the
+model.
 
 ## BrowseComp
 

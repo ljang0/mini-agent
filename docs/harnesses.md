@@ -14,6 +14,7 @@ one.
 | `fixed-team` | 3, 5, or 10 | yes | none | up front |
 | `orchestrator` | 1 + subagents | **no** | blocking | on demand |
 | `async-subagents` | 1 + subagents | yes | non-blocking, long-lived | on demand |
+| `message-board` | 3, 5, or 10 | yes | none | up front |
 
 ## What each one is
 
@@ -40,6 +41,14 @@ long-lived subagents. Spawning returns immediately. A subagent sees only what
 its lead told it — not the original task — reports its answer as a message, and
 then idles until the lead sends new instructions. `release` retires an idle
 subagent cleanly so the lead can adopt its workspace.
+
+**`message-board`** — N peers with no mailboxes at all, coordinating through one
+shared append-only log. `post` is addressed to nobody and `board` returns what
+you have not read; reading does not consume, so two peers see the same post and
+an agent that looks late still sees everything said before it. The trade is
+targeting: there is no way to tell one teammate something without telling all of
+them, so its failure mode is noise where `fixed-team`'s is partition. Holding
+those two side by side is the point of shipping both.
 
 ## Adding one
 
@@ -73,6 +82,27 @@ chosen, it was chosen once, visibly:
   findings as text but not files; the lead's own workspace is the submission.
   ProgramBench is the exception: `--agent-git-share` gives the team a shared
   bare repository to push and pull through, with no network.
+- **A board post is counted as coordination.** `post`/`board` are broadcast
+  rather than addressed, but they are still how a team talks, so they land in
+  the same `messages_sent`/`messages_received` tallies as `send`/`inbox`. A
+  topology that talks only through the board would otherwise report as having
+  said nothing at all.
+
+## Varying the model per role
+
+`--role-model ROLE=PROVIDER/MODEL`, repeatable, runs one role on a different
+model — `--harness fixed-team --role-model lead=openai/big` puts the manager on
+one model and the peers on another. Transport, pricing, and protocol are shared,
+so this varies the model within one deployment rather than becoming a second
+provider configuration. Each role records its own model in its own
+`AgentSpecV1`, so the fingerprint in the manifest describes the agent that
+actually ran.
+
+Budgets can be per agent too. `--per-agent-input-tokens` and
+`--per-agent-output-tokens` are caps each agent gets in its own right, not
+shares of a pool: a team of ten at a million tokens each is allowed ten million,
+which is the shape the topologies are specified with. The run-wide
+`--max-input-tokens-budget` still bounds the whole evaluation.
 
 ## A consequence worth knowing before you run one
 
@@ -85,6 +115,13 @@ but it means `orchestrator` on SWE-bench measures delegation, not patch
 quality, unless adoption is part of what you are testing. Verified directly: a
 real two-container orchestrator run completes with a 0-byte patch while its
 subagent's own container holds the edit.
+
+That caveat is specific to file-producing benchmarks. On the reasoning
+benchmarks the submission is the lead's final text, so `orchestrator` has
+nothing to adopt and nothing to lose: a coordinator with no task tools can
+still delegate, read the answers it gets back, and submit. If you want one
+topology comparison that is not entangled with patch export, that is the reason
+to start there.
 
 ## Capacity
 
