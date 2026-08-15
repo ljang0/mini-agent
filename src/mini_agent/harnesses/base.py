@@ -26,6 +26,10 @@ ACTIONS = (
     "adopt",
     "delegate",
     "release",
+    # Broadcast, where send/inbox are point-to-point: a post has no recipient,
+    # reading does not consume it, and every agent sees the same sequence.
+    "post",
+    "board",
 )
 
 # The pre-harness action set. `recursive` reproduces it exactly so every

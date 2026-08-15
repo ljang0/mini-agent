@@ -58,6 +58,8 @@ _ACTION_HELP = {
     "adopt": "Adopt a completed descendant's environment state.",
     "delegate": "Delegate a subtask and block until the subagent answers.",
     "release": "Release an idle descendant so its state can be adopted.",
+    "post": "Post to the shared board, which every agent can read.",
+    "board": "Read board posts you have not seen (wait=true blocks for one).",
 }
 
 # What an agent is when no harness was selected: the pre-harness mesh.
@@ -78,6 +80,24 @@ class MailboxMessage:
             _require_str(getattr(self, name), f"mailbox {name}", non_empty=False)
         if self.kind not in {"message", "result", "error"}:
             raise ValueError("mailbox kind must be 'message', 'result', or 'error'")
+
+
+@dataclass(frozen=True)
+class BoardEntry:
+    """One post on the shared board.
+
+    A board is broadcast where a mailbox is point-to-point: an entry has an
+    author but no recipient, and every agent reads the same sequence.
+    """
+
+    sequence: int
+    author: str
+    content: str
+
+    def __post_init__(self) -> None:
+        _require_int(self.sequence, "board sequence")
+        for name in ("author", "content"):
+            _require_str(getattr(self, name), f"board {name}", non_empty=False)
 
 
 @dataclass
@@ -260,6 +280,22 @@ class CommunicationEnvironment(BaseEnvironment):
             return _json_execution(
                 await _await_action(scheduler.release(self.owner, target))
             )
+        if action == "post":
+            _only(call, "action", "message")
+            message = self._argument(call, "message", action)
+            entry = await _await_action(scheduler.post(self.owner, message))
+            return _json_execution({"posted": True, "sequence": entry.sequence})
+        if action == "board":
+            _only(call, "action", "wait")
+            blocking = _require_bool(
+                call.arguments.get("wait", False),
+                "agent board wait",
+                error=InvalidAction,
+            )
+            entries = await _await_action(
+                scheduler.read_board(self.owner, wait=blocking)
+            )
+            return _json_execution([asdict(entry) for entry in entries])
         if action == "wait":
             _only(call, "action", "agent_ids")
             targets = call.arguments.get("agent_ids")
@@ -343,6 +379,7 @@ class Orchestrator:
         per_agent_limits: BudgetLimits | None = None,
         max_message_bytes: int = 64 * 1024,
         max_inbox_bytes: int = 1024 * 1024,
+        max_board_bytes: int = 1024 * 1024,
         root_id: str = "/root",
         harness: Harness | None = None,
     ) -> None:
@@ -355,6 +392,7 @@ class Orchestrator:
             ("max_total_agents", max_total_agents),
             ("max_message_bytes", max_message_bytes),
             ("max_inbox_bytes", max_inbox_bytes),
+            ("max_board_bytes", max_board_bytes),
         ):
             _require_positive_int(value, name)
         if max_total_agents < max_active_agents:
@@ -375,12 +413,19 @@ class Orchestrator:
         self.per_agent_limits = per_agent_limits
         self.max_message_bytes = max_message_bytes
         self.max_inbox_bytes = max_inbox_bytes
+        self.max_board_bytes = max_board_bytes
         self.root_id = root_id.rstrip("/")
         self.harness = harness
         self._records: dict[str, AgentRecord] = {}
         self._resource_ids: set[str] = set()
         self._child_counts: dict[str, int] = {}
         self._message_sequence = 0
+        # The board is one shared log with a cursor per reader, so reading does
+        # not consume and every agent sees the same sequence.
+        self._board: list[BoardEntry] = []
+        self._board_cursors: dict[str, int] = {}
+        self._board_bytes = 0
+        self._board_event = asyncio.Event()
         self._lock = asyncio.Lock()
         self._running = False
 
@@ -816,6 +861,74 @@ class Orchestrator:
                     raise ProtocolError("a terminal agent cannot wait for messages")
                 event = record.inbox_event
                 event.clear()
+            await event.wait()
+
+    async def post(self, author: str, content: str) -> BoardEntry:
+        """Append one entry to the board every agent shares."""
+
+        self._check_ids("board author", author)
+        content = _bounded_text(content, "board post", self.max_message_bytes)
+        encoded = content.encode("utf-8")
+        async with self._lock:
+            record = self._records.get(author)
+            if record is None:
+                raise ProtocolError(f"unknown agent {author!r}")
+            if record.status not in _ACTIVE:
+                raise ProtocolError("only a running agent may post")
+            if self._board_bytes + len(encoded) > self.max_board_bytes:
+                raise ProtocolError(f"board limit of {self.max_board_bytes} bytes")
+            entry = BoardEntry(len(self._board) + 1, author, content)
+            await self.context.trace.emit(
+                "board_post",
+                agent_id=author,
+                role="communication",
+                data={
+                    "sequence": entry.sequence,
+                    "content_bytes": len(encoded),
+                    "content_sha256": hashlib.sha256(encoded).hexdigest(),
+                },
+            )
+            self._board.append(entry)
+            self._board_bytes += len(encoded)
+            # One event for the whole board: a post is broadcast, so every
+            # reader waiting on it becomes readable at the same moment.
+            self._board_event.set()
+            self._board_event = asyncio.Event()
+        return entry
+
+    async def read_board(
+        self, agent_id: str, *, wait: bool = False
+    ) -> list[BoardEntry]:
+        """Return the entries this agent has not read yet.
+
+        A cursor per reader is what makes the board a broadcast log rather than
+        a mailbox: reading does not consume, so two agents see the same posts.
+        """
+
+        self._check_ids("board reader", agent_id)
+        _require_bool(wait, "agent board wait", error=ProtocolError)
+        while True:
+            async with self._lock:
+                record = self._records.get(agent_id)
+                if record is None:
+                    raise ProtocolError(f"unknown agent {agent_id!r}")
+                cursor = self._board_cursors.get(agent_id, 0)
+                if cursor < len(self._board) or not wait or record.released:
+                    entries = self._board[cursor:]
+                    self._board_cursors[agent_id] = len(self._board)
+                    await self.context.trace.emit(
+                        "board_read",
+                        agent_id=agent_id,
+                        role="communication",
+                        data={
+                            "count": len(entries),
+                            "sequences": [entry.sequence for entry in entries],
+                        },
+                    )
+                    return entries
+                if record.status not in _ACTIVE:
+                    raise ProtocolError("a terminal agent cannot wait for posts")
+                event = self._board_event
             await event.wait()
 
     async def wait(

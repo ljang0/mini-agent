@@ -12,7 +12,14 @@ from importlib import import_module
 
 from .base import ACTIONS, LEGACY_ACTIONS, Harness, Role
 
-_MODULES = ("single", "recursive", "fixed_team", "orchestrated", "async_team")
+_MODULES = (
+    "single",
+    "recursive",
+    "fixed_team",
+    "orchestrated",
+    "async_team",
+    "message_board",
+)
 HARNESSES: dict[str, Harness] = {}
 
 for _module in _MODULES:

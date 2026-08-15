@@ -7,7 +7,11 @@ from typing import Any, Sequence
 
 from mini_agent.agent import MiniAgent
 from mini_agent.models import ScriptedModel
-from mini_agent.orchestrator import CommunicationEnvironment, Orchestrator
+from mini_agent.orchestrator import (
+    AgentRecord,
+    CommunicationEnvironment,
+    Orchestrator,
+)
 from mini_agent.execution import RunContext, TraceRecorder
 from mini_agent.types import (
     BudgetExceeded,
@@ -30,9 +34,12 @@ def call(call_id: str, arguments: dict[str, Any]) -> ModelResponse:
 class ScriptThenBlockModel:
     def __init__(self, responses: Sequence[ModelResponse]) -> None:
         self.responses = list(responses)
+        # Recorded like ScriptedModel's, so a test can assert what this agent
+        # was shown and not only what it said.
+        self.queries: list[tuple[Any, Any]] = []
 
     async def query(self, messages: Any, tools: Any) -> ModelResponse:
-        del messages, tools
+        self.queries.append((list(messages), tools))
         if self.responses:
             return self.responses.pop(0)
         await asyncio.Event().wait()
@@ -867,6 +874,96 @@ class HarnessTests(unittest.IsolatedAsyncioTestCase):
         record = orchestrator.records["/root/1"]
         self.assertEqual(record.status, "completed")
         self.assertIsNotNone(record.state)
+
+
+class MessageBoardTests(unittest.IsolatedAsyncioTestCase):
+    """A board is broadcast: no recipient, and reading does not consume."""
+
+    async def test_one_post_reaches_every_peer_and_survives_reading(self) -> None:
+        from mini_agent.harnesses import load_harness
+
+        harness = load_harness("message-board")
+        peers = ("/root/peer-2", "/root/peer-3")
+        models: dict[str, Any] = {
+            "/root": ScriptedModel(
+                [
+                    call("p", {"action": "post", "message": "lead claims part 1"}),
+                    ModelResponse("lead answer"),
+                ]
+            )
+        }
+        for peer in peers:
+            models[peer] = ScriptThenBlockModel(
+                [
+                    call("b", {"action": "board", "wait": True}),
+                    ModelResponse(f"{peer} done"),
+                ]
+            )
+        orchestrator = orchestrator_for(
+            models, max_active=3, max_total=3, harness=harness
+        )
+
+        result = await orchestrator.run(
+            "shared task", seeds=harness.seeds(size=3, task="shared task")
+        )
+
+        self.assertEqual(result.answer, "lead answer")
+        # Both peers read the same single post: a mailbox would have needed two
+        # sends, and the first reader would have consumed it.
+        for peer in peers:
+            entries = json.loads(models[peer].queries[1][0][-1].tool_results[0].output)
+            self.assertEqual([entry["content"] for entry in entries],
+                             ["lead claims part 1"])
+            self.assertEqual(entries[0]["author"], "/root")
+
+    async def test_a_peer_reads_posts_made_before_it_looked(self) -> None:
+        # Joining late must not mean missing the conversation; that is the
+        # property a mailbox cannot give you.
+        from mini_agent.harnesses import load_harness
+
+        harness = load_harness("message-board")
+        orchestrator = orchestrator_for(
+            {"/root": ScriptedModel([ModelResponse("done")])}, harness=harness
+        )
+        orchestrator._records["/root"] = AgentRecord("/root", None)
+        orchestrator._records["/root"].status = "running"
+        orchestrator._records["/root/late"] = AgentRecord("/root/late", "/root")
+        orchestrator._records["/root/late"].status = "running"
+
+        await orchestrator.post("/root", "said early")
+        entries = await orchestrator.read_board("/root/late")
+
+        self.assertEqual([entry.content for entry in entries], ["said early"])
+        # Reading is idempotent per reader: a second read sees nothing new.
+        self.assertEqual(await orchestrator.read_board("/root/late"), [])
+
+    async def test_the_board_refuses_a_post_past_its_byte_limit(self) -> None:
+        from mini_agent.harnesses import load_harness
+
+        harness = load_harness("message-board")
+        orchestrator = orchestrator_for(
+            {"/root": ScriptedModel([ModelResponse("done")])}, harness=harness
+        )
+        orchestrator.max_board_bytes = 8
+        orchestrator._records["/root"] = AgentRecord("/root", None)
+        orchestrator._records["/root"].status = "running"
+
+        await orchestrator.post("/root", "12345678")
+        with self.assertRaises(ProtocolError):
+            await orchestrator.post("/root", "one more")
+
+    async def test_a_terminal_agent_cannot_post(self) -> None:
+        from mini_agent.harnesses import load_harness
+
+        harness = load_harness("message-board")
+        orchestrator = orchestrator_for(
+            {"/root": ScriptedModel([ModelResponse("done")])}, harness=harness
+        )
+        orchestrator._records["/root"] = AgentRecord("/root", None)
+        orchestrator._records["/root"].status = "completed"
+
+        with self.assertRaises(ProtocolError):
+            await orchestrator.post("/root", "too late")
 
 
 class ReleaseGuardTests(unittest.IsolatedAsyncioTestCase):

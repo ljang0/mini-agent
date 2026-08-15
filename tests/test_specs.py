@@ -375,6 +375,10 @@ class HarnessRoleSpecTests(unittest.TestCase):
             "e3881c41f9a86a0a527638001a672013f893f784d6d5b875c9fa824276a88576",
         "async-subagents/subagent":
             "a5299fc85c463682c11cdb9916de1eafdc16ffd8994c553a4993b8e6281825ae",
+        "message-board/lead":
+            "6a10ca4058f80d4c1c4c3511a8101b0b596c36e0818a4c1cb684a5bd7d2479bd",
+        "message-board/peer":
+            "66e3d158fa0e7c3db889cf68acedb2202f61a172b023e49711528ef79ef5fb44",
     }
 
     def test_every_role_fingerprint_is_byte_stable(self) -> None:
